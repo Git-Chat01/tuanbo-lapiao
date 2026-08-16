@@ -6,3 +6,6 @@
 node_modules/
 *.log
 .DS_Store
+
+# wrangler dev 本地缓存（Miniflare 状态与临时产物）
+.wrangler/

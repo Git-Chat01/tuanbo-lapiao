@@ -56,6 +56,27 @@ var Report = {
     return section;
   },
 
+  /**
+   * 把用户话术按标点拆成句（与模型按句点评的顺序对齐）。
+   * 显示"原句"时优先用这里的拆句结果——用户看到的一定是自己写的话，
+   * 同时防御上游偶发的 original 字段乱码（DeepSeek 对部分输入复制原文时会输出损坏字符）。
+   */
+  _splitSentences: function (script) {
+    if (!script) return [];
+    return script
+      .split(/[。！？!?；;\n]+/)
+      .map(function (s) { return s.trim(); })
+      .filter(function (s) { return s.length > 0; });
+  },
+
+  /** 检测损坏字符（U+FFFD 替换符，上游乱码的特征） */
+  _hasGarbled: function (text) {
+    for (var i = 0; i < text.length; i++) {
+      if (text.codePointAt(i) === 0xfffd) return true;
+    }
+    return false;
+  },
+
   /** ③ 逐句点评列表：每条按 mark 渲染左色条 + ✅⚠️❌ */
   _lineReviews: function (reviews) {
     var section = Report._el("section", "report-section");
@@ -64,12 +85,26 @@ var Report = {
     var list = Report._el("ul", "review-list");
     var markText = { good: "✅ 站对了", partial: "⚠️ 没到位", wrong: "❌ 站错了" };
 
+    // 前端自己的拆句（来自用户提交的原文），与模型点评按顺序对齐
+    var sentences = Report._splitSentences(
+      App.state.lastRequest ? App.state.lastRequest.script : ""
+    );
+
     for (var i = 0; i < reviews.length; i++) {
       var r = reviews[i];
+      var original;
+      if (sentences[i]) {
+        original = sentences[i]; // 优先：用户原话拆句，永远无乱码
+      } else if (r.original && !Report._hasGarbled(r.original)) {
+        original = r.original; // 兜底：模型引用（仅当无损坏字符）
+      } else {
+        original = ""; // 都不可用时不显示原句，点评本身仍可见
+      }
+
       var item = Report._el("li", "review-item review-item--" + (r.mark || "partial"));
       var head = Report._el("div", "review-item__head");
       head.appendChild(Report._el("span", "review-item__mark", markText[r.mark] || markText.partial));
-      head.appendChild(Report._el("span", "review-item__original", r.original || ""));
+      head.appendChild(Report._el("span", "review-item__original", original));
       var comment = Report._el("div", "review-item__comment", r.comment || "");
       item.appendChild(head);
       item.appendChild(comment);
