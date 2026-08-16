@@ -4,7 +4,7 @@
 var Api = {
   _inFlight: false, // 同一时间只允许一个批改请求
   _requestId: 0, // 陈旧响应守卫
-  _timeoutMs: 45000, // 前端超时：Worker 自身 30s 超时，这里留余量
+  _timeoutMs: 60000, // 前端超时：Worker 自身 45s 超时，这里留 15s 余量
 
   init: function () {},
 

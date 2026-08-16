@@ -38,8 +38,11 @@ const DEEPSEEK_CONFIG = {
   url: "https://api.deepseek.com/chat/completions",
   model: "deepseek-chat",
   temperature: 0.7,
-  maxTokens: 1200, // 成本硬顶
-  timeoutMs: 30000, // 批改场景 10-30 秒常见，超时按失败处理
+  // 教训（2026-08-16）：话术接近 500 字时逐句点评输出会逼近 1200 token 上限，
+  // 触发 JSON 截断 → 502"报告格式出错"。上限提到 3000（max_tokens 是上限，
+  // 成本按实际输出计，短话术不更贵；500 字话术最坏约 ¥0.03/次，可接受）
+  maxTokens: 3000,
+  timeoutMs: 45000, // 输出更长耗时更久；前端 60s，此处留 15s 余量
 };
 
 export default {

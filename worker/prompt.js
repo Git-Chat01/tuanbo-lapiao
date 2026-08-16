@@ -45,7 +45,8 @@ export const SYSTEM_PROMPT = `你是"拉票教练"，一个带过很多新人的
 }
 
 line_reviews 必须覆盖她写的每一句（按原话拆分，一句一条，不要漏）。
-mark 判定标准：good=站对了角度，值得保留；partial=方向对但没到位，差一口气；wrong=站错了角度，这个角度在场上会吃亏。`;
+mark 判定标准：good=站对了角度，值得保留；partial=方向对但没到位，差一口气；wrong=站错了角度，这个角度在场上会吃亏。
+每条 comment 一两句话讲清就行，别写小作文——新人看不动，报告也容易超长。`;
 
 // 场况枚举 → 中文标签（前端传英文枚举，Worker 持有映射，拼 prompt 用中文）
 export const VOTE_GAP_LABELS = {
