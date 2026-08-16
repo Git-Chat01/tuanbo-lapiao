@@ -2,6 +2,11 @@
    思路沿用 expense-tracker：CSS 变量阶梯字号（px，不 rem 缩放）、
    430px 手机壳、44px+ 触控、:active 代替 hover、safe-area 安全区 */
 
+/* hidden 属性兜底：任何带 display 规则的元素（如 .modal-overlay 的 flex 居中）
+   会覆盖浏览器对 [hidden] 的默认隐藏，导致"设了 hidden 却不消失"。
+   统一用 !important 保证所有显隐切换（modal/loading/错误卡）真实生效。 */
+[hidden] { display: none !important; }
+
 :root {
   /* 主色：直播间氛围的玫红 */
   --color-primary: #D92662;
