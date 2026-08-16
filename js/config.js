@@ -1,8 +1,8 @@
 // 全局配置：API 地址与场况枚举的中文标签
 // 注意：DEFAULT_API 部署时填 Worker 真实域名（部署任务会更新此文件 + CSP）
 
-// 部署时把 Worker 真实域名填到这里（如 "https://xxx.workers.dev"）
-var DEFAULT_API = "";
+// 线上 Worker 地址（本地联调可用 ?api= 参数覆盖）
+var DEFAULT_API = "https://tuanbo-lapiao-coach.1103386200.workers.dev";
 
 // 支持 URL 参数覆盖，用于本地联调：http://localhost:8080/?api=http://127.0.0.1:8787
 var API_BASE = (function () {
