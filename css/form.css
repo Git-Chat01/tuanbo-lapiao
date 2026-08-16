@@ -1,0 +1,48 @@
+/* 输入表单视图：chip 点选组、话术输入、提交按钮 */
+
+.form-intro {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  margin-bottom: var(--space-lg);
+  padding: 0 var(--space-xs);
+}
+
+/* ---- chip 点选（单选/多选共用，选中态由 aria-pressed 控制） ---- */
+.chip-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+.chip {
+  min-height: 44px; /* 触控下限 */
+  padding: 0 var(--space-lg);
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  transition: all 0.12s;
+}
+.chip:active {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+.chip[aria-pressed="true"] {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #fff;
+  font-weight: 600;
+}
+
+/* ---- 表单校验未通过时的视觉提示 ---- */
+.chip-group--invalid {
+  outline: 2px solid var(--color-bad);
+  outline-offset: 2px;
+  border-radius: var(--radius-md);
+}
+
+/* ---- 提交中：整个表单只读，防止等待期间误改数据 ---- */
+.main-view--submitting {
+  pointer-events: none;
+  opacity: 0.65;
+}

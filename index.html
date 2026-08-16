@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <!-- 移动端优先：完全复制 expense-tracker 的 viewport 策略 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#D92662">
+  <!-- CSP：全站本地资源 + 仅允许访问教练 Worker（部署时补充生产域名） -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:* http://localhost:*; object-src 'none'; form-action 'self'; base-uri 'self'">
+  <title>拉票话术教练</title>
+  <link rel="stylesheet" href="css/common.css">
+  <link rel="stylesheet" href="css/form.css">
+  <link rel="stylesheet" href="css/report.css">
+</head>
+<body>
+  <div class="app-container">
+    <header class="app-header">
+      <h1 class="app-title">拉票话术教练</h1>
+      <button type="button" id="btn-access-code" class="btn-text">入口码</button>
+    </header>
+
+    <!-- 视图 1：输入表单 -->
+    <main id="view-form" class="main-view main-view--active">
+      <p class="form-intro">
+        把场上情况和你的话术原样写下来——不用写对，写出来，教练才能帮你。
+      </p>
+
+      <section class="card">
+        <h2 class="card-title">环节状态 <span class="required-tag">必选</span></h2>
+        <p class="field-label">现在差多少票</p>
+        <div class="chip-group" data-group="voteGap" data-multi="false">
+          <button type="button" class="chip" data-value="far" aria-pressed="false">差一大截</button>
+          <button type="button" class="chip" data-value="close" aria-pressed="false">差一点点</button>
+          <button type="button" class="chip" data-value="secured" aria-pressed="false">已达标保位</button>
+        </div>
+        <p class="field-label">剩多少时间</p>
+        <div class="chip-group" data-group="timeLeft" data-multi="false">
+          <button type="button" class="chip" data-value="early" aria-pressed="false">刚进环节</button>
+          <button type="button" class="chip" data-value="counting" aria-pressed="false">倒计时中</button>
+          <button type="button" class="chip" data-value="final" aria-pressed="false">最后几秒</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 class="card-title">主持现在什么样 <span class="optional-tag">可多选</span></h2>
+        <div class="chip-group" data-group="host" data-multi="true">
+          <button type="button" class="chip" data-value="pressuring" aria-pressed="false">施压催票</button>
+          <button type="button" class="chip" data-value="cooperative" aria-pressed="false">配合给台阶</button>
+          <button type="button" class="chip" data-value="neutral" aria-pressed="false">中立看戏</button>
+          <button type="button" class="chip" data-value="challenging" aria-pressed="false">挑刺质疑</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 class="card-title">弹幕什么风向 <span class="optional-tag">可多选</span></h2>
+        <div class="chip-group" data-group="chat" data-multi="true">
+          <button type="button" class="chip" data-value="quiet" aria-pressed="false">冷清没人说话</button>
+          <button type="button" class="chip" data-value="hype" aria-pressed="false">起哄看戏</button>
+          <button type="button" class="chip" data-value="doubt" aria-pressed="false">有人唱衰拆台</button>
+          <button type="button" class="chip" data-value="waiting" aria-pressed="false">有大哥在观望</button>
+          <button type="button" class="chip" data-value="leading" aria-pressed="false">已有人带头喊救</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 class="card-title">别家情况 <span class="required-tag">必选</span></h2>
+        <p class="field-label">别家主播的票数</p>
+        <div class="chip-group" data-group="rivalVotes" data-multi="false">
+          <button type="button" class="chip" data-value="ahead" aria-pressed="false">别家领先</button>
+          <button type="button" class="chip" data-value="close" aria-pressed="false">和我差不多</button>
+          <button type="button" class="chip" data-value="behind" aria-pressed="false">别家落后</button>
+        </div>
+        <p class="field-label">别家粉丝什么状态</p>
+        <div class="chip-group" data-group="rivalFans" data-multi="false">
+          <button type="button" class="chip" data-value="separate" aria-pressed="false">各刷各的</button>
+          <button type="button" class="chip" data-value="poachable" aria-pressed="false">能挖</button>
+          <button type="button" class="chip" data-value="hostile" aria-pressed="false">在唱衰我</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 class="card-title">自由补充 <span class="optional-tag">可空</span></h2>
+        <input type="text" id="input-note" class="text-input" maxlength="50"
+               placeholder="一句话补充：比如今天新人首播、大哥是谁">
+        <div class="char-count" id="note-count">0/50</div>
+      </section>
+
+      <section class="card">
+        <h2 class="card-title">你的话术</h2>
+        <textarea id="input-script" class="script-input" maxlength="500" rows="7"
+                  placeholder="把你现场会说的话原样写下来，不用写对——写出来，教练才能帮你。"></textarea>
+        <div class="char-count" id="script-count">0/500</div>
+      </section>
+
+      <!-- 提交按钮放流末尾而非 fixed 底栏：iOS 键盘弹出时 fixed 底栏会上浮压住内容 -->
+      <button type="button" id="btn-submit" class="btn-primary btn-block" disabled>拿去给教练批</button>
+    </main>
+
+    <!-- 视图 2：批改报告 -->
+    <main id="view-report" class="main-view">
+      <div id="report-loading" class="report-loading" hidden>
+        <div class="spinner"></div>
+        <p>教练正在看你这段话，别急……</p>
+        <p class="loading-sub">批改一般要十几秒，好话术值得等</p>
+      </div>
+      <div id="report-error" class="report-error" hidden></div>
+      <div id="report-content" hidden></div>
+      <div class="report-actions">
+        <button type="button" id="btn-back-edit" class="btn-outline">改一改再批</button>
+        <button type="button" id="btn-retry" class="btn-outline" hidden>重新批一次</button>
+      </div>
+    </main>
+  </div>
+
+  <!-- 入口码 modal：首次进入 + 401 时弹出 -->
+  <div id="access-modal" class="modal-overlay" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="access-modal-title">
+      <h2 id="access-modal-title" class="modal-title">输入入口码</h2>
+      <p class="modal-desc">找教练要入口码，输入后就可以用了</p>
+      <input type="password" id="input-access-code" class="text-input" autocomplete="off"
+             placeholder="入口码">
+      <p id="access-error" class="modal-error" hidden>入口码不对，重新输入</p>
+      <div class="modal-actions">
+        <button type="button" id="btn-access-confirm" class="btn-primary">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 全局 toast -->
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+  <!-- 传统 script 按依赖顺序加载（沿用 expense-tracker 模式，非 ES Module） -->
+  <script src="js/config.js"></script>
+  <script src="js/app.js"></script>
+  <script src="js/form.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/report.js"></script>
+</body>
+</html>
