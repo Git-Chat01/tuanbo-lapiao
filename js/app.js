@@ -24,12 +24,24 @@ var App = {
     }, 3000);
   },
 
-  /** 入口码：localStorage 缓存，401 时重新弹出 */
+  /**
+   * 入口码：localStorage 缓存，401 时重新弹出。
+   * try-catch 防御：iOS 微信 WebView/隐私模式下 localStorage 可能不可用，
+   * 读写抛异常时按"没存过"处理，绝不因存储问题卡死入口流程。
+   */
   getAccessCode: function () {
-    return localStorage.getItem(STORAGE_KEYS.accessCode) || "";
+    try {
+      return localStorage.getItem(STORAGE_KEYS.accessCode) || "";
+    } catch (e) {
+      return "";
+    }
   },
   saveAccessCode: function (code) {
-    localStorage.setItem(STORAGE_KEYS.accessCode, code);
+    try {
+      localStorage.setItem(STORAGE_KEYS.accessCode, code);
+    } catch (e) {
+      // 存不了就算了：下次打开重新输入即可，不打断当前使用
+    }
   },
 
   /**
