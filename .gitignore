@@ -1,0 +1,8 @@
+# ⚠️ 本地密钥文件——绝不能提交到仓库（DeepSeek key / 入口码）
+# 这是本仓库最重要的安全防线：key 一旦进 git 历史，删除无效，必须吊销重发
+.dev.vars
+
+# 依赖与日志
+node_modules/
+*.log
+.DS_Store

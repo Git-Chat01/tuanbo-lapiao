@@ -1,0 +1,29 @@
+# 部署：push master → 把 site/ 目录发布到 gh-pages 分支
+# 沿用 expense-tracker 的模式（peaceiris 直接推分支，绕过官方部署 API）
+# ⚠️ 关键差异：publish_dir 是 ./site 而不是 . —— 保证 worker/ 与 .dev.vars 绝不进公开的 gh-pages 分支
+name: Deploy site to GitHub Pages
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tuanbo-lapiao-gh-pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          publish_branch: gh-pages
+          keep_files: false
