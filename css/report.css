@@ -1,4 +1,4 @@
-/* 批改报告视图：五段卡片、逐句点评色条、折叠示例 */
+/* 批改报告视图（v2）：verdict 大字卡、诊断卡、红线横幅、五段卡片、折叠示例、过关页 */
 
 .report-loading {
   text-align: center;
@@ -122,3 +122,120 @@
   margin-top: var(--space-lg);
 }
 .report-actions .btn-outline { flex: 1; min-height: 48px; }
+
+/* ---- ① verdict 大字卡：结论第一眼看到，三色区分 ---- */
+.verdict-card {
+  border-radius: var(--radius-lg);
+  padding: var(--space-xl);
+  margin-bottom: var(--space-md);
+  text-align: center;
+}
+.verdict-card__text {
+  font-size: 28px;
+  font-weight: 800;
+  margin-bottom: var(--space-sm);
+}
+.verdict-card__reason {
+  font-size: var(--font-size-sm);
+  line-height: 1.7;
+}
+.verdict-card--off { background: var(--color-bad-bg); border: 1px solid var(--color-bad); }
+.verdict-card--off .verdict-card__text { color: var(--color-bad); }
+.verdict-card--off .verdict-card__reason { color: #8A2F2F; }
+.verdict-card--almost { background: var(--color-warn-bg); border: 1px solid var(--color-warn); }
+.verdict-card--almost .verdict-card__text { color: var(--color-warn); }
+.verdict-card--almost .verdict-card__reason { color: #7A5A12; }
+.verdict-card--passed { background: var(--color-good-bg); border: 1px solid var(--color-good); }
+.verdict-card--passed .verdict-card__text { color: var(--color-good); }
+.verdict-card--passed .verdict-card__reason { color: #14613C; }
+
+/* ---- 红线横幅：红底白字，最扎眼的警告 ---- */
+.redline-banner {
+  background: var(--color-bad);
+  color: #fff;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  line-height: 1.6;
+  padding: var(--space-md) var(--space-lg);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-md);
+}
+
+/* ---- ② 诊断卡：卡在哪 + 对谁喊话 ---- */
+.diagnosis-card {
+  border-left: 4px solid var(--color-primary);
+}
+.diagnosis-card__badge {
+  display: inline-block;
+  font-size: var(--font-size-md);
+  font-weight: 700;
+  color: var(--color-primary-dark);
+  background: var(--color-primary-soft);
+  border-radius: var(--radius-sm);
+  padding: var(--space-xs) var(--space-md);
+  margin-bottom: var(--space-sm);
+}
+.diagnosis-card__why {
+  font-size: var(--font-size-md);
+  line-height: 1.7;
+  margin-bottom: var(--space-sm);
+}
+.diagnosis-card__audience {
+  font-size: var(--font-size-sm);
+  line-height: 1.7;
+  color: var(--color-text-secondary);
+  background: var(--color-divider);
+  border-radius: var(--radius-sm);
+  padding: var(--space-sm) var(--space-md);
+}
+.diagnosis-card__audience-label {
+  color: var(--color-primary);
+  font-weight: 600;
+  margin-right: var(--space-xs);
+}
+
+/* ---- 过关页（view-passed） ---- */
+.passed-hero {
+  text-align: center;
+  padding: var(--space-xl) 0 var(--space-lg);
+}
+.passed-hero__icon { font-size: 52px; margin-bottom: var(--space-sm); }
+.passed-hero__title {
+  font-size: var(--font-size-xl);
+  font-weight: 800;
+  color: var(--color-good);
+  margin-bottom: var(--space-xs);
+}
+.passed-hero__sub {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+/* 定稿卡：稿子是主播自己的，完整展示 + 复制 */
+.passed-script-card { border: 1px solid var(--color-good); }
+.passed-script {
+  font-size: var(--font-size-md);
+  line-height: 1.8;
+  background: var(--color-good-bg);
+  border-radius: var(--radius-sm);
+  padding: var(--space-lg);
+  margin-bottom: var(--space-md);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* 学会了什么：分块段落，最后一条（one_thing）加粗 */
+.passed-learn__block {
+  font-size: var(--font-size-md);
+  line-height: 1.7;
+  margin-bottom: var(--space-sm);
+}
+.passed-learn__block:last-child { margin-bottom: 0; }
+.passed-learn__block--strong { font-weight: 700; color: var(--color-primary-dark); }
+
+/* 过关提醒：温和灰卡，不抢定稿的视觉焦点 */
+.passed-note p {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  line-height: 1.7;
+}

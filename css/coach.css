@@ -1,0 +1,180 @@
+/* 教练后台（coach.html）：桌面两列布局。
+   复用 common.css 的卡片/按钮/chip/输入框基础组件，本文件只写后台专属样式。
+   主播端铁律不适用这里——教练用电脑，信息密度优先，不做 430px 手机壳。 */
+
+.coach-container {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: var(--space-xl);
+}
+
+.coach-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-lg) 0;
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: var(--space-xl);
+}
+.coach-header h1 { font-size: var(--font-size-xl); font-weight: 700; }
+
+/* ---- 两列布局：左喂话术 380px，右清单自适应 ---- */
+.coach-layout {
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  gap: var(--space-xl);
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .coach-layout { grid-template-columns: 1fr; }
+}
+
+.coach-col__title {
+  font-size: var(--font-size-lg);
+  font-weight: 700;
+  margin-bottom: var(--space-sm);
+}
+.coach-col__desc {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  line-height: 1.7;
+  margin-bottom: var(--space-lg);
+}
+
+/* ---- 投喂表单 ---- */
+.whygood-input {
+  width: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-md);
+  background: var(--color-card);
+  outline: none;
+  resize: vertical;
+  min-height: 60px;
+  line-height: 1.6;
+  -webkit-appearance: none;
+}
+.whygood-input:focus { border-color: var(--color-primary); }
+.whygood-input::placeholder { color: var(--color-text-muted); }
+
+/* ---- tabs ---- */
+.tabs {
+  display: flex;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+}
+.tab {
+  padding: var(--space-sm) var(--space-lg);
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+.tab--active {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #fff;
+  font-weight: 600;
+}
+
+.list-hint {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  line-height: 1.7;
+  margin-bottom: var(--space-lg);
+  background: var(--color-divider);
+  border-radius: var(--radius-sm);
+  padding: var(--space-md);
+}
+
+.list-empty {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  text-align: center;
+  padding: calc(2 * var(--space-xl));
+  background: var(--color-card);
+  border-radius: var(--radius-md);
+}
+
+/* ---- 案例卡片 ---- */
+.list-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+.case-card {
+  background: var(--color-card);
+  border-radius: var(--radius-md);
+  padding: var(--space-lg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+.case-card__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-sm);
+}
+.case-card__tag {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--color-primary-dark);
+  background: var(--color-primary-soft);
+  border-radius: 4px;
+  padding: 2px 8px;
+}
+.case-card__tag--close { color: #7A5A12; background: var(--color-warn-bg); }
+.case-card__tag--secured { color: #14613C; background: var(--color-good-bg); }
+.case-card__time {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+.case-card__badge {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: #8A2F2F;
+  background: var(--color-bad-bg);
+  border-radius: 4px;
+  padding: 2px 8px;
+}
+.case-card__badge--auto {
+  color: var(--color-text-muted);
+  background: var(--color-divider);
+  font-weight: 400;
+}
+.case-card__script {
+  font-size: var(--font-size-md);
+  line-height: 1.7;
+  margin-bottom: var(--space-sm);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.case-card__why {
+  font-size: var(--font-size-sm);
+  line-height: 1.7;
+  color: var(--color-text-secondary);
+  background: var(--color-divider);
+  border-radius: var(--radius-sm);
+  padding: var(--space-sm) var(--space-md);
+  margin-bottom: var(--space-md);
+}
+.case-card__why-label {
+  color: var(--color-primary);
+  font-weight: 600;
+  margin-right: var(--space-xs);
+}
+.case-card__delete {
+  font-size: var(--font-size-sm);
+  color: var(--color-bad);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  margin-left: -8px; /* 视觉对齐卡片内边距 */
+}
+.case-card__delete:hover { background: var(--color-bad-bg); }
+
+@media (hover: hover) {
+  .tab:hover { border-color: var(--color-primary); color: var(--color-primary); }
+  .tab--active:hover { color: #fff; }
+}

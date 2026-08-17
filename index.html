@@ -19,70 +19,19 @@
       <button type="button" id="btn-access-code" class="btn-text">入口码</button>
     </header>
 
-    <!-- 视图 1：输入表单 -->
+    <!-- 视图 1：输入表单（v2 极简：只点、只写、只交） -->
     <main id="view-form" class="main-view main-view--active">
       <p class="form-intro">
-        把场上情况和你的话术原样写下来——不用写对，写出来，教练才能帮你。
+        点、写、交，就这三件事。
       </p>
 
       <section class="card">
-        <h2 class="card-title">环节状态 <span class="required-tag">必选</span></h2>
-        <p class="field-label">现在差多少票</p>
-        <div class="chip-group" data-group="voteGap" data-multi="false">
+        <h2 class="card-title">现在票数什么情况 <span class="required-tag">点一个</span></h2>
+        <div class="chip-group chip-group--big" data-group="voteGap" data-multi="false">
           <button type="button" class="chip" data-value="far" aria-pressed="false">差一大截</button>
-          <button type="button" class="chip" data-value="close" aria-pressed="false">差一点点</button>
-          <button type="button" class="chip" data-value="secured" aria-pressed="false">已达标保位</button>
+          <button type="button" class="chip" data-value="close" aria-pressed="false">快够了</button>
+          <button type="button" class="chip" data-value="secured" aria-pressed="false">在保位</button>
         </div>
-        <p class="field-label">剩多少时间</p>
-        <div class="chip-group" data-group="timeLeft" data-multi="false">
-          <button type="button" class="chip" data-value="early" aria-pressed="false">刚进环节</button>
-          <button type="button" class="chip" data-value="counting" aria-pressed="false">倒计时中</button>
-          <button type="button" class="chip" data-value="final" aria-pressed="false">最后几秒</button>
-        </div>
-      </section>
-
-      <section class="card">
-        <h2 class="card-title">主持现在什么样 <span class="optional-tag">可多选</span></h2>
-        <div class="chip-group" data-group="host" data-multi="true">
-          <button type="button" class="chip" data-value="pressuring" aria-pressed="false">施压催票</button>
-          <button type="button" class="chip" data-value="cooperative" aria-pressed="false">配合给台阶</button>
-          <button type="button" class="chip" data-value="neutral" aria-pressed="false">中立看戏</button>
-          <button type="button" class="chip" data-value="challenging" aria-pressed="false">挑刺质疑</button>
-        </div>
-      </section>
-
-      <section class="card">
-        <h2 class="card-title">弹幕什么风向 <span class="optional-tag">可多选</span></h2>
-        <div class="chip-group" data-group="chat" data-multi="true">
-          <button type="button" class="chip" data-value="quiet" aria-pressed="false">冷清没人说话</button>
-          <button type="button" class="chip" data-value="hype" aria-pressed="false">起哄看戏</button>
-          <button type="button" class="chip" data-value="doubt" aria-pressed="false">有人唱衰拆台</button>
-          <button type="button" class="chip" data-value="waiting" aria-pressed="false">有大哥在观望</button>
-          <button type="button" class="chip" data-value="leading" aria-pressed="false">已有人带头喊救</button>
-        </div>
-      </section>
-
-      <section class="card">
-        <h2 class="card-title">别家情况 <span class="required-tag">必选</span></h2>
-        <p class="field-label">别家主播的票数</p>
-        <div class="chip-group" data-group="rivalVotes" data-multi="false">
-          <button type="button" class="chip" data-value="ahead" aria-pressed="false">别家领先</button>
-          <button type="button" class="chip" data-value="close" aria-pressed="false">和我差不多</button>
-          <button type="button" class="chip" data-value="behind" aria-pressed="false">别家落后</button>
-        </div>
-        <p class="field-label">别家粉丝什么状态</p>
-        <div class="chip-group" data-group="rivalFans" data-multi="false">
-          <button type="button" class="chip" data-value="separate" aria-pressed="false">各刷各的</button>
-          <button type="button" class="chip" data-value="poachable" aria-pressed="false">能挖</button>
-          <button type="button" class="chip" data-value="hostile" aria-pressed="false">在唱衰我</button>
-        </div>
-      </section>
-
-      <section class="card">
-        <h2 class="card-title">自由补充 <span class="optional-tag">可空</span></h2>
-        <input type="text" id="input-note" class="text-input" maxlength="50"
-               placeholder="一句话补充：比如今天新人首播、大哥是谁">
-        <div class="char-count" id="note-count">0/50</div>
       </section>
 
       <section class="card">
@@ -104,11 +53,39 @@
         <p class="loading-sub">批改一般要十几秒，好话术值得等</p>
       </div>
       <div id="report-error" class="report-error" hidden></div>
+      <!-- 红线横幅：命中不能播的词时显示（report.js 动态填充，红底白字） -->
+      <div id="redline-banner" class="redline-banner" hidden></div>
       <div id="report-content" hidden></div>
       <div class="report-actions">
         <button type="button" id="btn-back-edit" class="btn-outline">改一改再批</button>
         <button type="button" id="btn-retry" class="btn-outline" hidden>重新批一次</button>
       </div>
+    </main>
+
+    <!-- 视图 3：过关页（verdict=passed 时进入） -->
+    <main id="view-passed" class="main-view">
+      <div class="passed-hero">
+        <div class="passed-hero__icon">🎉</div>
+        <h2 class="passed-hero__title">过关了！</h2>
+        <p class="passed-hero__sub">这一稿方向对了，拿去用</p>
+      </div>
+
+      <section class="card passed-script-card">
+        <h2 class="card-title">你的定稿</h2>
+        <div id="passed-script" class="passed-script"></div>
+        <button type="button" id="btn-copy" class="btn-primary btn-block">复制定稿</button>
+      </section>
+
+      <section class="card">
+        <h2 class="card-title">这一稿你学会了什么</h2>
+        <div id="passed-learn" class="report-section__body"></div>
+      </section>
+
+      <section class="card passed-note">
+        <p>稿子过关 ≠ 综合过关。表现力、情绪、语感，去线下直播间里练。</p>
+      </section>
+
+      <button type="button" id="btn-new-round" class="btn-outline btn-block">再练一段新的</button>
     </main>
   </div>
 
