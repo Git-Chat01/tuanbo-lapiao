@@ -26,6 +26,20 @@ check() {
   fi
 }
 
+# 生产 KV 是最终一致的（写后立刻读可能读到旧值，通常 60s 内收敛；
+# 本地 Miniflare 模拟是即时一致所以本地永远一次命中）。
+# 轮询等待条件达成，最多 20 次 × 3s。
+# 用法：wait_kv <探测命令（echo yes 表示条件达成）>，探测失败返回 "no"
+wait_kv() {
+  local probe="$1" i result
+  for i in $(seq 1 20); do
+    result=$(eval "$probe")
+    [ "$result" = "yes" ] && return 0
+    sleep 3
+  done
+  return 1
+}
+
 # 常用请求体
 GOOD_BODY='{"accessCode":"'$CODE'","voteGap":"far","script":"家人们帮帮忙，我第一次播，求求大家可怜可怜我，给我上点票吧，我不想被淘汰"}'
 SHORT_BODY='{"accessCode":"'$CODE'","voteGap":"far","script":"帮帮忙"}'
@@ -103,19 +117,18 @@ check "状态码 201" "201" "$code"
 body=$(echo "$resp" | sed '$d')
 case_id=$(echo "$body" | grep -o 'case:[A-Za-z0-9:]*' | head -n1)
 check "返回案例 id" "yes" "$([ -n "$case_id" ] && echo yes || echo no)"
-resp=$(curl -s -H 'X-Admin-Code: '$ADMIN'' "$BASE/api/admin/cases?source=manual")
-echo "$resp" | grep -q "$case_id" && found="yes" || found="no"
+# 投喂是 KV PUT，生产环境写入后立即可查需要等最终一致性
+wait_kv "resp=\$(curl -s -H 'X-Admin-Code: $ADMIN' \"$BASE/api/admin/cases?source=manual\"); echo \"\$resp\" | grep -q \"$case_id\" && echo yes" && found="yes" || found="no"
 check "清单里能查到" "yes" "$found"
 
 echo "== 用例 11：软删 → 200 且默认清单不可见、includeDeleted 可见 =="
 code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
   -H 'X-Admin-Code: '$ADMIN'' "$BASE/api/admin/cases/$case_id")
 check "状态码 200" "200" "$code"
-resp=$(curl -s -H 'X-Admin-Code: '$ADMIN'' "$BASE/api/admin/cases?source=manual")
-echo "$resp" | grep -q "$case_id" && found="yes" || found="no"
+# 软删是 KV PUT 覆写，同样等最终一致性：默认清单等到查不到为止
+wait_kv "resp=\$(curl -s -H 'X-Admin-Code: $ADMIN' \"$BASE/api/admin/cases?source=manual\"); echo \"\$resp\" | grep -q \"$case_id\" || echo yes" && found="no" || found="yes"
 check "默认清单已过滤" "no" "$found"
-resp=$(curl -s -H 'X-Admin-Code: '$ADMIN'' "$BASE/api/admin/cases?source=manual&includeDeleted=1")
-echo "$resp" | grep -q '"deleted":true' && found="yes" || found="no"
+wait_kv "resp=\$(curl -s -H 'X-Admin-Code: $ADMIN' \"$BASE/api/admin/cases?source=manual&includeDeleted=1\"); echo \"\$resp\" | grep -q '\"deleted\":true' && echo yes" && found="yes" || found="no"
 check "includeDeleted 可见" "yes" "$found"
 
 echo "== 用例 12：投喂缺 whyGood → 400 =="

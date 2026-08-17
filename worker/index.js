@@ -39,9 +39,13 @@ const MARK_ENUM = ["good", "partial", "wrong"];
 const DEEPSEEK_CONFIG = {
   url: "https://api.deepseek.com/chat/completions",
   model: "deepseek-chat",
-  // 0.7 时模型每次批同一篇稿都在换新挑剔点（好稿被反复判 almost），
-  // 降到 0.3 锚定 prompt 判定规则——批改质量靠规则不靠随机发挥
-  temperature: 0.3,
+  // 温度演进：0.7 → 0.3 → 0。
+  // 0.7：同一稿每次换新挑剔点，好稿永远 almost；
+  // 0.3：本地 3/3 稳定，但线上空案例库时 case2 仍小概率翻车
+  // （复活"就差你了是求情卖惨"旧误判，会误导学员把好句改坏）；
+  // 0：判定完全确定——批改质量靠 prompt 规则，不靠随机发挥。
+  // 文案多样性由不同稿子内容自然产生，教学工具判定正确 > 文案多样。
+  temperature: 0,
   // 教训（2026-08-16）：话术接近 500 字时逐句点评输出会逼近 1200 token 上限，
   // 触发 JSON 截断 → 502"报告格式出错"。上限提到 3000（max_tokens 是上限，
   // 成本按实际输出计，短话术不更贵）
