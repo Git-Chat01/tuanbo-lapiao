@@ -3,7 +3,13 @@
 //   - retrieveCases：批改时检索相似案例注入 prompt——系统越用越懂
 //   - tryAbsorb：过关稿自动吸收（永不抛错，失败只记日志，不阻塞响应）
 //   - addManualCase / listAdminCases / softDeleteCase：教练后台投喂、清单、软删除
-// 存储：Cloudflare KV（binding: CASES），key 格式 case:{epochMs}:{8位hex随机}
+// 存储：Cloudflare KV（binding: CASES）。
+// key 两种格式：
+//   - 教练投喂：case:{epochMs}:{8位hex随机}
+//   - 自动吸收：case:absorb:{voteGap}:{稿子归一化hash}——确定性 key，
+//     同稿同票况永远落同一个 key，重复吸收只是覆盖自己（幂等）。
+//     为什么不用 list 去重：生产 KV 写后读有 ~60s 传播延迟，
+//     短时间内同稿两次过关时 list 读不到第一条 → 会写进两条重复。
 // KV 没有模糊查询 → list 全量 + 内存过滤打分（案例量级几百条，读量远低于免费额度）
 
 // ---- 术语表：写 tags 与检索共用，全部 ≥2 字组合词避免单字误伤 ----
@@ -27,7 +33,7 @@ export function extractTags(script) {
 }
 
 /**
- * 生成案例 key：时间戳前缀保证 list 可近似按创建序扫描，随机段防碰撞。
+ * 生成教练投喂案例 key：时间戳前缀保证 list 可近似按创建序扫描，随机段防碰撞。
  * @returns {string} 形如 case:1755410000000:a1b2c3d4
  */
 function makeCaseId() {
@@ -35,6 +41,19 @@ function makeCaseId() {
   crypto.getRandomValues(bytes);
   const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
   return `case:${Date.now()}:${hex}`;
+}
+
+/**
+ * 稿子归一化指纹：去空白后的 SHA-256 前 8 字节 hex。
+ * 用于吸收 key 的确定性段——同稿同票况指纹相同，吸收幂等。
+ * @param {string} norm - 已归一化（去空白）的话术
+ * @returns {Promise<string>} 16 位 hex
+ */
+async function scriptHash(norm) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(norm));
+  return Array.from(new Uint8Array(digest).slice(0, 8), (b) =>
+    b.toString(16).padStart(2, "0")
+  ).join("");
 }
 
 /**
@@ -112,13 +131,18 @@ export async function retrieveCases(env, { voteGap, script }) {
  */
 export async function tryAbsorb(env, { script, voteGap, report }) {
   const norm = script.replace(/\s+/g, "");
+  // list 去重仍保留：读到重复就直接跳过，省一次写；
+  // KV 读一致性没追上时（生产 ~60s 传播窗口内），由下面的确定性 key 兜底幂等
   const all = await listAllCases(env);
   const dup = all.some(
     (c) => !c.deleted && c.voteGap === voteGap && c.script.replace(/\s+/g, "") === norm
   );
   if (dup) return null;
 
-  const id = makeCaseId();
+  // 确定性 key：同稿同票况永远落同一个 key，重复吸收只是覆盖自己。
+  // 语义说明：教练软删过的同稿再过关会被"复活"（deleted 覆盖回 false）——
+  // 可接受：这稿反复过关说明值得留在库里
+  const id = `case:absorb:${voteGap}:${await scriptHash(norm)}`;
   // verdict_reason / one_thing 本身可能以句号结尾，先去掉尾部标点再拼接，避免"。。"
   const reason = (report.verdict_reason || "").replace(/[。！!]+$/, "");
   const learned = (report.one_thing || "").replace(/[。！!]+$/, "");
