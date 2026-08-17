@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- 隐藏后台：不给任何页面加链接，同时告诉搜索引擎不要收录 -->
+  <meta name="robots" content="noindex, nofollow">
+  <title>拉票话术教练 · 后台</title>
+  <link rel="stylesheet" href="css/common.css">
+  <link rel="stylesheet" href="css/coach.css">
+</head>
+<body>
+  <div class="coach-container">
+    <header class="coach-header">
+      <h1>拉票话术教练 · 后台</h1>
+      <button type="button" id="btn-logout" class="btn-text">退出</button>
+    </header>
+
+    <main class="coach-layout">
+      <!-- 左列：喂好话术（教练投喂 = 权威最高，批改时优先参照） -->
+      <section class="coach-col coach-col--feed">
+        <h2 class="coach-col__title">喂好话术</h2>
+        <p class="coach-col__desc">
+          把学员里、老主播里的好话术喂给教练，越喂越懂。<br>
+          为什么好，写清楚——这是给 AI 的判断尺子。
+        </p>
+
+        <div class="card">
+          <p class="field-label">这条是哪个票数情况说的</p>
+          <div class="chip-group" data-group="voteGap" data-multi="false">
+            <button type="button" class="chip" data-value="far" aria-pressed="false">差一大截</button>
+            <button type="button" class="chip" data-value="close" aria-pressed="false">快够了</button>
+            <button type="button" class="chip" data-value="secured" aria-pressed="false">在保位</button>
+          </div>
+
+          <p class="field-label">话术全文</p>
+          <textarea id="input-script" class="script-input" maxlength="500" rows="6"
+                    placeholder="把主播的原话完整贴进来"></textarea>
+          <div class="char-count" id="script-count">0/500</div>
+
+          <p class="field-label">为什么好 <span class="required-tag">必填</span></p>
+          <textarea id="input-whygood" class="whygood-input" maxlength="200" rows="3"
+                    placeholder="比如：先给紧迫感，再给具体奖励承诺，兑现方式清晰可执行，不空喊"></textarea>
+          <div class="char-count" id="whygood-count">0/200</div>
+
+          <button type="button" id="btn-feed" class="btn-primary btn-block" disabled>投喂给教练</button>
+        </div>
+      </section>
+
+      <!-- 右列：案例库清单 -->
+      <section class="coach-col coach-col--list">
+        <h2 class="coach-col__title">案例库</h2>
+        <div class="tabs" role="tablist">
+          <button type="button" id="tab-auto" class="tab tab--active" role="tab" aria-selected="true">
+            自动吸收清单
+          </button>
+          <button type="button" id="tab-manual" class="tab" role="tab" aria-selected="false">
+            教练投喂清单
+          </button>
+        </div>
+        <p id="list-hint" class="list-hint">
+          学员过关的稿子自动进这里，不需要你天天看。有空翻翻：吸收错了？删掉，再用左边重新投喂（就是改判）。
+        </p>
+
+        <div id="list-container" class="list-container"></div>
+
+        <button type="button" id="btn-load-more" class="btn-outline btn-block" hidden>加载更多</button>
+      </section>
+    </main>
+  </div>
+
+  <!-- 管理密码门：进入后台 + 401 时弹出 -->
+  <div id="auth-modal" class="modal-overlay" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
+      <h2 id="auth-modal-title" class="modal-title">管理密码</h2>
+      <p class="modal-desc">后台只给教练用，输密码进入</p>
+      <input type="password" id="input-admin-code" class="text-input" autocomplete="off"
+             placeholder="管理密码">
+      <p id="auth-error" class="modal-error" hidden>密码不对，重新输入</p>
+      <div class="modal-actions">
+        <button type="button" id="btn-auth-confirm" class="btn-primary">进入</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 全局 toast -->
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+  <!-- 复用 config.js 的 API_BASE（?api= 覆盖同样可用），coach.js 不依赖手机端其他 js -->
+  <script src="js/config.js"></script>
+  <script src="js/coach.js"></script>
+</body>
+</html>

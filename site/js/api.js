@@ -23,13 +23,10 @@ var Api = {
     Api._inFlight = true;
     var requestId = ++Api._requestId;
 
+    // v2 契约：极简 {accessCode, voteGap, script}
     var body = {
       accessCode: App.getAccessCode(),
-      stage: payload.stage,
-      host: payload.host,
-      chat: payload.chat,
-      rival: payload.rival,
-      note: payload.note || "",
+      voteGap: payload.voteGap,
       script: payload.script,
     };
 

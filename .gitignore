@@ -9,3 +9,6 @@ node_modules/
 
 # wrangler dev 本地缓存（Miniflare 状态与临时产物）
 .wrangler/
+
+# 测试临时产物（cases.md 跑批的请求/响应 JSON）
+tests/tmp_results/

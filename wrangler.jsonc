@@ -1,0 +1,13 @@
+// wrangler 部署配置（本地 dev 用命令行参数，线上 deploy 读这里）
+// ⚠️ 安全：这里只放非敏感配置，密钥（DEEPSEEK_API_KEY / ACCESS_CODE）
+// 一律用 wrangler secret put 写入 Cloudflare，绝不写进本文件（本文件会进 git）
+{
+  "name": "tuanbo-lapiao-coach",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-08-16",
+  // 案例库 KV（v2 自成长系统）：过关稿自动吸收 + 教练投喂 + 批改时检索参照
+  // id 由 `wrangler kv namespace create CASES` 生成（2026-08-17）
+  "kv_namespaces": [
+    { "binding": "CASES", "id": "043b6a57fe5e4ce7ad36ec5122056c21" }
+  ]
+}

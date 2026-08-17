@@ -5,10 +5,11 @@ var App = {
   // 表单数据在视图间保留——"改一改再批"回来时不清空
   state: { form: null, lastReport: null, lastRequest: null },
 
-  /** 切换主视图（form / report），只留一个 --active */
+  /** 切换主视图（form / report / passed），只留一个 --active */
   showView: function (name) {
     document.getElementById("view-form").classList.toggle("main-view--active", name === "form");
     document.getElementById("view-report").classList.toggle("main-view--active", name === "report");
+    document.getElementById("view-passed").classList.toggle("main-view--active", name === "passed");
     window.scrollTo(0, 0);
   },
 
