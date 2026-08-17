@@ -18,6 +18,14 @@
 - **verdict 判定**：passed（方向对，发过关页）/ almost（还差一口气）/ off（方向不对）。判定规则：0 个 wrong + 全稿有支点 → passed，没有例外。
 - **自成长案例库**（Cloudflare KV）：过关稿自动吸收（0 ❌ + 有支点 + 无人设卡 + 无红线）+ 教练手动投喂（权威最高）→ 批改新稿时检索注入参照。坏稿永不进库。
 
+## 访问入口
+
+| 入口 | 地址 |
+|------|------|
+| 主播端（手机） | https://git-chat01.github.io/tuanbo-lapiao/ |
+| 教练后台（电脑，隐藏路径） | https://git-chat01.github.io/tuanbo-lapiao/coach.html |
+| API 域名（只给页面 JS 调用，不是给人看的） | https://lapiao.aivar.cc（根路径 302 跳转到主播端） |
+
 ## 目录结构
 
 ```

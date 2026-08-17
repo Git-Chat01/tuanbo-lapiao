@@ -85,6 +85,12 @@ export default {
       );
     }
 
+    // 根路径：API 域名不是给人看的，直接打开时跳到前端页面
+    // （主播/教练会从微信里打开链接，输错域名时落到这里也比看到 JSON 好）
+    if (request.method === "GET" && url.pathname === "/") {
+      return Response.redirect("https://git-chat01.github.io/tuanbo-lapiao/", 302);
+    }
+
     // ---- 教练后台管理接口（隐藏 coach.html 专用）----
     if (url.pathname.startsWith("/api/admin/")) {
       return handleAdmin(request, env, url, corsHeaders);
