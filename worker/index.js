@@ -24,10 +24,11 @@ const VOTE_GAP_ENUM = ["far", "close", "secured"];
 // 文本长度限制（前后端双重限制，后端兜底）
 const LIMITS = {
   scriptMin: 20, // 话术最短 20 字（少于这个没法批）
-  scriptMax: 500,
+  scriptMax: 500, // 批改话术上限：500 字逐句点评已逼近 max_tokens 3000，再长 JSON 会截断（502）
+  feedScriptMax: 800, // 投喂话术上限（1.6×）：投喂只存 KV 不调模型，可以更长
   whyGoodMin: 1, // 投喂理由必填——"为什么好"是 manual 案例的灵魂（给 AI 的判断尺子）
-  whyGoodMax: 200,
-  bodyMaxBytes: 10 * 1024, // 请求体上限 10KB，防超大 payload
+  whyGoodMax: 320, // 投喂理由上限（1.6×200）：给 AI 的判断尺子，太长检索时也读不动
+  bodyMaxBytes: 10 * 1024, // 请求体上限 10KB，防超大 payload（800 字话术 + 320 字理由 < 4KB，安全）
 };
 
 // 批改报告的枚举白名单（不信任模型输出，逃逸枚举 → 502 让前端重试）
@@ -287,9 +288,11 @@ function checkAdminCode(request, env) {
 /**
  * 主播批改参数校验（v2 极简）：票况枚举 + 话术长度。
  * 前端已做同样限制，这里兜底——不信任客户端。
+ * @param {object} body
+ * @param {number} [maxLen] - 话术上限，批改用 scriptMax；投喂传 feedScriptMax（投喂不调模型，可放宽）
  * @returns {{status:number, message:string}|null} 校验通过返回 null
  */
-function validateParams(body) {
+function validateParams(body, maxLen = LIMITS.scriptMax) {
   const bad = (message) => ({ status: 400, message });
 
   if (!body || typeof body !== "object") return bad("请求格式不对");
@@ -299,8 +302,8 @@ function validateParams(body) {
   if (typeof script !== "string" || script.trim().length < LIMITS.scriptMin) {
     return bad("话术太短了，至少写一句完整的话");
   }
-  if (script.length > LIMITS.scriptMax) {
-    return bad("话术太长，精简到 500 字以内");
+  if (script.length > maxLen) {
+    return bad(`话术太长，精简到 ${maxLen} 字以内`);
   }
   return null;
 }
@@ -310,7 +313,7 @@ function validateParams(body) {
  * @returns {{status:number, message:string}|null} 校验通过返回 null
  */
 function validateManual(body) {
-  const base = validateParams(body);
+  const base = validateParams(body, LIMITS.feedScriptMax);
   if (base) return base;
 
   const whyGood = body.whyGood;
@@ -318,7 +321,7 @@ function validateManual(body) {
     return { status: 400, message: "填一下为什么好——这是给 AI 的判断尺子" };
   }
   if (whyGood.length > LIMITS.whyGoodMax) {
-    return { status: 400, message: "为什么好写太长了，精简到 200 字以内" };
+    return { status: 400, message: `为什么好写太长了，精简到 ${LIMITS.whyGoodMax} 字以内` };
   }
   return null;
 }

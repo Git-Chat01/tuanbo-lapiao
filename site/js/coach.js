@@ -245,8 +245,16 @@ var Coach = {
       Coach._toast("话术太短了，至少写一句完整的话");
       return;
     }
+    if (script.length > LIMITS.feedScriptMax) {
+      Coach._toast("话术太长，精简到 " + LIMITS.feedScriptMax + " 字以内");
+      return;
+    }
     if (!whyGood) {
       Coach._toast("填一下为什么好——这是给 AI 的判断尺子");
+      return;
+    }
+    if (whyGood.length > LIMITS.feedWhyGoodMax) {
+      Coach._toast("为什么好写太长了，精简到 " + LIMITS.feedWhyGoodMax + " 字以内");
       return;
     }
 
@@ -310,10 +318,10 @@ var Coach = {
   // ---- 表单状态 ----
   _updateCounts: function () {
     var script = document.getElementById("input-script");
-    document.getElementById("script-count").textContent = script.value.length + "/" + LIMITS.scriptMax;
+    document.getElementById("script-count").textContent = script.value.length + "/" + LIMITS.feedScriptMax;
 
     var whygood = document.getElementById("input-whygood");
-    document.getElementById("whygood-count").textContent = whygood.value.length + "/200";
+    document.getElementById("whygood-count").textContent = whygood.value.length + "/" + LIMITS.feedWhyGoodMax;
 
     Coach._refreshFeedBtn();
   },
