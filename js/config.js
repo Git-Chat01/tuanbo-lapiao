@@ -17,7 +17,8 @@ var LABELS = {
 };
 
 // 文本长度限制（与 worker/index.js 的 LIMITS 保持一致）
-var LIMITS = { scriptMin: 20, scriptMax: 500 };
+// scriptMax=500 只约束主播端批改（DeepSeek 输出边界）；教练后台投喂不调模型，上限更宽
+var LIMITS = { scriptMin: 20, scriptMax: 500, feedScriptMax: 800, feedWhyGoodMax: 320 };
 
 // localStorage 键名
 var STORAGE_KEYS = { accessCode: "tuanbo_access_code" };
