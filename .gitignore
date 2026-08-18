@@ -12,3 +12,6 @@ node_modules/
 
 # 测试临时产物（cases.md 跑批的请求/响应 JSON）
 tests/tmp_results/
+
+# 教练经验随记本——带教经验是产品壁垒，只留在本地给 AI 消化（仓库公开的只有提炼后的 prompt.js）
+docs/
