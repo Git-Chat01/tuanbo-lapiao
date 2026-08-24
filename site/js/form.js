@@ -1,102 +1,192 @@
-// 表单视图（v2 极简）：票况 chip 点选、字数统计、校验、数据收集、状态保留
-// chip 的选中态用 aria-pressed 承载（选中 = true），单选语义由 data-multi 区分
-// 主播端铁律：零思考——全表单只有一个事实性选择（票况），其余就写和交
+// 现场带练表单：系统给场景，主播只看、写、交。
+// 自由话术是次入口；没有场景时明确限制 AI 只判断结构，不猜用户动机。
 
 var Form = {
-  /** 初始化：绑定 chip 点击、字数统计、提交按钮 */
+  _scenario: null,
+  _sceneTimers: [],
+  _draftTimer: null,
+
   init: function () {
-    var chips = document.querySelectorAll(".chip");
-    for (var i = 0; i < chips.length; i++) {
-      chips[i].addEventListener("click", Form._onChipClick);
-    }
+    Form._scenario = TRAINING_SCENARIOS[0] || null;
+    Form._renderScenario();
 
-    document.getElementById("input-script").addEventListener("input", Form._updateCounts);
+    document.getElementById("btn-play-scene").addEventListener("click", Form._playScene);
+    document.getElementById("btn-free-mode").addEventListener("click", Form._toggleFreeMode);
     document.getElementById("btn-submit").addEventListener("click", Form._onSubmit);
-  },
+    document.getElementById("input-script").addEventListener("input", Form._onScriptInput);
 
-  /** chip 点击：单选组互斥（v2 只剩一个单选组） */
-  _onChipClick: function (e) {
-    var chip = e.currentTarget;
-    var group = chip.closest(".chip-group");
-
-    if (group.dataset.multi === "true") {
-      var next = chip.getAttribute("aria-pressed") !== "true";
-      chip.setAttribute("aria-pressed", String(next));
-    } else {
-      var siblings = group.querySelectorAll(".chip");
-      for (var i = 0; i < siblings.length; i++) {
-        siblings[i].setAttribute("aria-pressed", String(siblings[i] === chip));
-      }
+    var voteButtons = document.querySelectorAll(".vote-option");
+    for (var i = 0; i < voteButtons.length; i++) {
+      voteButtons[i].addEventListener("click", Form._onVoteClick);
     }
-    Form._refreshSubmitState();
+
+    Form._restoreDraft();
+    Form._updateInputState();
   },
 
-  /** 字数统计：script 500 字 */
-  _updateCounts: function () {
-    var script = document.getElementById("input-script");
-    var scriptCount = document.getElementById("script-count");
-    scriptCount.textContent = script.value.length + "/" + LIMITS.scriptMax;
-    scriptCount.classList.toggle("char-count--over", script.value.length >= LIMITS.scriptMax);
+  _renderScenario: function () {
+    if (!Form._scenario) return;
+    var scenario = Form._scenario;
+    document.getElementById("training-goal-title").textContent = scenario.title;
+    document.getElementById("scene-time").textContent = Form._formatTime(scenario.secondsLeft);
+    document.getElementById("scene-votes").textContent = String(scenario.votesNeeded);
+    document.getElementById("coach-cue-text").textContent = scenario.coachHint;
 
-    Form._refreshSubmitState();
+    var feed = document.getElementById("scene-feed");
+    feed.innerHTML = "";
+    var events = Array.isArray(scenario.events) ? scenario.events : [];
+    for (var i = 0; i < events.length; i++) {
+      var event = events[i];
+      var item = document.createElement("li");
+      item.className = "scene-feed__item";
+      item.dataset.index = String(i);
+      item.dataset.at = String(Math.max(0, Number(event.at) || 0));
+
+      var time = document.createElement("span");
+      time.className = "scene-feed__time";
+      time.textContent = String(event.at).padStart(2, "0");
+
+      var source = document.createElement("span");
+      source.className = "scene-feed__source scene-feed__source--" + (event.tone || "host");
+      source.textContent = event.source;
+
+      var text = document.createElement("span");
+      text.textContent = event.text;
+
+      item.appendChild(time);
+      item.appendChild(source);
+      item.appendChild(text);
+      feed.appendChild(item);
+    }
   },
 
-  /** 收集当前表单数据为提交格式（v2 契约：{voteGap, script}） */
-  collect: function () {
-    var group = document.querySelector('.chip-group[data-group="voteGap"]');
-    var active = group.querySelector('.chip[aria-pressed="true"]');
+  _formatTime: function (seconds) {
+    var safe = Math.max(0, Number(seconds) || 0);
+    var minutes = Math.floor(safe / 60);
+    var rest = safe % 60;
+    return String(minutes).padStart(2, "0") + ":" + String(rest).padStart(2, "0");
+  },
 
+  _playScene: function (event) {
+    for (var i = 0; i < Form._sceneTimers.length; i++) clearTimeout(Form._sceneTimers[i]);
+    Form._sceneTimers = [];
+
+    var button = event.currentTarget;
+    var label = button.querySelector("span:last-child");
+    var items = document.querySelectorAll(".scene-feed__item");
+    for (var j = 0; j < items.length; j++) items[j].classList.remove("is-playing");
+    label.textContent = "现场回放中…";
+    button.disabled = true;
+
+    Array.prototype.forEach.call(items, function (item, index) {
+      Form._sceneTimers.push(setTimeout(function () {
+        for (var k = 0; k < items.length; k++) items[k].classList.remove("is-playing");
+        item.classList.add("is-playing");
+        if (index === items.length - 1) {
+          Form._sceneTimers.push(setTimeout(function () {
+            item.classList.remove("is-playing");
+            label.textContent = "再看一遍现场回放";
+            button.disabled = false;
+            document.getElementById("input-script").focus();
+          }, 900));
+        }
+      }, (Number(item.dataset.at) || 0) * 1000));
+    });
+  },
+
+  stopSceneReplay: function () {
+    for (var i = 0; i < Form._sceneTimers.length; i++) clearTimeout(Form._sceneTimers[i]);
+    Form._sceneTimers = [];
+    var items = document.querySelectorAll(".scene-feed__item");
+    for (var j = 0; j < items.length; j++) items[j].classList.remove("is-playing");
+    var button = document.getElementById("btn-play-scene");
+    if (!button) return;
+    var label = button.querySelector("span:last-child");
+    if (label) label.textContent = "看 8 秒现场回放";
+    button.disabled = false;
+  },
+
+  _toggleFreeMode: function () {
+    Form._setFreeMode(!App.state.freeMode);
+    Form._saveDraftSoon();
+  },
+
+  _setFreeMode: function (enabled) {
+    App.state.freeMode = Boolean(enabled);
+    if (enabled) Form.stopSceneReplay();
+    document.getElementById("scene-window").hidden = enabled;
+    document.getElementById("coach-cue").hidden = enabled;
+    document.getElementById("free-mode-note").hidden = !enabled;
+    document.getElementById("free-vote-section").hidden = !enabled;
+    document.getElementById("training-goal-title").textContent = enabled
+      ? "把你现场真的说过的话写下来"
+      : (Form._scenario ? Form._scenario.title : "把上票理由说到具体用户身上");
+    document.getElementById("script-label").textContent = enabled
+      ? "你当时是怎么说的？"
+      : "你会怎么接这颗球？";
+    document.getElementById("btn-free-mode").textContent = enabled
+      ? "返回场景带练"
+      : "我有一段自己的话术";
+  },
+
+  _onVoteClick: function (event) {
+    var buttons = document.querySelectorAll(".vote-option");
+    for (var i = 0; i < buttons.length; i++) {
+      buttons[i].setAttribute("aria-pressed", String(buttons[i] === event.currentTarget));
+    }
+    Form._updateInputState();
+    Form._saveDraftSoon();
+  },
+
+  _onScriptInput: function () {
+    Form._updateInputState();
+    Form._saveDraftSoon();
+  },
+
+  _selectedVoteGap: function () {
+    var selected = document.querySelector('.vote-option[aria-pressed="true"]');
+    return selected ? selected.dataset.value : null;
+  },
+
+  _scenarioPayload: function () {
+    if (App.state.freeMode || !Form._scenario) return null;
+    var scenario = Form._scenario;
     return {
-      voteGap: active ? active.dataset.value : null,
-      script: document.getElementById("input-script").value.trim(),
+      id: scenario.id,
+      secondsLeft: scenario.secondsLeft,
+      votesNeeded: scenario.votesNeeded,
+      hostCue: scenario.hostCue,
+      targetUser: scenario.targetUser,
+      userSignal: scenario.userSignal,
+      recentGift: scenario.recentGift,
+      trainingGoal: scenario.trainingGoal,
     };
   },
 
-  /** 校验：票况必选 + 话术 ≥20 字；返回 null 或错误信息 */
+  collect: function () {
+    return {
+      voteGap: App.state.freeMode
+        ? Form._selectedVoteGap()
+        : (Form._scenario ? Form._scenario.voteGap : "close"),
+      script: document.getElementById("input-script").value.trim(),
+      scenario: Form._scenarioPayload(),
+      mode: App.state.freeMode ? "free" : "guided",
+    };
+  },
+
   validate: function (data) {
-    var group = document.querySelector('.chip-group[data-group="voteGap"]');
-    var hasSelection = group.querySelector('.chip[aria-pressed="true"]');
-    group.classList.toggle("chip-group--invalid", !hasSelection);
-    if (!hasSelection) {
-      group.scrollIntoView({ behavior: "smooth", block: "center" });
-      return "先点一下现在票数什么情况";
-    }
-    if (data.script.length < LIMITS.scriptMin) {
-      return "话术太短了，至少写一句完整的话";
-    }
+    if (!data.voteGap) return "先点一下现在票数什么情况";
+    if (data.script.length < LIMITS.scriptMin) return "至少写一句完整的话，教练才看得准";
+    if (data.script.length > LIMITS.scriptMax) return "话术太长，精简到 500 字以内";
     return null;
   },
 
-  /** 恢复表单状态（"改一改再批"回来时不清空） */
-  restore: function (data) {
-    if (!data) return;
-    var group = document.querySelector('.chip-group[data-group="voteGap"]');
-    var chips = group.querySelectorAll(".chip");
-    for (var i = 0; i < chips.length; i++) {
-      chips[i].setAttribute("aria-pressed", String(chips[i].dataset.value === data.voteGap));
-    }
-    document.getElementById("input-script").value = data.script || "";
-    Form._updateCounts();
-  },
-
-  /** 清空表单（过关页"再练一段新的"用：上一轮彻底结束，重新开始） */
-  reset: function () {
-    var chips = document.querySelectorAll(".chip");
-    for (var i = 0; i < chips.length; i++) {
-      chips[i].setAttribute("aria-pressed", "false");
-    }
-    document.getElementById("input-script").value = "";
-    Form._updateCounts();
-  },
-
-  /** 提交按钮可用态：票况已点 + 话术达标 才可点 */
-  _refreshSubmitState: function () {
+  _updateInputState: function () {
     var data = Form.collect();
-    var btn = document.getElementById("btn-submit");
-    btn.disabled = !(data.voteGap && data.script.length >= LIMITS.scriptMin);
+    document.getElementById("script-count").textContent = data.script.length + " / " + LIMITS.scriptMax;
+    document.getElementById("btn-submit").disabled = Boolean(Form.validate(data));
   },
 
-  /** 提交：校验 → 收集 → 调 Api → 按结果切换视图 */
   _onSubmit: function () {
     var data = Form.collect();
     var error = Form.validate(data);
@@ -104,47 +194,134 @@ var Form = {
       App.toast(error);
       return;
     }
-    // 保存本次表单状态，报告页"改一改再批"回来时恢复
+    if (!App.getAccessCode()) {
+      App.showAccessModal(function () { Form._submitData(data); });
+      return;
+    }
+    Form._submitData(data);
+  },
+
+  _submitData: function (data) {
+    if (Api._inFlight) {
+      App.toast("教练正在看上一版，等结果出来再改");
+      return;
+    }
     App.state.form = data;
     App.state.lastRequest = data;
-
-    var btn = document.getElementById("btn-submit");
-    btn.disabled = true;
-    btn.textContent = "教练正在看……";
-    // 等待期间锁表单：防止报告返回前误改，导致展示与快照不一致
-    document.getElementById("view-form").classList.add("main-view--submitting");
+    // 新稿开始批改时，旧稿的 passed / 开口练权限必须立即失效。
+    // 否则新稿 almost 或请求失败后，会误打开上一轮的过关页和旧录音稿。
+    App.state.lastReport = null;
+    App.lockStage("voice");
+    var passedScript = document.getElementById("passed-script");
+    if (passedScript) passedScript.textContent = "";
+    if (window.VoiceCoach && VoiceCoach.reset) VoiceCoach.reset();
+    App.unlockStage("report");
+    App.showView("report");
+    Report.showLoading();
 
     Api.submit(data, {
       onSuccess: function (report) {
         App.state.lastReport = report;
-        // verdict=passed → 过关页；否则 → 报告页
-        if (report.verdict === "passed") {
-          Report.showPassed(report);
-        } else {
-          App.showView("report");
-          Report.showContent(report);
-        }
+        if (report.verdict === "passed") Report.showPassed(report);
+        else Report.showContent(report);
       },
       onError: function (status, message) {
         if (status === 401) {
-          // 入口码不对：回到表单，弹 modal 重输
           App.showView("form");
-          App.showAccessModal(function (code) {
-            App.saveAccessCode(code);
-            App.hideAccessModal();
-            return true;
-          });
+          App.showAccessModal(function () { Form._submitData(data); }, { invalid: true, clear: true });
         } else {
           App.showView("report");
           Report.showError(message);
         }
       },
-      onFinish: function () {
-        btn.disabled = false;
-        btn.textContent = "拿去给教练批";
-        document.getElementById("view-form").classList.remove("main-view--submitting");
-        Form._refreshSubmitState();
-      },
+      onFinish: function () {},
     });
+  },
+
+  submitRevision: function (script) {
+    var base = App.state.lastRequest;
+    if (!base) return;
+    var next = {
+      voteGap: base.voteGap,
+      script: String(script || "").trim(),
+      scenario: base.scenario || null,
+      mode: base.mode || "guided",
+    };
+    var error = Form.validate(next);
+    if (error) {
+      App.toast(error);
+      return;
+    }
+    document.getElementById("input-script").value = next.script;
+    Form._updateInputState();
+    Form._saveDraftSoon();
+    Form._submitData(next);
+  },
+
+  restore: function (data) {
+    if (!data) return;
+    Form._setFreeMode(data.mode === "free" || !data.scenario);
+    document.getElementById("input-script").value = data.script || "";
+    if (data.voteGap) {
+      var buttons = document.querySelectorAll(".vote-option");
+      for (var i = 0; i < buttons.length; i++) {
+        buttons[i].setAttribute("aria-pressed", String(buttons[i].dataset.value === data.voteGap));
+      }
+    }
+    Form._updateInputState();
+  },
+
+  reset: function () {
+    Form._setFreeMode(false);
+    document.getElementById("input-script").value = "";
+    Form._updateInputState();
+    try { localStorage.removeItem(STORAGE_KEYS.draft); } catch (e) {}
+    document.getElementById("draft-status").textContent = "草稿会自动保存";
+  },
+
+  _saveDraftSoon: function () {
+    clearTimeout(Form._draftTimer);
+    var status = document.getElementById("draft-status");
+    status.textContent = "保存中…";
+    status.classList.remove("is-saved");
+    Form._draftTimer = setTimeout(Form._saveDraft, 260);
+  },
+
+  _saveDraft: function () {
+    var data = Form.collect();
+    try {
+      localStorage.setItem(STORAGE_KEYS.draft, JSON.stringify({
+        script: data.script,
+        voteGap: data.voteGap,
+        mode: data.mode,
+        scenarioId: Form._scenario ? Form._scenario.id : null,
+      }));
+      var status = document.getElementById("draft-status");
+      status.textContent = "已自动保存";
+      status.classList.add("is-saved");
+    } catch (e) {
+      document.getElementById("draft-status").textContent = "这台设备无法保存草稿";
+    }
+  },
+
+  _restoreDraft: function () {
+    try {
+      var raw = localStorage.getItem(STORAGE_KEYS.draft);
+      if (!raw) return;
+      var draft = JSON.parse(raw);
+      if (!draft || typeof draft.script !== "string") return;
+      Form._setFreeMode(draft.mode === "free");
+      document.getElementById("input-script").value = draft.script;
+      if (draft.voteGap) {
+        var buttons = document.querySelectorAll(".vote-option");
+        for (var i = 0; i < buttons.length; i++) {
+          buttons[i].setAttribute("aria-pressed", String(buttons[i].dataset.value === draft.voteGap));
+        }
+      }
+      document.getElementById("draft-status").textContent = "已恢复上次草稿";
+      document.getElementById("draft-status").classList.add("is-saved");
+    } catch (e) {
+      // 草稿损坏或存储不可用时直接忽略，不阻断练习。
+    }
   },
 };

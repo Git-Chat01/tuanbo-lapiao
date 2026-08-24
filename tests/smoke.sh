@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# v2 冒烟测试：批改接口 5 用例 + 管理接口 5 用例 + 健康检查，共 12 用例
+# v3 冒烟测试：批改接口 7 用例 + 管理接口 5 用例 + 健康检查，共 13 用例
 # 用法：BASE=http://127.0.0.1:8787 CODE=入口码 ADMIN=管理密码 ./tests/smoke.sh
 # 输出 PASS/FAIL 行，任何 FAIL 都以非零码退出
 #
@@ -49,7 +49,7 @@ echo "== 用例 1：健康检查 → 200 =="
 code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Origin: http://localhost:8080' "$BASE/health")
 check "状态码 200" "200" "$code"
 
-echo "== 用例 2：合法批改 → 200 + v2 新契约字段 =="
+echo "== 用例 2：合法批改 → 200 + v3 五项结构字段 =="
 resp=$(curl -s -w '\n%{http_code}' -X POST "$BASE/api/coach" \
   -H 'Content-Type: application/json' -H 'Origin: http://localhost:8080' \
   -d "$GOOD_BODY")
@@ -64,6 +64,8 @@ echo "$body" | grep -q '"one_thing"' && has="yes" || has="no"
 check "含 one_thing" "yes" "$has"
 echo "$body" | grep -q '"direction"' && has="yes" || has="no"
 check "含 direction" "yes" "$has"
+echo "$body" | grep -q '"structure_checks"' && has="yes" || has="no"
+check "含 structure_checks" "yes" "$has"
 
 echo "== 用例 3：错入口码 → 401 =="
 BAD_BODY='{"accessCode":"wrong-code-xyz","voteGap":"far","script":"家人们帮帮忙我第一次播求求大家可怜可怜我给我上点票吧我不想被淘汰"}'
@@ -98,16 +100,23 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/coach" \
   -d "$OLD_BODY")
 check "状态码 400" "400" "$code"
 
-echo "== 用例 8：管理接口无 X-Admin-Code → 401 =="
+echo "== 用例 8：非法现场数字 → 400 =="
+BAD_SCENARIO_BODY='{"accessCode":"'$CODE'","voteGap":"close","script":"我是首播的小满谢谢凯哥刚才送的小心心我还想继续跳给大家看","scenario":{"secondsLeft":-1}}'
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/coach" \
+  -H 'Content-Type: application/json' -H 'Origin: http://localhost:8080' \
+  -d "$BAD_SCENARIO_BODY")
+check "状态码 400" "400" "$code"
+
+echo "== 用例 9：管理接口无 X-Admin-Code → 401 =="
 code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Origin: http://localhost:8080' "$BASE/api/admin/cases")
 check "状态码 401" "401" "$code"
 
-echo "== 用例 9：管理接口错头 → 401 =="
+echo "== 用例 10：管理接口错头 → 401 =="
 code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Origin: http://localhost:8080' \
   -H 'X-Admin-Code: wrong-admin-xyz' "$BASE/api/admin/cases")
 check "状态码 401" "401" "$code"
 
-echo "== 用例 10：投喂案例 → 201 且可查到 =="
+echo "== 用例 11：投喂案例 → 201 且可查到 =="
 FEED_BODY='{"voteGap":"close","script":"家人们，最后三分钟啦，动动你们的小手指，把票投起来！今晚谁帮我守到第一，明天我单独给他唱一首，说到做到！","whyGood":"先给紧迫感，再给具体奖励承诺，兑现方式清晰可执行，不空喊"}'
 resp=$(curl -s -w '\n%{http_code}' -X POST "$BASE/api/admin/cases" \
   -H 'Content-Type: application/json' -H 'X-Admin-Code: '$ADMIN'' \
@@ -121,7 +130,7 @@ check "返回案例 id" "yes" "$([ -n "$case_id" ] && echo yes || echo no)"
 wait_kv "resp=\$(curl -s -H 'X-Admin-Code: $ADMIN' \"$BASE/api/admin/cases?source=manual\"); echo \"\$resp\" | grep -q \"$case_id\" && echo yes" && found="yes" || found="no"
 check "清单里能查到" "yes" "$found"
 
-echo "== 用例 11：软删 → 200 且默认清单不可见、includeDeleted 可见 =="
+echo "== 用例 12：软删 → 200 且默认清单不可见、includeDeleted 可见 =="
 code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
   -H 'X-Admin-Code: '$ADMIN'' "$BASE/api/admin/cases/$case_id")
 check "状态码 200" "200" "$code"
@@ -131,7 +140,7 @@ check "默认清单已过滤" "no" "$found"
 wait_kv "resp=\$(curl -s -H 'X-Admin-Code: $ADMIN' \"$BASE/api/admin/cases?source=manual&includeDeleted=1\"); echo \"\$resp\" | grep -q '\"deleted\":true' && echo yes" && found="yes" || found="no"
 check "includeDeleted 可见" "yes" "$found"
 
-echo "== 用例 12：投喂缺 whyGood → 400 =="
+echo "== 用例 13：投喂缺 whyGood → 400 =="
 NO_WHY_BODY='{"voteGap":"close","script":"家人们，最后三分钟啦，动动你们的小手指，把票投起来！今晚谁帮我守到第一，明天我单独给他唱一首，说到做到！"}'
 code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/admin/cases" \
   -H 'Content-Type: application/json' -H 'X-Admin-Code: '$ADMIN'' \

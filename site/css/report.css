@@ -1,241 +1,223 @@
-/* 批改报告视图（v2）：verdict 大字卡、诊断卡、红线横幅、五段卡片、折叠示例、过关页 */
-
-.report-loading {
-  text-align: center;
-  padding: calc(2 * var(--space-xl)) var(--space-lg);
-}
-.report-loading p { font-size: var(--font-size-md); color: var(--color-text-secondary); }
-.loading-sub { font-size: var(--font-size-sm); color: var(--color-text-muted); margin-top: var(--space-xs); }
-
-/* 错误卡 */
-.report-error { margin-bottom: var(--space-md); }
-.error-card {
-  background: var(--color-card);
-  border-radius: var(--radius-md);
-  padding: var(--space-xl);
+.presenter-page .coach-thinking {
+  min-height: 430px;
+  padding: 52px 10px 20px;
   text-align: center;
 }
-.error-card p { color: var(--color-text-secondary); margin-bottom: var(--space-lg); }
-
-/* ①②④⑤ 通用段落卡片 */
-.report-section {
-  background: var(--color-card);
-  border-radius: var(--radius-md);
-  padding: var(--space-lg);
-  margin-bottom: var(--space-md);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+.presenter-page .coach-thinking__line {
+  display: block;
+  width: 64px;
+  height: 4px;
+  margin: 0 auto 22px;
+  background: var(--stage-red);
+  animation: thinking-line 1.2s var(--stage-ease) infinite alternate;
 }
-.report-section__title {
+.presenter-page .coach-thinking h1 { margin: 0 0 8px; font-size: var(--font-size-xl); }
+.presenter-page .coach-thinking p { margin: 0 auto; max-width: 290px; color: var(--stage-muted); }
+.presenter-page .coach-thinking__steps {
   display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  font-size: var(--font-size-sm);
-  font-weight: 600;
-  color: var(--color-primary);
-  margin-bottom: var(--space-sm);
+  justify-content: center;
+  gap: 8px;
+  margin-top: 22px;
 }
-.report-section__body { font-size: var(--font-size-md); line-height: 1.7; }
+.presenter-page .coach-thinking__steps span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--stage-line);
+  animation: thinking-dot 1.1s ease-in-out infinite;
+}
+.presenter-page .coach-thinking__steps span:nth-child(2) { animation-delay: 140ms; }
+.presenter-page .coach-thinking__steps span:nth-child(3) { animation-delay: 280ms; }
 
-/* ④ 只记一件事：视觉权重最高的强调卡 */
-.report-section--highlight {
-  background: var(--color-primary-soft);
-  border: 1px solid var(--color-primary);
-  border-radius: var(--radius-lg);
+.presenter-page .report-error {
+  padding: 18px;
+  color: #7d2e2d;
+  background: #fbe7e4;
 }
-.report-section--highlight .report-section__title { color: var(--color-primary-dark); }
-.report-section--highlight .report-section__body {
-  font-size: var(--font-size-lg);
-  font-weight: 600;
-  line-height: 1.6;
+.presenter-page .report-error p { margin: 0; }
+
+.presenter-page .redline-banner {
+  margin-bottom: 14px;
+  padding: 14px 16px;
+  color: #fff;
+  background: #a8222a;
+  border-left: 5px solid var(--stage-amber);
 }
 
-/* ③ 逐句点评列表 */
-.review-list { list-style: none; }
-.review-item {
-  border-radius: var(--radius-md);
-  padding: var(--space-md) var(--space-lg);
-  margin-bottom: var(--space-sm);
-  border-left: 4px solid transparent;
-  background: var(--color-card);
+.presenter-page .review-heading {
+  margin-bottom: 16px;
+  padding-left: 12px;
+  border-left: 3px solid var(--stage-red);
 }
-.review-item--good { border-left-color: var(--color-good); background: var(--color-good-bg); }
-.review-item--partial { border-left-color: var(--color-warn); background: var(--color-warn-bg); }
-.review-item--wrong { border-left-color: var(--color-bad); background: var(--color-bad-bg); }
+.presenter-page .review-heading > span { color: var(--stage-red-dark); font-size: var(--font-size-sm); }
+.presenter-page .review-heading h1 { margin: 2px 0 0; font-size: var(--font-size-xl); line-height: 1.38; }
+.presenter-page .review-heading p { margin: 7px 0 0; color: var(--stage-muted); }
 
-.review-item__head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  margin-bottom: var(--space-xs);
+.presenter-page .structure-track {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 5px;
+  margin: 4px 0 18px;
 }
-.review-item__mark { font-size: var(--font-size-sm); font-weight: 700; white-space: nowrap; }
-.review-item--good .review-item__mark { color: var(--color-good); }
-.review-item--partial .review-item__mark { color: var(--color-warn); }
-.review-item--wrong .review-item__mark { color: var(--color-bad); }
-.review-item__original {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-secondary);
-  font-style: italic;
-  flex: 1;
+.presenter-page .structure-check,
+.presenter-page .structure-track > span {
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: 5px;
+  color: var(--stage-muted);
+  text-align: center;
+  font-size: var(--font-size-xs);
 }
-.review-item__comment { font-size: var(--font-size-sm); line-height: 1.65; }
+.presenter-page .structure-check::before,
+.presenter-page .structure-track > span::before {
+  content: "";
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #ddd3cc;
+  box-shadow: inset 0 0 0 6px var(--stage-canvas);
+  border: 1px solid #bbaeae;
+}
+.presenter-page .structure-check--met::before,
+.presenter-page .structure-track--passed > span::before {
+  border-color: var(--stage-mint);
+  background: var(--stage-mint);
+  box-shadow: inset 0 0 0 5px var(--stage-mint-soft);
+}
+.presenter-page .structure-check--partial,
+.presenter-page .structure-check--missing { color: var(--stage-red-dark); }
+.presenter-page .structure-check--partial::before,
+.presenter-page .structure-check--missing::before {
+  border-color: var(--stage-amber);
+  background: var(--stage-amber);
+  box-shadow: inset 0 0 0 5px var(--stage-warn-soft);
+}
 
-/* ⑤ 修改方向 + 折叠示例 */
-.example-toggle {
-  width: 100%;
+.presenter-page .focus-paper,
+.presenter-page .passed-paper {
+  position: relative;
+  padding: 18px 18px 20px;
+  background: var(--stage-paper);
+  box-shadow: 0 7px 20px rgba(76, 52, 45, 0.09);
+  clip-path: polygon(0 0, 97% 0, 100% 5%, 100% 100%, 0 100%);
+}
+.presenter-page .focus-paper__head,
+.presenter-page .passed-paper__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 44px;
-  padding: var(--space-sm) var(--space-md);
-  margin-top: var(--space-md);
-  border-radius: var(--radius-sm);
-  background: var(--color-divider);
+  gap: 12px;
+  color: var(--stage-red-dark);
   font-size: var(--font-size-sm);
-  color: var(--color-primary);
-  font-weight: 600;
-}
-.example-toggle__arrow { transition: transform 0.15s; }
-.example-toggle[aria-expanded="true"] .example-toggle__arrow { transform: rotate(180deg); }
-
-.example-panel { margin-top: var(--space-sm); }
-.example-list { list-style: none; }
-.example-item {
-  font-size: var(--font-size-sm);
-  line-height: 1.6;
-  padding: var(--space-md);
-  margin-bottom: var(--space-sm);
-  background: var(--color-divider);
-  border-radius: var(--radius-sm);
-  color: var(--color-text-secondary);
-}
-.example-tip {
-  font-size: var(--font-size-xs);
-  color: var(--color-primary);
-  margin-bottom: var(--space-sm);
-}
-
-/* 底部操作 */
-.report-actions {
-  display: flex;
-  gap: var(--space-md);
-  margin-top: var(--space-lg);
-}
-.report-actions .btn-outline { flex: 1; min-height: 48px; }
-
-/* ---- ① verdict 大字卡：结论第一眼看到，三色区分 ---- */
-.verdict-card {
-  border-radius: var(--radius-lg);
-  padding: var(--space-xl);
-  margin-bottom: var(--space-md);
-  text-align: center;
-}
-.verdict-card__text {
-  font-size: 28px;
-  font-weight: 800;
-  margin-bottom: var(--space-sm);
-}
-.verdict-card__reason {
-  font-size: var(--font-size-sm);
-  line-height: 1.7;
-}
-.verdict-card--off { background: var(--color-bad-bg); border: 1px solid var(--color-bad); }
-.verdict-card--off .verdict-card__text { color: var(--color-bad); }
-.verdict-card--off .verdict-card__reason { color: #8A2F2F; }
-.verdict-card--almost { background: var(--color-warn-bg); border: 1px solid var(--color-warn); }
-.verdict-card--almost .verdict-card__text { color: var(--color-warn); }
-.verdict-card--almost .verdict-card__reason { color: #7A5A12; }
-.verdict-card--passed { background: var(--color-good-bg); border: 1px solid var(--color-good); }
-.verdict-card--passed .verdict-card__text { color: var(--color-good); }
-.verdict-card--passed .verdict-card__reason { color: #14613C; }
-
-/* ---- 红线横幅：红底白字，最扎眼的警告 ---- */
-.redline-banner {
-  background: var(--color-bad);
-  color: #fff;
-  font-size: var(--font-size-sm);
-  font-weight: 600;
-  line-height: 1.6;
-  padding: var(--space-md) var(--space-lg);
-  border-radius: var(--radius-md);
-  margin-bottom: var(--space-md);
-}
-
-/* ---- ② 诊断卡：卡在哪 + 对谁喊话 ---- */
-.diagnosis-card {
-  border-left: 4px solid var(--color-primary);
-}
-.diagnosis-card__badge {
-  display: inline-block;
-  font-size: var(--font-size-md);
   font-weight: 700;
-  color: var(--color-primary-dark);
-  background: var(--color-primary-soft);
-  border-radius: var(--radius-sm);
-  padding: var(--space-xs) var(--space-md);
-  margin-bottom: var(--space-sm);
 }
-.diagnosis-card__why {
-  font-size: var(--font-size-md);
-  line-height: 1.7;
-  margin-bottom: var(--space-sm);
+.presenter-page .focus-paper__tag,
+.presenter-page .passed-paper__head span:last-child {
+  padding: 3px 8px;
+  background: var(--stage-warn-soft);
 }
-.diagnosis-card__audience {
-  font-size: var(--font-size-sm);
-  line-height: 1.7;
-  color: var(--color-text-secondary);
-  background: var(--color-divider);
-  border-radius: var(--radius-sm);
-  padding: var(--space-sm) var(--space-md);
+.presenter-page .focus-paper h2 { margin: 10px 0 12px; font-size: var(--font-size-lg); line-height: 1.5; }
+.presenter-page .focus-paper blockquote {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--stage-amber);
+  color: #6e4b1d;
+  background: #fff2d8;
 }
-.diagnosis-card__audience-label {
-  color: var(--color-primary);
-  font-weight: 600;
-  margin-right: var(--space-xs);
-}
-
-/* ---- 过关页（view-passed） ---- */
-.passed-hero {
-  text-align: center;
-  padding: var(--space-xl) 0 var(--space-lg);
-}
-.passed-hero__icon { font-size: 52px; margin-bottom: var(--space-sm); }
-.passed-hero__title {
-  font-size: var(--font-size-xl);
-  font-weight: 800;
-  color: var(--color-good);
-  margin-bottom: var(--space-xs);
-}
-.passed-hero__sub {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-secondary);
+.presenter-page .focus-paper__why { margin: 0; color: var(--stage-muted); }
+.presenter-page .focus-paper__line {
+  width: 58%;
+  height: 3px;
+  margin-top: 16px;
+  transform: rotate(-1deg);
+  background: var(--stage-red);
+  opacity: 0.72;
 }
 
-/* 定稿卡：稿子是主播自己的，完整展示 + 复制 */
-.passed-script-card { border: 1px solid var(--color-good); }
-.passed-script {
-  font-size: var(--font-size-md);
-  line-height: 1.8;
-  background: var(--color-good-bg);
-  border-radius: var(--radius-sm);
-  padding: var(--space-lg);
-  margin-bottom: var(--space-md);
+.presenter-page .revision-desk { margin-top: 17px; }
+.presenter-page .revision-desk label { display: block; margin-bottom: 8px; font-weight: 700; }
+.presenter-page .revision-input {
+  width: 100%;
+  min-height: 155px;
+  resize: vertical;
+  padding: 14px;
+  border: 1px solid var(--stage-line);
+  border-radius: 10px;
+  color: var(--stage-text);
+  background: var(--stage-paper);
+  line-height: 1.7;
+}
+.presenter-page .revision-count { margin-top: 5px; color: var(--stage-muted); font-size: var(--font-size-sm); text-align: right; }
+.presenter-page .revision-submit { margin-top: 14px; }
+
+.presenter-page .review-details {
+  margin-top: 14px;
+  padding-top: 4px;
+  border-top: 1px solid var(--stage-line);
+  color: var(--stage-muted);
+}
+.presenter-page .review-details summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  color: var(--stage-text);
+  cursor: pointer;
+}
+.presenter-page .review-details p { margin: 4px 0 10px; }
+
+.presenter-page .line-review-list { list-style: none; margin: 0; padding: 0; }
+.presenter-page .line-review-item {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--stage-line);
+  background: rgba(255, 249, 238, 0.72);
+}
+.presenter-page .line-review-item--good { border-left-color: var(--stage-mint); }
+.presenter-page .line-review-item--partial { border-left-color: var(--stage-amber); }
+.presenter-page .line-review-item--wrong { border-left-color: var(--stage-red); }
+.presenter-page .line-review-item strong { display: block; color: var(--stage-text); }
+.presenter-page .line-review-item p { margin: 5px 0 0; }
+
+.presenter-page .report-actions {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+.presenter-page .report-actions #btn-retry:not([hidden]) { margin-top: 0; }
+
+.presenter-page .training-goal--passed { border-left-color: var(--stage-mint); }
+.presenter-page .training-goal--passed > span { color: #147651; }
+.presenter-page .passed-paper { border-top: 4px solid var(--stage-mint); }
+.presenter-page .passed-paper__head { color: #147651; }
+.presenter-page .passed-paper__head span:last-child { background: var(--stage-mint-soft); }
+.presenter-page #passed-learn p { margin: 12px 0 0; }
+.presenter-page #passed-learn p:first-child { margin-top: 10px; font-size: var(--font-size-lg); }
+
+.presenter-page .passed-script-section { margin-top: 17px; }
+.presenter-page .passed-script-section h2 { margin: 0 0 9px; font-size: var(--font-size-md); }
+.presenter-page .passed-script {
+  padding: 14px;
   white-space: pre-wrap;
-  word-break: break-all;
+  word-break: break-word;
+  background: var(--stage-paper);
+  border-left: 3px solid var(--stage-amber);
+  line-height: 1.75;
+}
+.presenter-page #view-passed .training-primary { margin-top: 18px; }
+.presenter-page #view-passed .training-secondary { margin-top: 8px; }
+
+@keyframes thinking-line {
+  from { transform: scaleX(0.45); opacity: 0.45; }
+  to { transform: scaleX(1); opacity: 1; }
+}
+@keyframes thinking-dot {
+  0%, 100% { transform: translateY(0); background: var(--stage-line); }
+  50% { transform: translateY(-5px); background: var(--stage-red); }
 }
 
-/* 学会了什么：分块段落，最后一条（one_thing）加粗 */
-.passed-learn__block {
-  font-size: var(--font-size-md);
-  line-height: 1.7;
-  margin-bottom: var(--space-sm);
-}
-.passed-learn__block:last-child { margin-bottom: 0; }
-.passed-learn__block--strong { font-weight: 700; color: var(--color-primary-dark); }
-
-/* 过关提醒：温和灰卡，不抢定稿的视觉焦点 */
-.passed-note p {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-muted);
-  line-height: 1.7;
+@media (max-width: 350px) {
+  .presenter-page .focus-paper,
+  .presenter-page .passed-paper { padding-inline: 14px; }
+  .presenter-page .structure-track { gap: 2px; }
 }

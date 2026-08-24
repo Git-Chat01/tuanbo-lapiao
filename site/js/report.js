@@ -1,31 +1,25 @@
-// 报告视图（v2）：verdict 大字卡 → 诊断卡 → 红线横幅 → echo → one_thing
-//   → 逐句点评(折叠) → direction(折叠)；过关页 showPassed() + 复制降级链
-// ⚠️ 安全铁律：报告内容全部来自模型输出，一律用 textContent 赋值，禁 innerHTML
-// 设计铁律：结论大字在前（10 秒看得懂），细节折叠（想细看再展开）
+// 文字复盘：五项结构看进度，一轮只改一个关键缺口。
+// 所有模型内容都通过 textContent 写入，避免把模型输出当成 HTML。
 
 var Report = {
-  // 卡点类型 → 大字标签（与 worker 的 CARD_TYPE_ENUM 一致）
-  CARD_LABELS: {
-    logic: "逻辑卡住了",
-    expression: "表达卡住了",
-    mentality: "心态卡住了",
-    persona: "人设卡住了",
-  },
-  // verdict → 大字卡文案与样式（passed 正常不进报告页，此处兜底渲染）
-  VERDICT_UI: {
-    passed: { text: "过关了", cls: "verdict-card--passed" },
-    almost: { text: "还差一口气", cls: "verdict-card--almost" },
-    off: { text: "方向不对", cls: "verdict-card--off" },
-  },
+  STRUCTURE: [
+    { key: "self_intro", label: "认识我" },
+    { key: "gratitude", label: "接礼物" },
+    { key: "target_user", label: "点到人" },
+    { key: "user_reason", label: "给理由" },
+    { key: "vote_instruction", label: "票数指令" },
+  ],
+
+  _loadingTimer: null,
 
   init: function () {
     document.getElementById("btn-back-edit").addEventListener("click", Report._onBackEdit);
     document.getElementById("btn-retry").addEventListener("click", Report._onRetry);
     document.getElementById("btn-copy").addEventListener("click", Report._onCopy);
     document.getElementById("btn-new-round").addEventListener("click", Report._onNewRound);
+    document.getElementById("btn-start-voice").addEventListener("click", Report._onStartVoice);
   },
 
-  /** 小助手：创建元素，可选 className 与文本（textContent 防 XSS） */
   _el: function (tag, className, text) {
     var node = document.createElement(tag);
     if (className) node.className = className;
@@ -33,368 +27,387 @@ var Report = {
     return node;
   },
 
-  /** 渲染完整报告（v2 顺序） */
-  showContent: function (report) {
-    document.getElementById("report-loading").hidden = true;
-    document.getElementById("report-error").hidden = true;
-    document.getElementById("btn-retry").hidden = true;
-
-    var content = document.getElementById("report-content");
-    content.innerHTML = ""; // 清空旧报告（此时才允许 innerHTML，只用于清空）
-    content.hidden = false;
-
-    // ① verdict 大字卡：结论第一眼看到
-    content.appendChild(Report._verdictCard(report));
-
-    // 红线横幅：独立元素（红底白字，最扎眼的警告，不许被内容埋没）
-    Report._showRedlineBanner(report.redline_note);
-
-    // ② 诊断卡：卡在哪 + 对谁喊话（教学点从表单搬进报告）
-    content.appendChild(Report._diagnosisCard(report));
-
-    // ③ 先接住你
-    content.appendChild(Report._section("教练先接住你", report.echo));
-
-    // ④ 这次只记一件事（高亮卡）
-    var highlight = Report._section("这次只记一件事", report.one_thing);
-    highlight.classList.add("report-section--highlight");
-    content.appendChild(highlight);
-
-    // ⑤ 逐句点评（默认折叠，按钮带统计）
-    content.appendChild(Report._lineReviewsCollapsible(report.line_reviews || []));
-
-    // ⑥ 修改方向 + 折叠示例
-    content.appendChild(Report._direction(report.direction));
-
-    // 重新批一次：同参数重发（应对 504/502 重试与模型抽风）
-    document.getElementById("btn-retry").hidden = false;
+  _clear: function (node) {
+    while (node && node.firstChild) node.removeChild(node.firstChild);
   },
 
-  /** ① verdict 大字卡：verdict 文案 + 判定理由 */
-  _verdictCard: function (report) {
-    var ui = Report.VERDICT_UI[report.verdict] || Report.VERDICT_UI.off;
-    var card = Report._el("section", "verdict-card " + ui.cls);
-    card.appendChild(Report._el("div", "verdict-card__text", ui.text));
-    card.appendChild(Report._el("div", "verdict-card__reason", report.verdict_reason || ""));
-    return card;
+  _checks: function (report) {
+    var incoming = Array.isArray(report.structure_checks) ? report.structure_checks : [];
+    return Report.STRUCTURE.map(function (definition) {
+      var found = null;
+      for (var i = 0; i < incoming.length; i++) {
+        if (incoming[i] && incoming[i].key === definition.key) {
+          found = incoming[i];
+          break;
+        }
+      }
+      var status = found && ["met", "partial", "missing"].indexOf(found.status) >= 0
+        ? found.status
+        : (report.verdict === "passed" ? "met" : "missing");
+      return {
+        key: definition.key,
+        label: definition.label,
+        status: status,
+        evidence: found && typeof found.evidence === "string" ? found.evidence : "这一项还没说清楚",
+      };
+    });
   },
 
-  /** 红线横幅（report-content 之外的独立元素，红底白字） */
-  _showRedlineBanner: function (redlineNote) {
-    var banner = document.getElementById("redline-banner");
-    if (!banner) return;
-    if (redlineNote) {
-      banner.textContent = "🚫 " + redlineNote;
-      banner.hidden = false;
-    } else {
-      banner.hidden = true;
+  _focusCheck: function (checks, report) {
+    for (var i = 0; i < checks.length; i++) {
+      if (checks[i].status !== "met") return checks[i];
     }
+
+    // 结构全齐不代表一定过关：红线、AI 腔或某句站错角度仍是真正的本轮焦点。
+    // 不能因为找不到结构缺口就默认让学员回去改“自我介绍”。
+    if (report && report.redline_note) {
+      return { key: "redline", label: "不能播的表达", status: "missing", evidence: report.redline_note };
+    }
+    if (report && (report.card_type === "persona" || report.ai_flavor)) {
+      return {
+        key: "persona",
+        label: "自己的语气",
+        status: "partial",
+        evidence: report.ai_flavor || report.card_why || "结构齐了，但还像一套谁都能念的话。",
+      };
+    }
+    var reviews = report && Array.isArray(report.line_reviews) ? report.line_reviews : [];
+    for (var j = 0; j < reviews.length; j++) {
+      if (reviews[j] && reviews[j].mark !== "good") {
+        return {
+          key: "line_angle",
+          label: "说话角度",
+          status: "partial",
+          evidence: reviews[j].original || reviews[j].comment || "有一句还需要换到观众角度。",
+        };
+      }
+    }
+    return {
+      key: "final_polish",
+      label: "关键一句",
+      status: "partial",
+      evidence: (report && (report.verdict_reason || report.card_why)) || "结构齐了，再把最关键的一句说到观众身上。",
+    };
   },
 
-  /** ② 诊断卡：卡点类型 + 依据 + 对谁喊话 */
-  _diagnosisCard: function (report) {
-    var section = Report._el("section", "report-section diagnosis-card");
-    section.appendChild(Report._el("h2", "report-section__title", "教练先看你卡在哪"));
+  _heading: function (report) {
+    var heading = Report._el("header", "review-heading");
+    var eyebrow = report.verdict === "off" ? "这版先别带进直播间" : "方向对了，再补一处";
+    var title = report.one_thing || report.verdict_reason || "先把一个关键点说到人身上";
+    heading.appendChild(Report._el("span", null, eyebrow));
+    heading.appendChild(Report._el("h1", null, title));
+    if (report.echo) heading.appendChild(Report._el("p", null, report.echo));
+    return heading;
+  },
 
-    var badge = Report._el(
-      "span",
-      "diagnosis-card__badge",
-      Report.CARD_LABELS[report.card_type] || report.card_type
-    );
-    section.appendChild(badge);
+  _structureTrack: function (checks) {
+    var track = Report._el("div", "structure-track");
+    track.setAttribute("aria-label", "本轮五项话术结构完成情况");
+    checks.forEach(function (check) {
+      var item = Report._el(
+        "span",
+        "structure-check structure-check--" + check.status,
+        check.label
+      );
+      var stateText = check.status === "met" ? "已做到" : check.status === "partial" ? "还差一点" : "未出现";
+      item.title = check.label + "：" + stateText + "。" + check.evidence;
+      item.setAttribute("aria-label", item.title);
+      track.appendChild(item);
+    });
+    return track;
+  },
 
-    section.appendChild(Report._el("div", "diagnosis-card__why", report.card_why || ""));
+  _focusWhy: function (report, focus) {
+    var reviews = Array.isArray(report.line_reviews) ? report.line_reviews : [];
+    for (var i = 0; i < reviews.length; i++) {
+      if (reviews[i] && reviews[i].mark !== "good" && reviews[i].comment) return reviews[i].comment;
+    }
+    return report.card_why || report.verdict_reason || (focus.label + "没落到现场，观众就不知道怎么接你的话。");
+  },
+
+  _focusPaper: function (report, focus) {
+    var paper = Report._el("section", "focus-paper");
+    var head = Report._el("div", "focus-paper__head");
+    head.appendChild(Report._el("span", null, "本轮只改一处"));
+    head.appendChild(Report._el("span", "focus-paper__tag", focus.label));
+    paper.appendChild(head);
+
+    var title = focus.status === "missing"
+      ? "先补上“" + focus.label + "”"
+      : "把“" + focus.label + "”再说具体一点";
+    if (report.redline_note) title = "先改掉不能播的表达";
+    paper.appendChild(Report._el("h2", null, title));
+    paper.appendChild(Report._el("blockquote", null, report.redline_note || focus.evidence));
+    paper.appendChild(Report._el("p", "focus-paper__why", Report._focusWhy(report, focus)));
+    paper.appendChild(Report._el("div", "focus-paper__line"));
+    return paper;
+  },
+
+  _revisionDesk: function () {
+    var section = Report._el("section", "revision-desk");
+    var label = Report._el("label", null, "就在原话上改，不用推翻重写");
+    label.setAttribute("for", "revision-script");
+    section.appendChild(label);
+
+    var input = Report._el("textarea", "revision-input");
+    input.id = "revision-script";
+    input.maxLength = LIMITS.scriptMax;
+    input.rows = 7;
+    input.value = App.state.lastRequest ? App.state.lastRequest.script : "";
+    section.appendChild(input);
+
+    var count = Report._el("div", "revision-count");
+    var syncCount = function () {
+      count.textContent = input.value.trim().length + " / " + LIMITS.scriptMax;
+    };
+    input.addEventListener("input", syncCount);
+    syncCount();
+    section.appendChild(count);
+
+    var button = Report._el("button", "training-primary revision-submit", "改好，再让教练看");
+    button.type = "button";
+    button.addEventListener("click", function () {
+      Form.submitRevision(input.value);
+    });
+    section.appendChild(button);
+    return section;
+  },
+
+  _fullReview: function (report, checks) {
+    var details = Report._el("details", "review-details");
+    details.appendChild(Report._el("summary", null, "为什么这样判断 · 查看完整复盘"));
 
     if (report.audience) {
-      var audience = Report._el("div", "diagnosis-card__audience");
-      audience.appendChild(Report._el("span", "diagnosis-card__audience-label", "你这话是对谁喊的："));
-      audience.appendChild(Report._el("span", null, report.audience));
-      section.appendChild(audience);
+      var audience = Report._el("p");
+      audience.appendChild(Report._el("strong", null, "你这段话在对谁说："));
+      audience.appendChild(document.createTextNode(report.audience));
+      details.appendChild(audience);
     }
-    return section;
-  },
 
-  /** 通用段落卡片 */
-  _section: function (title, body) {
-    var section = Report._el("section", "report-section");
-    var head = Report._el("h2", "report-section__title", title);
-    var bodyEl = Report._el("div", "report-section__body", body || "（教练没写这一段，重试一次看看）");
-    section.appendChild(head);
-    section.appendChild(bodyEl);
-    return section;
-  },
-
-  /**
-   * 把用户话术按标点拆成句（与模型按句点评的顺序对齐）。
-   * 显示"原句"时优先用这里的拆句结果——用户看到的一定是自己写的话，
-   * 同时防御上游偶发的 original 字段乱码（DeepSeek 对部分输入复制原文时会输出损坏字符）。
-   */
-  _splitSentences: function (script) {
-    if (!script) return [];
-    return script
-      .split(/[。！？!?；;\n]+/)
-      .map(function (s) { return s.trim(); })
-      .filter(function (s) { return s.length > 0; });
-  },
-
-  /** 检测损坏字符（U+FFFD 替换符，上游乱码的特征） */
-  _hasGarbled: function (text) {
-    for (var i = 0; i < text.length; i++) {
-      if (text.codePointAt(i) === 0xfffd) return true;
-    }
-    return false;
-  },
-
-  /**
-   * ⑤ 逐句点评（v2 默认折叠）：
-   * 报告 10 秒看得懂的代价是细节必须收起——结论在上，想看细节自己展开。
-   * 折叠按钮带统计（"2 句站对 · 1 句没到位"），不展开也能知道大概。
-   */
-  _lineReviewsCollapsible: function (reviews) {
-    var section = Report._el("section", "report-section");
-    section.appendChild(Report._el("h2", "report-section__title", "逐句看看"));
-
-    // 统计
-    var counts = { good: 0, partial: 0, wrong: 0 };
-    for (var i = 0; i < reviews.length; i++) {
-      var m = reviews[i] && reviews[i].mark;
-      if (counts[m] !== undefined) counts[m]++;
-    }
-    var parts = [];
-    if (counts.good) parts.push(counts.good + " 句站对");
-    if (counts.partial) parts.push(counts.partial + " 句没到位");
-    if (counts.wrong) parts.push(counts.wrong + " 句站错");
-    var summary = parts.length > 0 ? parts.join(" · ") : "逐句看";
-
-    var toggle = Report._el("button", "example-toggle");
-    toggle.type = "button";
-    toggle.setAttribute("aria-expanded", "false");
-    toggle.appendChild(Report._el("span", null, summary));
-    toggle.appendChild(Report._el("span", "example-toggle__arrow", "▾"));
-
-    var panel = Report._el("div", "example-panel");
-    panel.hidden = true; // 默认收起
-    panel.appendChild(Report._buildReviewList(reviews));
-
-    toggle.addEventListener("click", function () {
-      var expanded = toggle.getAttribute("aria-expanded") === "true";
-      toggle.setAttribute("aria-expanded", String(!expanded));
-      panel.hidden = expanded;
+    var structureList = Report._el("ul", "line-review-list");
+    checks.forEach(function (check) {
+      var item = Report._el("li", "line-review-item line-review-item--" + (check.status === "met" ? "good" : "partial"));
+      var statusText = check.status === "met" ? "做到" : check.status === "partial" ? "差一点" : "没出现";
+      item.appendChild(Report._el("strong", null, check.label + " · " + statusText));
+      item.appendChild(Report._el("p", null, check.evidence));
+      structureList.appendChild(item);
     });
+    details.appendChild(structureList);
 
-    section.appendChild(toggle);
-    section.appendChild(panel);
-    return section;
+    var direction = report.direction || {};
+    if (direction.summary) {
+      var directionText = Report._el("p");
+      directionText.appendChild(Report._el("strong", null, "修改方向："));
+      directionText.appendChild(document.createTextNode(direction.summary));
+      details.appendChild(directionText);
+    }
+
+    var reviews = Array.isArray(report.line_reviews) ? report.line_reviews : [];
+    if (reviews.length) {
+      details.appendChild(Report._el("p", null, "逐句看："));
+      details.appendChild(Report._lineReviewList(reviews));
+    }
+
+    var examples = Array.isArray(direction.examples) ? direction.examples : [];
+    if (examples.length) {
+      var exampleDetails = Report._el("details", "review-details review-details--examples");
+      exampleDetails.appendChild(Report._el("summary", null, "实在想不到，再看局部示范"));
+      exampleDetails.appendChild(Report._el("p", null, "只借角度，换成你自己平时会说的话。"));
+      var exampleList = Report._el("ul", "line-review-list");
+      examples.forEach(function (example) {
+        var item = Report._el("li", "line-review-item line-review-item--good", example);
+        exampleList.appendChild(item);
+      });
+      exampleDetails.appendChild(exampleList);
+      details.appendChild(exampleDetails);
+    }
+    return details;
   },
 
-  /** 逐句点评列表本体：每条按 mark 渲染左色条 + ✅⚠️❌ */
-  _buildReviewList: function (reviews) {
-    var list = Report._el("ul", "review-list");
-    var markText = { good: "✅ 站对了", partial: "⚠️ 没到位", wrong: "❌ 站错了" };
-
-    // 前端自己的拆句（来自用户提交的原文），与模型点评按顺序对齐
-    var sentences = Report._splitSentences(
-      App.state.lastRequest ? App.state.lastRequest.script : ""
-    );
-
-    for (var i = 0; i < reviews.length; i++) {
-      var r = reviews[i];
-      var original;
-      if (sentences[i]) {
-        original = sentences[i]; // 优先：用户原话拆句，永远无乱码
-      } else if (r.original && !Report._hasGarbled(r.original)) {
-        original = r.original; // 兜底：模型引用（仅当无损坏字符）
-      } else {
-        original = ""; // 都不可用时不显示原句，点评本身仍可见
-      }
-
-      var item = Report._el("li", "review-item review-item--" + (r.mark || "partial"));
-      var head = Report._el("div", "review-item__head");
-      head.appendChild(Report._el("span", "review-item__mark", markText[r.mark] || markText.partial));
-      head.appendChild(Report._el("span", "review-item__original", original));
-      var comment = Report._el("div", "review-item__comment", r.comment || "");
-      item.appendChild(head);
-      item.appendChild(comment);
+  _lineReviewList: function (reviews) {
+    var list = Report._el("ul", "line-review-list");
+    reviews.forEach(function (review) {
+      if (!review) return;
+      var mark = ["good", "partial", "wrong"].indexOf(review.mark) >= 0 ? review.mark : "partial";
+      var label = mark === "good" ? "站对了" : mark === "wrong" ? "这句会吃亏" : "还差一点";
+      var item = Report._el("li", "line-review-item line-review-item--" + mark);
+      item.appendChild(Report._el("strong", null, label + (review.original ? " · “" + review.original + "”" : "")));
+      if (review.comment) item.appendChild(Report._el("p", null, review.comment));
       list.appendChild(item);
-    }
+    });
     return list;
   },
 
-  /** ⑥ 修改方向 + 默认收起的示例（逼她先自己想，防照抄） */
-  _direction: function (direction) {
-    direction = direction || {};
-    var section = Report._el("section", "report-section");
-    section.appendChild(Report._el("h2", "report-section__title", "往这个方向改"));
-    section.appendChild(
-      Report._el("div", "report-section__body", direction.summary || "")
-    );
-
-    var examples = direction.examples || [];
-    if (examples.length > 0) {
-      var toggle = Report._el("button", "example-toggle");
-      toggle.type = "button";
-      toggle.setAttribute("aria-expanded", "false");
-      toggle.appendChild(Report._el("span", null, "想不出怎么改？看看示范"));
-      toggle.appendChild(Report._el("span", "example-toggle__arrow", "▾"));
-
-      var panel = Report._el("div", "example-panel");
-      panel.hidden = true; // 默认收起
-      panel.appendChild(Report._el("p", "example-tip", "示范只是参考——用你自己的话说，才算你的"));
-      var list = Report._el("ul", "example-list");
-      for (var i = 0; i < examples.length; i++) {
-        list.appendChild(Report._el("li", "example-item", examples[i]));
-      }
-      panel.appendChild(list);
-
-      toggle.addEventListener("click", function () {
-        var expanded = toggle.getAttribute("aria-expanded") === "true";
-        toggle.setAttribute("aria-expanded", String(!expanded));
-        panel.hidden = expanded;
-      });
-
-      section.appendChild(toggle);
-      section.appendChild(panel);
-    }
-
-    return section;
+  _showRedlineBanner: function (note) {
+    var banner = document.getElementById("redline-banner");
+    banner.textContent = note ? "不能带进直播间：" + note : "";
+    banner.hidden = !note;
   },
 
-  /**
-   * 过关页：verdict=passed 时进入。
-   * 定稿 = 用户自己提交的原话（稿子是她自己的，教练只打磨没代写）。
-   * "学会了什么" = verdict_reason + card_why + one_thing 拼接（无状态，不跨轮）。
-   */
-  showPassed: function (report) {
-    var script = App.state.lastRequest ? App.state.lastRequest.script : "";
-    document.getElementById("passed-script").textContent = script;
+  showContent: function (report) {
+    Report._stopLoadingMessages();
+    document.getElementById("report-loading").hidden = true;
+    document.getElementById("report-error").hidden = true;
+    document.getElementById("btn-retry").hidden = true;
+    document.getElementById("btn-back-edit").disabled = false;
+    Report._showRedlineBanner(report.redline_note);
 
-    // 学会了什么：判定理由 → 为什么过 → 只记一件事
+    var content = document.getElementById("report-content");
+    Report._clear(content);
+    content.hidden = false;
+
+    var checks = Report._checks(report);
+    var focus = Report._focusCheck(checks, report);
+    content.appendChild(Report._heading(report));
+    content.appendChild(Report._structureTrack(checks));
+    content.appendChild(Report._focusPaper(report, focus));
+    content.appendChild(Report._revisionDesk());
+    content.appendChild(Report._fullReview(report, checks));
+    App.showView("report");
+  },
+
+  showPassed: function (report) {
+    Report._stopLoadingMessages();
+    Report._showRedlineBanner("");
+    document.getElementById("btn-back-edit").disabled = false;
+    document.getElementById("passed-script").textContent = App.state.lastRequest ? App.state.lastRequest.script : "";
+
     var learn = document.getElementById("passed-learn");
-    learn.innerHTML = ""; // 仅用于清空
-    var blocks = [];
-    if (report.verdict_reason) blocks.push(Report._el("p", "passed-learn__block", report.verdict_reason));
-    if (report.card_why) blocks.push(Report._el("p", "passed-learn__block", report.card_why));
-    if (report.one_thing) {
-      var one = Report._el("p", "passed-learn__block passed-learn__block--strong", report.one_thing);
-      blocks.push(one);
-    }
-    if (blocks.length === 0) {
-      blocks.push(Report._el("p", "passed-learn__block", "这一稿方向对了，记住这种感觉"));
-    }
-    for (var i = 0; i < blocks.length; i++) learn.appendChild(blocks[i]);
+    Report._clear(learn);
+    var main = report.verdict_reason || "五项结构都接住了，这版可以拿去练开口。";
+    learn.appendChild(Report._el("p", null, main));
+    if (report.one_thing) learn.appendChild(Report._el("p", null, "记住：" + report.one_thing));
 
     App.showView("passed");
   },
 
-  /** 复制定稿：降级链 clipboard API → 隐藏 textarea + execCommand → 让用户长按手动复制 */
-  _onCopy: function () {
-    var script = document.getElementById("passed-script").textContent;
-    if (!script) return;
-
-    var done = function () {
-      App.toast("已复制，去直播间用起来");
-    };
-
-    // 第一级：navigator.clipboard（需要 HTTPS 或 localhost，微信 WebView 可能没有）
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(script).then(done, function () {
-        Report._copyFallback(script, done);
-      });
-    } else {
-      Report._copyFallback(script, done);
-    }
-  },
-
-  /** 第二级：隐藏 textarea + document.execCommand("copy")（老 iOS/微信兼容性最好） */
-  _copyFallback: function (text, done) {
-    var ta = document.createElement("textarea");
-    ta.value = text;
-    ta.setAttribute("readonly", "");
-    // 移出可视区但不 display:none（iOS 要求元素可见才能 select）
-    ta.style.position = "fixed";
-    ta.style.left = "-9999px";
-    document.body.appendChild(ta);
-    ta.select();
-    ta.setSelectionRange(0, text.length);
-    var ok = false;
-    try {
-      ok = document.execCommand("copy");
-    } catch (e) {
-      ok = false;
-    }
-    document.body.removeChild(ta);
-    if (ok) {
-      done();
-    } else {
-      App.toast("复制不了？长按上面的稿子手动复制");
-    }
-  },
-
-  /** 过关页"再练一段新的"：清空表单回首页（上一轮彻底结束） */
-  _onNewRound: function () {
-    App.state.form = null;
-    App.state.lastRequest = null;
-    App.state.lastReport = null;
-    Form.reset();
-    App.showView("form");
-  },
-
-  /** 提交后的 loading 态（批改 10-30 秒，文案要兜住耐心） */
   showLoading: function () {
+    Report._showRedlineBanner("");
     document.getElementById("report-content").hidden = true;
     document.getElementById("report-error").hidden = true;
     document.getElementById("btn-retry").hidden = true;
+    document.getElementById("btn-back-edit").disabled = true;
     document.getElementById("report-loading").hidden = false;
+    Report._startLoadingMessages();
   },
 
-  /** 错误态：错误卡 + 重试按钮 */
+  _startLoadingMessages: function () {
+    Report._stopLoadingMessages();
+    var messages = [
+      "先看你接住了谁，再看上票理由有没有落到人身上。",
+      "正在对照五项结构，只挑这一轮最该改的一处。",
+      "不会替你重写整篇，教练只帮你把原话改到能用。",
+    ];
+    var index = 0;
+    var node = document.getElementById("loading-message");
+    node.textContent = messages[index];
+    Report._loadingTimer = setInterval(function () {
+      index = (index + 1) % messages.length;
+      node.textContent = messages[index];
+    }, 4200);
+  },
+
+  _stopLoadingMessages: function () {
+    if (Report._loadingTimer) clearInterval(Report._loadingTimer);
+    Report._loadingTimer = null;
+  },
+
   showError: function (message) {
+    Report._stopLoadingMessages();
     document.getElementById("report-loading").hidden = true;
     document.getElementById("report-content").hidden = true;
+    document.getElementById("btn-back-edit").disabled = false;
+    Report._showRedlineBanner("");
 
     var errorBox = document.getElementById("report-error");
-    errorBox.innerHTML = ""; // 仅用于清空
+    Report._clear(errorBox);
+    errorBox.appendChild(Report._el("p", null, message));
     errorBox.hidden = false;
-    var card = Report._el("div", "error-card");
-    card.appendChild(Report._el("p", null, message));
-    errorBox.appendChild(card);
-
     document.getElementById("btn-retry").hidden = false;
   },
 
-  /** 返回修改：恢复表单状态，不清空 */
   _onBackEdit: function () {
-    Form.restore(App.state.form);
+    Report._stopLoadingMessages();
+    Form.restore(App.state.form || App.state.lastRequest);
     App.showView("form");
   },
 
-  /** 重新批一次：同参数重发（重试结果 passed 也走过关页） */
   _onRetry: function () {
     if (!App.state.lastRequest) return;
+    Report._submitAgain(App.state.lastRequest);
+  },
+
+  _submitAgain: function (request) {
+    App.showView("report");
     Report.showLoading();
-    Api.submit(App.state.lastRequest, {
+    Api.submit(request, {
       onSuccess: function (report) {
         App.state.lastReport = report;
-        if (report.verdict === "passed") {
-          Report.showPassed(report);
-        } else {
-          App.showView("report");
-          Report.showContent(report);
-        }
+        if (report.verdict === "passed") Report.showPassed(report);
+        else Report.showContent(report);
       },
       onError: function (status, message) {
         if (status === 401) {
           App.showView("form");
-          App.showAccessModal(function (code) {
-            App.saveAccessCode(code);
-            App.hideAccessModal();
-            return true;
-          });
+          App.showAccessModal(function () { Report._submitAgain(request); }, { invalid: true, clear: true });
         } else {
+          App.showView("report");
           Report.showError(message);
         }
       },
       onFinish: function () {},
     });
+  },
+
+  _onStartVoice: function () {
+    var script = document.getElementById("passed-script").textContent;
+    if (!script || !window.VoiceCoach) {
+      App.toast("开口教练还没准备好，先复制这版话术");
+      return;
+    }
+    App.unlockStage("voice");
+    VoiceCoach.open({
+      script: script,
+      onBack: function () { App.showView("passed"); },
+    });
+    App.showView("voice");
+  },
+
+  _onCopy: function () {
+    var script = document.getElementById("passed-script").textContent;
+    if (!script) return;
+    var done = function () { App.toast("已复制，可以去开口练了"); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(script).then(done, function () { Report._copyFallback(script, done); });
+    } else {
+      Report._copyFallback(script, done);
+    }
+  },
+
+  _copyFallback: function (text, done) {
+    var field = document.createElement("textarea");
+    field.value = text;
+    field.setAttribute("readonly", "");
+    field.style.position = "fixed";
+    field.style.left = "-9999px";
+    document.body.appendChild(field);
+    field.select();
+    field.setSelectionRange(0, text.length);
+    var copied = false;
+    try { copied = document.execCommand("copy"); } catch (error) { copied = false; }
+    document.body.removeChild(field);
+    if (copied) done();
+    else App.toast("长按上面的稿子手动复制");
+  },
+
+  _onNewRound: function () {
+    Report._stopLoadingMessages();
+    if (window.VoiceCoach && VoiceCoach.reset) VoiceCoach.reset();
+    App.state.form = null;
+    App.state.lastRequest = null;
+    App.state.lastReport = null;
+    Form.reset();
+    App.resetStages();
+    App.showView("form");
   },
 };

@@ -1,19 +1,97 @@
-// 应用入口：视图切换、入口码 modal、toast、全局状态
-// 依赖顺序：config.js → app.js（本文件）→ form.js → api.js → report.js
+// 主播端应用状态：场景带练 → 文字复盘 → 开口练。
+// 仍沿用原生单页多视图，不引入框架；未来步骤默认锁定，只允许返回已完成步骤。
 
 var App = {
-  // 表单数据在视图间保留——"改一改再批"回来时不清空
-  state: { form: null, lastReport: null, lastRequest: null },
-
-  /** 切换主视图（form / report / passed），只留一个 --active */
-  showView: function (name) {
-    document.getElementById("view-form").classList.toggle("main-view--active", name === "form");
-    document.getElementById("view-report").classList.toggle("main-view--active", name === "report");
-    document.getElementById("view-passed").classList.toggle("main-view--active", name === "passed");
-    window.scrollTo(0, 0);
+  state: {
+    form: null,
+    lastReport: null,
+    lastRequest: null,
+    currentView: "form",
+    freeMode: false,
+    sessionAccessCode: "",
   },
 
-  /** 轻提示：3 秒后自动消失 */
+  _stageOrder: ["form", "report", "voice"],
+
+  _stageForView: function (viewName) {
+    if (viewName === "passed") return "report";
+    return viewName;
+  },
+
+  showView: function (name) {
+    if (App.state.currentView === "voice" && name !== "voice" && window.VoiceCoach && VoiceCoach.reset) {
+      VoiceCoach.reset();
+    }
+    if (name !== "form" && window.Form && Form.stopSceneReplay) {
+      Form.stopSceneReplay();
+    }
+    var viewNames = ["form", "report", "passed", "voice"];
+    for (var i = 0; i < viewNames.length; i++) {
+      var el = document.getElementById("view-" + viewNames[i]);
+      if (el) el.classList.toggle("training-view--active", viewNames[i] === name);
+    }
+    App.state.currentView = name;
+    App._syncStage(App._stageForView(name));
+    try { window.scrollTo({ top: 0, behavior: "auto" }); }
+    catch (error) { window.scrollTo(0, 0); }
+  },
+
+  unlockStage: function (stage) {
+    var button = document.querySelector('.training-step[data-stage="' + stage + '"]');
+    if (button) button.disabled = false;
+  },
+
+  lockStage: function (stage) {
+    var button = document.querySelector('.training-step[data-stage="' + stage + '"]');
+    if (!button) return;
+    button.disabled = true;
+    button.classList.remove("is-complete");
+    button.removeAttribute("aria-current");
+  },
+
+  resetStages: function () {
+    var buttons = document.querySelectorAll(".training-step");
+    for (var i = 0; i < buttons.length; i++) {
+      var stage = buttons[i].dataset.stage;
+      buttons[i].disabled = stage !== "form";
+      buttons[i].classList.remove("is-complete");
+    }
+    App._syncStage("form");
+  },
+
+  _syncStage: function (activeStage) {
+    var activeIndex = App._stageOrder.indexOf(activeStage);
+    var buttons = document.querySelectorAll(".training-step");
+    for (var i = 0; i < buttons.length; i++) {
+      var buttonStage = buttons[i].dataset.stage;
+      var buttonIndex = App._stageOrder.indexOf(buttonStage);
+      var isActive = buttonStage === activeStage;
+      buttons[i].classList.toggle("is-active", isActive);
+      buttons[i].classList.toggle("is-complete", buttonIndex >= 0 && buttonIndex < activeIndex);
+      if (isActive) buttons[i].setAttribute("aria-current", "step");
+      else buttons[i].removeAttribute("aria-current");
+    }
+  },
+
+  _openStage: function (stage) {
+    if (window.Api && Api._inFlight) {
+      App.toast("教练正在看这一版，结果出来前先别切走");
+      return;
+    }
+    if (stage === "form") {
+      App.showView("form");
+      return;
+    }
+    if (stage === "report") {
+      if (!App.state.lastReport) return;
+      App.showView(App.state.lastReport.verdict === "passed" ? "passed" : "report");
+      return;
+    }
+    if (stage === "voice" && !document.querySelector('.training-step[data-stage="voice"]').disabled) {
+      if (window.Report && Report._onStartVoice) Report._onStartVoice();
+    }
+  },
+
   toast: function (message) {
     var container = document.getElementById("toast-container");
     var el = document.createElement("div");
@@ -21,91 +99,81 @@ var App = {
     el.textContent = message;
     container.appendChild(el);
     setTimeout(function () {
-      el.remove();
+      if (el.parentNode) el.parentNode.removeChild(el);
     }, 3000);
   },
 
-  /**
-   * 入口码：localStorage 缓存，401 时重新弹出。
-   * try-catch 防御：iOS 微信 WebView/隐私模式下 localStorage 可能不可用，
-   * 读写抛异常时按"没存过"处理，绝不因存储问题卡死入口流程。
-   */
   getAccessCode: function () {
+    if (App.state.sessionAccessCode) return App.state.sessionAccessCode;
     try {
       return localStorage.getItem(STORAGE_KEYS.accessCode) || "";
     } catch (e) {
       return "";
     }
   },
+
   saveAccessCode: function (code) {
+    App.state.sessionAccessCode = String(code || "");
     try {
       localStorage.setItem(STORAGE_KEYS.accessCode, code);
     } catch (e) {
-      // 存不了就算了：下次打开重新输入即可，不打断当前使用
+      // 微信隐私模式可能禁用 localStorage；当前提交仍可继续。
     }
   },
 
-  /**
-   * 弹出入口码 modal。onConfirm(code) 返回 true 表示校验通过、关闭弹窗；
-   * 返回 false 表示码不对，留在弹窗并显示错误提示。
-   * 校验是异步的——MVP 不单独做"校验码"接口，靠第一次提交的 401 反馈。
-   */
-  showAccessModal: function (onConfirm) {
+  showAccessModal: function (onConfirm, options) {
+    options = options || {};
     var overlay = document.getElementById("access-modal");
     var input = document.getElementById("input-access-code");
     var error = document.getElementById("access-error");
-    var confirmBtn = document.getElementById("btn-access-confirm");
+    var confirmButton = document.getElementById("btn-access-confirm");
 
-    input.value = App.getAccessCode();
-    error.hidden = true;
+    input.value = options.clear ? "" : App.getAccessCode();
+    error.textContent = options.invalid ? "入口码不对，重新输入" : "先输入入口码";
+    error.hidden = !options.invalid;
     overlay.hidden = false;
     setTimeout(function () { input.focus(); }, 50);
 
     var confirm = function () {
       var code = input.value.trim();
-      if (!code) return;
-      var ok = onConfirm ? onConfirm(code) : true;
-      if (ok === false) {
+      if (!code) {
+        error.textContent = "先输入入口码";
         error.hidden = false;
-        input.select();
+        return;
       }
+      App.saveAccessCode(code);
+      App.hideAccessModal();
+      if (onConfirm) onConfirm(code);
     };
-    confirmBtn.onclick = confirm;
-    input.onkeydown = function (e) {
-      if (e.key === "Enter") confirm();
+
+    confirmButton.onclick = confirm;
+    input.onkeydown = function (event) {
+      if (event.key === "Enter") confirm();
     };
   },
+
   hideAccessModal: function () {
     document.getElementById("access-modal").hidden = true;
   },
 
-  /** 初始化：绑定全局事件，判断是否需要先输入口码 */
   init: function () {
-    // 改入口码按钮
     document.getElementById("btn-access-code").addEventListener("click", function () {
-      App.showAccessModal(function (code) {
-        App.saveAccessCode(code);
-        App.hideAccessModal();
-        App.toast("入口码已更新");
-        return true;
-      });
+      App.showAccessModal(function () { App.toast("入口码已保存"); });
     });
+    document.getElementById("btn-access-cancel").addEventListener("click", App.hideAccessModal);
 
-    // 首次进入：没有入口码记录就先弹 modal（填了才能用）
-    if (!App.getAccessCode()) {
-      App.showAccessModal(function (code) {
-        App.saveAccessCode(code);
-        App.hideAccessModal();
-        return true;
+    var stageButtons = document.querySelectorAll(".training-step");
+    for (var i = 0; i < stageButtons.length; i++) {
+      stageButtons[i].addEventListener("click", function (event) {
+        if (!event.currentTarget.disabled) App._openStage(event.currentTarget.dataset.stage);
       });
     }
 
     Form.init();
     Api.init();
     Report.init();
+    if (window.VoiceCoach && VoiceCoach.init) VoiceCoach.init();
   },
 };
 
-document.addEventListener("DOMContentLoaded", function () {
-  App.init();
-});
+document.addEventListener("DOMContentLoaded", App.init);

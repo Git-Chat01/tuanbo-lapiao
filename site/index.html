@@ -2,115 +2,158 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <!-- 移动端优先：完全复制 expense-tracker 的 viewport 策略 -->
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <meta name="theme-color" content="#D92662">
-  <!-- CSP：全站本地资源 + 仅允许访问教练 Worker（部署时补充生产域名） -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://lapiao.aivar.cc http://127.0.0.1:* http://localhost:*; object-src 'none'; form-action 'self'; base-uri 'self'">
-  <title>拉票话术教练</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#181315">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self' https://lapiao.aivar.cc http://127.0.0.1:* http://localhost:*; object-src 'none'; form-action 'self'; base-uri 'self'">
+  <title>场练 · 团播新人排练台</title>
   <link rel="stylesheet" href="css/common.css">
   <link rel="stylesheet" href="css/form.css">
   <link rel="stylesheet" href="css/report.css">
+  <link rel="stylesheet" href="css/voice.css">
 </head>
-<body>
-  <div class="app-container">
-    <header class="app-header">
-      <h1 class="app-title">拉票话术教练</h1>
-      <button type="button" id="btn-access-code" class="btn-text">入口码</button>
+<body class="presenter-page">
+  <div class="training-shell">
+    <header class="training-topbar">
+      <div class="training-brand"><span class="live-dot" aria-hidden="true"></span><span>场练</span></div>
+      <span class="training-round">新手带练 · 第 1 轮</span>
+      <button type="button" id="btn-access-code" class="training-top-action">入口码</button>
     </header>
 
-    <!-- 视图 1：输入表单（v2 极简：只点、只写、只交） -->
-    <main id="view-form" class="main-view main-view--active">
-      <p class="form-intro">
-        点、写、交，就这三件事。
-      </p>
+    <nav class="training-steps" aria-label="本轮训练步骤">
+      <button type="button" class="training-step is-active" data-stage="form" aria-current="step">
+        <span class="training-step__number">01</span><span>看现场</span>
+      </button>
+      <span class="training-step__line" aria-hidden="true"></span>
+      <button type="button" class="training-step" data-stage="report" disabled>
+        <span class="training-step__number">02</span><span>改话术</span>
+      </button>
+      <span class="training-step__line" aria-hidden="true"></span>
+      <button type="button" class="training-step" data-stage="voice" disabled>
+        <span class="training-step__number">03</span><span>开口练</span>
+      </button>
+    </nav>
 
-      <section class="card">
-        <h2 class="card-title">现在票数什么情况 <span class="required-tag">点一个</span></h2>
-        <div class="chip-group chip-group--big" data-group="voteGap" data-multi="false">
-          <button type="button" class="chip" data-value="far" aria-pressed="false">差一大截</button>
-          <button type="button" class="chip" data-value="close" aria-pressed="false">快够了</button>
-          <button type="button" class="chip" data-value="secured" aria-pressed="false">在保位</button>
+    <main class="training-main">
+      <section id="view-form" class="training-view training-view--active" aria-labelledby="training-goal-title">
+        <div class="training-goal">
+          <span>今天只练</span>
+          <h1 id="training-goal-title">把上票理由说到具体用户身上</h1>
+        </div>
+
+        <p id="free-mode-note" class="free-mode-note" hidden>
+          没有现场信息时，教练只判断话术结构，不会替你猜观众为什么上票。
+        </p>
+
+        <section id="scene-window" class="scene-window" aria-labelledby="scene-title">
+          <div class="scene-window__head">
+            <h2 id="scene-title"><span class="live-dot" aria-hidden="true"></span>模拟现场</h2>
+            <p><strong id="scene-time">00:38</strong><span aria-hidden="true"> · </span>还差 <strong id="scene-votes">320</strong> 票</p>
+          </div>
+          <ol id="scene-feed" class="scene-feed" aria-label="现场发生的信息"></ol>
+          <button type="button" id="btn-play-scene" class="scene-replay">
+            <span class="scene-replay__icon" aria-hidden="true">▶</span><span>看 8 秒现场回放</span>
+          </button>
+        </section>
+
+        <aside id="coach-cue" class="coach-cue" aria-label="带练提示">
+          <span>带练提示</span>
+          <p id="coach-cue-text"></p>
+        </aside>
+
+        <section id="free-vote-section" class="free-vote-section" hidden aria-labelledby="free-vote-title">
+          <h2 id="free-vote-title">现在票数什么情况</h2>
+          <div class="vote-options" data-group="voteGap" role="group" aria-label="现在票数情况">
+            <button type="button" class="vote-option" data-value="far" aria-pressed="false">差一大截</button>
+            <button type="button" class="vote-option" data-value="close" aria-pressed="true">快够了</button>
+            <button type="button" class="vote-option" data-value="secured" aria-pressed="false">在保位</button>
+          </div>
+        </section>
+
+        <section class="writing-desk" aria-labelledby="script-label">
+          <label id="script-label" for="input-script">你会怎么接这颗球？</label>
+          <div class="structure-prompt" aria-label="新人话术结构提示">
+            <span>认识我</span><span>接礼物</span><span>点到人</span><span>给理由</span><span>票数指令</span>
+          </div>
+          <textarea id="input-script" class="script-input" maxlength="500" rows="8"
+                    placeholder="把你现场真的会说的话写下来。不用先写对，教练会陪你只改一处。"></textarea>
+          <div class="writing-desk__foot"><span id="draft-status">草稿会自动保存</span><span id="script-count">0 / 500</span></div>
+        </section>
+
+        <button type="button" id="btn-submit" class="training-primary" disabled>
+          <span>帮我看这版</span><span aria-hidden="true">→</span>
+        </button>
+        <button type="button" id="btn-free-mode" class="training-secondary-link">我有一段自己的话术</button>
+      </section>
+
+      <section id="view-report" class="training-view" aria-label="文字教练复盘">
+        <div id="report-loading" class="coach-thinking" hidden role="status" aria-live="polite">
+          <span class="coach-thinking__line"></span>
+          <h1>教练正在对现场</h1>
+          <p id="loading-message">先看你接住了谁，再看上票理由有没有落到人身上。</p>
+          <div class="coach-thinking__steps" aria-hidden="true"><span></span><span></span><span></span></div>
+        </div>
+        <div id="report-error" class="report-error" hidden role="alert"></div>
+        <div id="redline-banner" class="redline-banner" hidden role="alert"></div>
+        <div id="report-content" hidden></div>
+        <div class="report-actions">
+          <button type="button" id="btn-back-edit" class="training-secondary">回现场重写</button>
+          <button type="button" id="btn-retry" class="training-primary" hidden>重新连接教练</button>
         </div>
       </section>
 
-      <section class="card">
-        <h2 class="card-title">你的话术</h2>
-        <textarea id="input-script" class="script-input" maxlength="500" rows="7"
-                  placeholder="把你现场会说的话原样写下来，不用写对——写出来，教练才能帮你。"></textarea>
-        <div class="char-count" id="script-count">0/500</div>
+      <section id="view-passed" class="training-view" aria-labelledby="passed-title">
+        <div class="training-goal training-goal--passed">
+          <span>文字教练</span>
+          <h1 id="passed-title">这版逻辑能用了，进入开口练</h1>
+        </div>
+
+        <div class="structure-track structure-track--passed" aria-label="五项话术结构均已达标">
+          <span>认识我</span><span>接礼物</span><span>点到人</span><span>给理由</span><span>票数指令</span>
+        </div>
+
+        <section class="passed-paper">
+          <div class="passed-paper__head"><span>这一轮改到位了</span><span>通过</span></div>
+          <div id="passed-learn"></div>
+        </section>
+
+        <section class="passed-script-section">
+          <h2>拿这一版开口练</h2>
+          <div id="passed-script" class="passed-script"></div>
+        </section>
+
+        <button type="button" id="btn-start-voice" class="training-primary">
+          <span>拿这版开口练</span><span aria-hidden="true">→</span>
+        </button>
+        <button type="button" id="btn-copy" class="training-secondary">复制这版话术</button>
+        <button type="button" id="btn-new-round" class="training-secondary-link">换一轮重新练</button>
       </section>
 
-      <!-- 提交按钮放流末尾而非 fixed 底栏：iOS 键盘弹出时 fixed 底栏会上浮压住内容 -->
-      <button type="button" id="btn-submit" class="btn-primary btn-block" disabled>拿去给教练批</button>
-    </main>
-
-    <!-- 视图 2：批改报告 -->
-    <main id="view-report" class="main-view">
-      <div id="report-loading" class="report-loading" hidden>
-        <div class="spinner"></div>
-        <p>教练正在看你这段话，别急……</p>
-        <p class="loading-sub">批改一般要十几秒，好话术值得等</p>
-      </div>
-      <div id="report-error" class="report-error" hidden></div>
-      <!-- 红线横幅：命中不能播的词时显示（report.js 动态填充，红底白字） -->
-      <div id="redline-banner" class="redline-banner" hidden></div>
-      <div id="report-content" hidden></div>
-      <div class="report-actions">
-        <button type="button" id="btn-back-edit" class="btn-outline">改一改再批</button>
-        <button type="button" id="btn-retry" class="btn-outline" hidden>重新批一次</button>
-      </div>
-    </main>
-
-    <!-- 视图 3：过关页（verdict=passed 时进入） -->
-    <main id="view-passed" class="main-view">
-      <div class="passed-hero">
-        <div class="passed-hero__icon">🎉</div>
-        <h2 class="passed-hero__title">过关了！</h2>
-        <p class="passed-hero__sub">这一稿方向对了，拿去用</p>
-      </div>
-
-      <section class="card passed-script-card">
-        <h2 class="card-title">你的定稿</h2>
-        <div id="passed-script" class="passed-script"></div>
-        <button type="button" id="btn-copy" class="btn-primary btn-block">复制定稿</button>
+      <section id="view-voice" class="training-view" aria-label="开口教练">
+        <div id="voice-coach-root"></div>
       </section>
-
-      <section class="card">
-        <h2 class="card-title">这一稿你学会了什么</h2>
-        <div id="passed-learn" class="report-section__body"></div>
-      </section>
-
-      <section class="card passed-note">
-        <p>稿子过关 ≠ 综合过关。表现力、情绪、语感，去线下直播间里练。</p>
-      </section>
-
-      <button type="button" id="btn-new-round" class="btn-outline btn-block">再练一段新的</button>
     </main>
   </div>
 
-  <!-- 入口码 modal：首次进入 + 401 时弹出 -->
   <div id="access-modal" class="modal-overlay" hidden>
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="access-modal-title">
       <h2 id="access-modal-title" class="modal-title">输入入口码</h2>
-      <p class="modal-desc">找教练要入口码，输入后就可以用了</p>
-      <input type="password" id="input-access-code" class="text-input" autocomplete="off"
-             placeholder="入口码">
+      <p class="modal-desc">入口码只在提交给教练时需要，输入一次会保存在这台设备。</p>
+      <input type="password" id="input-access-code" class="text-input" autocomplete="off" placeholder="入口码">
       <p id="access-error" class="modal-error" hidden>入口码不对，重新输入</p>
-      <div class="modal-actions">
+      <div class="modal-actions modal-actions--split">
+        <button type="button" id="btn-access-cancel" class="btn-outline">先不填</button>
         <button type="button" id="btn-access-confirm" class="btn-primary">确定</button>
       </div>
     </div>
   </div>
 
-  <!-- 全局 toast -->
   <div id="toast-container" class="toast-container" aria-live="polite"></div>
 
-  <!-- 传统 script 按依赖顺序加载（沿用 expense-tracker 模式，非 ES Module） -->
   <script src="js/config.js"></script>
   <script src="js/app.js"></script>
   <script src="js/form.js"></script>
   <script src="js/api.js"></script>
   <script src="js/report.js"></script>
+  <script src="js/voice.js"></script>
 </body>
 </html>

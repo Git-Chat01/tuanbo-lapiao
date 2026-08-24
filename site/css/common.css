@@ -273,3 +273,227 @@ input, textarea { font-family: inherit; font-size: var(--font-size-md); color: v
   .btn-primary:hover { opacity: 0.9; }
   .btn-outline:hover { background: var(--color-primary-soft); }
 }
+
+/* ========================================================================
+   主播端 v3：直播排练台
+   教练后台仍沿用上面的通用组件；以下全部用 presenter-page 作用域隔离。
+   ======================================================================== */
+
+body.presenter-page {
+  --stage-ink: #181315;
+  --stage-panel: #241b1f;
+  --stage-panel-soft: #35282d;
+  --stage-canvas: #f2ece3;
+  --stage-paper: #fff9ee;
+  --stage-text: #241b1e;
+  --stage-muted: #665b5e;
+  --stage-faint: #998d90;
+  --stage-line: #d8cec6;
+  --stage-red: #e54d42;
+  --stage-red-dark: #b92f32;
+  --stage-amber: #f4be59;
+  --stage-mint: #43b987;
+  --stage-mint-soft: #e3f5ed;
+  --stage-warn-soft: #fff0d2;
+  --stage-ease: cubic-bezier(0.16, 1, 0.3, 1);
+  margin: 0;
+  min-height: 100dvh;
+  color: var(--stage-text);
+  background: #eae4dd;
+  line-height: 1.55;
+}
+
+.presenter-page .training-shell {
+  width: 100%;
+  max-width: 430px;
+  min-height: 100dvh;
+  margin: 0 auto;
+  overflow: hidden;
+  background: var(--stage-canvas);
+  box-shadow: 0 24px 70px rgba(35, 20, 26, 0.16);
+}
+
+.presenter-page .training-topbar {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: calc(14px + env(safe-area-inset-top, 0px)) 18px 12px;
+  color: #fffaf7;
+  background: var(--stage-ink);
+}
+
+.presenter-page .training-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 700;
+}
+
+.presenter-page .live-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--stage-red);
+  box-shadow: 0 0 0 4px rgba(229, 77, 66, 0.15);
+}
+
+.presenter-page .training-round {
+  color: #c4b6bb;
+  font-size: var(--font-size-sm);
+  text-align: center;
+}
+
+.presenter-page .training-top-action {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  color: #f0bdc8;
+  background: transparent;
+  font-size: var(--font-size-sm);
+}
+
+.presenter-page .training-steps {
+  display: grid;
+  grid-template-columns: 1fr 24px 1fr 24px 1fr;
+  align-items: center;
+  padding: 12px 16px 14px;
+  color: #ac9da2;
+  background: var(--stage-panel);
+}
+
+.presenter-page .training-step {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  min-height: 52px;
+  padding: 3px;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  font-size: var(--font-size-sm);
+}
+
+.presenter-page .training-step__number {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  color: #d0c2c6;
+  background: var(--stage-panel-soft);
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.presenter-page .training-step.is-active { color: #fffaf7; }
+.presenter-page .training-step.is-active .training-step__number {
+  color: var(--stage-ink);
+  background: var(--stage-amber);
+}
+.presenter-page .training-step.is-complete .training-step__number {
+  color: var(--stage-ink);
+  background: var(--stage-mint);
+}
+.presenter-page .training-step:disabled { cursor: not-allowed; opacity: 0.45; }
+.presenter-page .training-step__line { height: 1px; background: #49373e; }
+
+.presenter-page .training-main { background: var(--stage-canvas); }
+.presenter-page .training-view {
+  display: none;
+  padding: 20px 18px calc(24px + env(safe-area-inset-bottom, 0px));
+}
+.presenter-page .training-view--active {
+  display: block;
+  animation: training-view-in 260ms var(--stage-ease);
+}
+
+.presenter-page .training-primary,
+.presenter-page .training-secondary {
+  width: 100%;
+  min-height: 54px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  border-radius: 12px;
+  font-size: var(--font-size-md);
+  font-weight: 700;
+}
+
+.presenter-page .training-primary {
+  border: 0;
+  color: #fffaf7;
+  background: var(--stage-red-dark);
+  box-shadow: 0 8px 18px rgba(185, 47, 50, 0.2);
+  transition: transform 120ms var(--stage-ease), background 120ms var(--stage-ease);
+}
+.presenter-page .training-primary:active { transform: scale(0.985); }
+.presenter-page .training-primary:disabled {
+  cursor: not-allowed;
+  color: #8e8285;
+  background: #d9d0ca;
+  box-shadow: none;
+}
+
+.presenter-page .training-secondary {
+  border: 1px solid var(--stage-line);
+  color: var(--stage-text);
+  background: transparent;
+}
+.presenter-page .training-secondary:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.presenter-page .training-secondary-link {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 4px;
+  border: 0;
+  color: var(--stage-red-dark);
+  background: transparent;
+  font-size: var(--font-size-sm);
+}
+
+.presenter-page button:focus-visible,
+.presenter-page summary:focus-visible,
+.presenter-page input:focus-visible,
+.presenter-page textarea:focus-visible {
+  outline: 3px solid var(--stage-amber);
+  outline-offset: 3px;
+}
+
+.presenter-page .modal-actions--split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-sm);
+}
+.presenter-page .modal-actions--split .btn-primary,
+.presenter-page .modal-actions--split .btn-outline { width: 100%; min-height: 48px; }
+
+@keyframes training-view-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 360px) {
+  .presenter-page .training-topbar { gap: 8px; padding-inline: 14px; }
+  .presenter-page .training-round { text-align: right; }
+  .presenter-page .training-steps { grid-template-columns: 1fr 14px 1fr 14px 1fr; padding-inline: 10px; }
+  .presenter-page .training-view { padding-inline: 14px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .presenter-page *,
+  .presenter-page *::before,
+  .presenter-page *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
