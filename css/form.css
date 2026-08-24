@@ -1,58 +1,217 @@
-/* 输入表单视图：chip 点选组、话术输入、提交按钮 */
-
-.form-intro {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-secondary);
-  margin-bottom: var(--space-lg);
-  padding: 0 var(--space-xs);
+.presenter-page .training-goal {
+  margin-bottom: 16px;
+  padding-left: 12px;
+  border-left: 3px solid var(--stage-red);
 }
 
-/* ---- chip 点选（单选/多选共用，选中态由 aria-pressed 控制） ---- */
-.chip-group {
+.presenter-page .training-goal > span {
+  color: var(--stage-red-dark);
+  font-size: var(--font-size-sm);
+}
+
+.presenter-page .training-goal h1 {
+  margin: 2px 0 0;
+  font-size: var(--font-size-xl);
+  line-height: 1.38;
+}
+
+.presenter-page .free-mode-note {
+  margin: -3px 0 15px;
+  padding: 10px 12px;
+  color: #6e4b1d;
+  background: var(--stage-warn-soft);
+  font-size: var(--font-size-sm);
+}
+
+.presenter-page .scene-window {
+  overflow: hidden;
+  border-radius: 16px 16px 6px 6px;
+  color: #fff9f5;
+  background:
+    radial-gradient(circle at 88% 14%, rgba(240, 106, 131, 0.18), transparent 34%),
+    linear-gradient(145deg, #1d1719, #2e2025);
+  box-shadow: 0 12px 28px rgba(47, 25, 33, 0.16);
+}
+
+.presenter-page .scene-window__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 15px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+.presenter-page .scene-window__head h2 {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: var(--font-size-sm);
+}
+
+.presenter-page .scene-window__head p {
+  margin: 0;
+  color: #cdbfc4;
+  font-size: var(--font-size-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.presenter-page .scene-window__head strong {
+  color: var(--stage-amber);
+  font-weight: 700;
+}
+
+.presenter-page .scene-feed {
+  list-style: none;
+  margin: 0;
+  padding: 6px 0;
+}
+
+.presenter-page .scene-feed__item {
+  display: grid;
+  grid-template-columns: 24px 40px 1fr;
+  align-items: start;
+  gap: 8px;
+  padding: 9px 14px;
+  color: #e7dfe2;
+  font-size: var(--font-size-sm);
+  transition: background 180ms var(--stage-ease), transform 180ms var(--stage-ease);
+}
+
+.presenter-page .scene-feed__item.is-playing {
+  transform: translateX(4px);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.presenter-page .scene-feed__time {
+  color: #aa9ba0;
+  font-variant-numeric: tabular-nums;
+}
+.presenter-page .scene-feed__source { font-weight: 700; }
+.presenter-page .scene-feed__source--host { color: #91c2ff; }
+.presenter-page .scene-feed__source--gift { color: var(--stage-amber); }
+.presenter-page .scene-feed__source--user { color: #ff96ac; }
+
+.presenter-page .scene-replay {
+  width: 100%;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 0;
+  color: #fff9f5;
+  background: rgba(255, 255, 255, 0.08);
+  font-weight: 700;
+}
+.presenter-page .scene-replay:active { background: rgba(255, 255, 255, 0.14); }
+.presenter-page .scene-replay__icon { font-size: var(--font-size-xs); }
+
+.presenter-page .coach-cue {
+  position: relative;
+  margin: 14px 3px 18px;
+  padding: 14px 14px 12px 18px;
+  background: var(--stage-paper);
+  box-shadow: 0 5px 16px rgba(80, 58, 49, 0.08);
+  clip-path: polygon(0 0, 100% 0, 100% 86%, 97% 100%, 0 100%);
+}
+
+.presenter-page .coach-cue::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: var(--stage-red);
+}
+
+.presenter-page .coach-cue > span {
+  color: var(--stage-red-dark);
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+}
+.presenter-page .coach-cue p { margin: 5px 0 0; }
+
+.presenter-page .free-vote-section {
+  margin: 16px 0;
+}
+.presenter-page .free-vote-section h2 {
+  margin: 0 0 10px;
+  font-size: var(--font-size-md);
+}
+.presenter-page .vote-options {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.presenter-page .vote-option {
+  min-height: 48px;
+  padding: 4px;
+  border: 1px solid var(--stage-line);
+  border-radius: 9px;
+  color: var(--stage-muted);
+  background: var(--stage-paper);
+}
+.presenter-page .vote-option[aria-pressed="true"] {
+  border-color: var(--stage-red-dark);
+  color: #fffaf7;
+  background: var(--stage-red-dark);
+}
+
+.presenter-page .writing-desk { margin-top: 16px; }
+.presenter-page .writing-desk > label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 700;
+}
+
+.presenter-page .structure-prompt {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-sm);
-}
-.chip {
-  min-height: 44px; /* 触控下限 */
-  padding: 0 var(--space-lg);
-  border-radius: 999px;
-  border: 1px solid var(--color-border);
-  background: var(--color-card);
-  color: var(--color-text-secondary);
+  gap: 4px 9px;
+  margin-bottom: 9px;
+  color: var(--stage-muted);
   font-size: var(--font-size-sm);
-  transition: all 0.12s;
 }
-.chip:active {
-  border-color: var(--color-primary);
-  color: var(--color-primary);
-}
-.chip[aria-pressed="true"] {
-  background: var(--color-primary);
-  border-color: var(--color-primary);
-  color: #fff;
-  font-weight: 600;
+.presenter-page .structure-prompt span:not(:last-child)::after {
+  content: "→";
+  margin-left: 9px;
+  color: var(--stage-faint);
 }
 
-/* ---- 票况 chip 加大版（v2 唯一选择项，手机上要醒目好点） ---- */
-.chip-group--big { gap: var(--space-md); }
-.chip-group--big .chip {
-  flex: 1;
-  min-height: 56px;
-  font-size: var(--font-size-md);
-  padding: 0 var(--space-sm);
-  white-space: nowrap;
+.presenter-page .writing-desk .script-input {
+  width: 100%;
+  min-height: 176px;
+  resize: vertical;
+  padding: 14px;
+  border: 1px solid var(--stage-line);
+  border-radius: 10px;
+  color: var(--stage-text);
+  background: var(--stage-paper);
+  line-height: 1.7;
+  outline: none;
+}
+.presenter-page .writing-desk .script-input:focus {
+  border-color: var(--stage-red);
+  box-shadow: 0 0 0 3px rgba(229, 77, 66, 0.13);
 }
 
-/* ---- 表单校验未通过时的视觉提示 ---- */
-.chip-group--invalid {
-  outline: 2px solid var(--color-bad);
-  outline-offset: 2px;
-  border-radius: var(--radius-md);
+.presenter-page .writing-desk__foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 6px 0 16px;
+  color: var(--stage-muted);
+  font-size: var(--font-size-sm);
 }
+.presenter-page .writing-desk__foot .is-saved { color: #147651; }
 
-/* ---- 提交中：整个表单只读，防止等待期间误改数据 ---- */
-.main-view--submitting {
-  pointer-events: none;
-  opacity: 0.65;
+@media (max-width: 350px) {
+  .presenter-page .scene-feed__item {
+    grid-template-columns: 22px 36px 1fr;
+    gap: 6px;
+    padding-inline: 10px;
+  }
+  .presenter-page .structure-prompt { gap: 4px 6px; }
+  .presenter-page .structure-prompt span:not(:last-child)::after { margin-left: 6px; }
 }

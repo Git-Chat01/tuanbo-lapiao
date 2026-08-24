@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' https://lapiao.aivar.cc http://127.0.0.1:* http://localhost:*; object-src 'none'; form-action 'self'; base-uri 'self'">
   <!-- 隐藏后台：不给任何页面加链接，同时告诉搜索引擎不要收录 -->
   <meta name="robots" content="noindex, nofollow">
   <title>拉票话术教练 · 后台</title>
@@ -52,14 +53,14 @@
         <h2 class="coach-col__title">案例库</h2>
         <div class="tabs" role="tablist">
           <button type="button" id="tab-auto" class="tab tab--active" role="tab" aria-selected="true">
-            自动吸收清单
+            自动候选审核
           </button>
           <button type="button" id="tab-manual" class="tab" role="tab" aria-selected="false">
             教练投喂清单
           </button>
         </div>
         <p id="list-hint" class="list-hint">
-          学员过关的稿子自动进这里，不需要你天天看。有空翻翻：吸收错了？删掉，再用左边重新投喂（就是改判）。
+          学员过关稿只会作为候选进入这里，未审核不会给 AI 学习。发布真正值得学的；方向不对就拒绝，避免同一稿件再次进入候选。
         </p>
 
         <div id="list-container" class="list-container"></div>
