@@ -59,6 +59,14 @@ const cases = await loadCasesModule();
 const prompt = await loadPromptModule();
 const index = await loadIndexModule();
 
+assert.match(prompt.SYSTEM_PROMPT, /姿态判断与用户支点判断是两条独立轴/u);
+assert.match(prompt.SYSTEM_PROMPT, /“?帮我组一组“?.{0,80}不是求情/u);
+assert.match(prompt.SYSTEM_PROMPT, /求一求你了/u);
+assert.match(prompt.SYSTEM_PROMPT, /我给你跪下了/u);
+assert.match(prompt.SYSTEM_PROMPT, /案例不能推翻硬边界/u);
+assert.deepEqual(cases.extractTags("帮帮忙，拜托大家帮我组一组"), []);
+assert.deepEqual(cases.extractTags("求一求你了，我给你跪下了"), ["求一求", "跪下"]);
+
 const structureKeys = [
   "self_intro",
   "gratitude",
@@ -310,12 +318,30 @@ const gratitudeOnlyTarget = makeReportForScript(gratitudeOnlyTargetScript, {
 });
 index.applyReportSafetyGates(gratitudeOnlyTarget, [], {
   sourceScript: gratitudeOnlyTargetScript,
-  scenario: { targetUser: "凯哥" },
+  scenario: { targetUser: "凯哥", recentGift: "凯哥刚送了小心心" },
 });
+assert.equal(
+  gratitudeOnlyTarget.structure_checks.find((item) => item.key === "gratitude").status,
+  "met",
+  "点名并接住具体礼物的感谢应保留 met"
+);
 assert.equal(
   gratitudeOnlyTarget.structure_checks.find((item) => item.key === "target_user").status,
   "partial",
   "只在感谢里提到目标用户不算 Q 用户"
+);
+
+const genericGratitudeScript =
+  "我是今天第一天来的小满。谢谢大家！凯哥，冲啊！现在还差320票，大家上票。";
+const genericGratitude = makeReportForScript(genericGratitudeScript);
+index.applyReportSafetyGates(genericGratitude, [], {
+  sourceScript: genericGratitudeScript,
+  scenario: { targetUser: "凯哥", recentGift: "凯哥刚送了小心心" },
+});
+assert.equal(
+  genericGratitude.structure_checks.find((item) => item.key === "gratitude").status,
+  "partial",
+  "现场有具体礼物时，泛泛的“谢谢大家”不能虚判为接住礼物"
 );
 
 for (const commaLeakScript of [
@@ -351,6 +377,9 @@ for (const naturalTargetScript of [
   "凯哥，刚才你不是说想看我撒娇吗，那我来一个。",
   "凯哥，要是你想看返场就补一票。",
   "凯哥，这个新舞你想看吗，想看就扣1。",
+  "凯哥，我再确认一下，能不能帮我组一组？",
+  "凯哥，我再确认一下，能不能请你帮我组一组？",
+  "凯哥，我再确认一下，能不能请凯哥来帮我组一组？",
 ]) {
   const naturalTarget = makeReportForScript(naturalTargetScript);
   index.applyReportSafetyGates(naturalTarget, [], {
@@ -368,6 +397,8 @@ for (const guidedWrongPersonScript of [
   "凯哥，刚才小王你愿意就补一点。",
   "凯哥，主持刚说小王你想看返场就扣1。",
   "凯哥，谢谢你，刚才小王你愿意就补一点。",
+  "凯哥，我再确认一下，小王能不能帮我组一组？",
+  "凯哥，我再确认一下，能不能请小王帮我组一组？",
 ]) {
   const guidedWrongPerson = makeReportForScript(guidedWrongPersonScript);
   index.applyReportSafetyGates(guidedWrongPerson, [], {
@@ -447,7 +478,13 @@ index.applyReportSafetyGates(playfulSinglePlea, [], {
   sourceScript: "凯哥，求求你啦，这句算不算过关？",
   scenario: { targetUser: "凯哥" },
 });
-assert.equal(playfulSinglePlea.verdict, "passed");
+assert.equal(playfulSinglePlea.verdict, "almost", "单次显性乞求也不能当作普通委婉请求毕业");
+assert.equal(playfulSinglePlea.card_type, "logic");
+assert.equal(playfulSinglePlea.line_reviews[0].mark, "wrong");
+assert.match(playfulSinglePlea.line_reviews[0].comment, /不同于“帮我组一组”/u);
+assert.match(playfulSinglePlea.card_why, /显性乞求|姿态逻辑/u);
+assert.match(playfulSinglePlea.verdict_reason, /显性乞求|平等请求/u);
+assert.doesNotMatch(playfulSinglePlea.verdict_reason, /可以过关/u);
 
 const supportedPleaScript = "凯哥，求求你补最后一票，复活后你点舞，我不想被淘汰。";
 const supportedPlea = makeReportForScript(supportedPleaScript, { verdict: "almost" });
@@ -455,7 +492,7 @@ index.applyReportSafetyGates(supportedPlea, [], {
   sourceScript: supportedPleaScript,
   scenario: { targetUser: "凯哥" },
 });
-assert.equal(supportedPlea.verdict, "passed", "有明确点舞交换时不能因求情词面误杀");
+assert.equal(supportedPlea.verdict, "off", "用户侧交换价值不能洗掉显性乞求姿态");
 
 for (const supportedEntertainmentPleaScript of [
   "凯哥，求求你帮帮我，你上几张你说了算。",
@@ -472,10 +509,81 @@ for (const supportedEntertainmentPleaScript of [
   });
   assert.equal(
     supportedEntertainmentPlea.verdict,
-    "passed",
-    `娱乐交换/决定权不能被求情词面误杀：${supportedEntertainmentPleaScript}`
+    "off",
+    `娱乐交换可以算用户支点，但不能洗掉“求求你帮帮我”的明确乞求：${supportedEntertainmentPleaScript}`
   );
 }
+
+for (const neutralPoliteRequestScript of [
+  "凯哥，能不能帮我组一组，你上几张你说了算。",
+  "凯哥，帮我丢一丢，我撒个娇，满意你再补。",
+  "凯哥，方便的话帮我补一补，想看返场就在公屏扣1。",
+  "凯哥，帮帮我，你愿意上多少看着来。",
+]) {
+  const neutralPoliteRequest = makeReportForScript(neutralPoliteRequestScript, {
+    verdict: "almost",
+  });
+  index.applyReportSafetyGates(neutralPoliteRequest, [], {
+    sourceScript: neutralPoliteRequestScript,
+    scenario: { targetUser: "凯哥" },
+  });
+  assert.equal(
+    neutralPoliteRequest.verdict,
+    "passed",
+    `普通或委婉的“帮我+具体动作”不得按低姿态拦截：${neutralPoliteRequestScript}`
+  );
+  assert.equal(neutralPoliteRequest.line_reviews[0].mark, "good");
+}
+
+const alternateBeggingScript = "凯哥，求一求你了，你愿意就补一张。";
+const alternateBegging = makeReportForScript(alternateBeggingScript);
+index.applyReportSafetyGates(alternateBegging, [], {
+  sourceScript: alternateBeggingScript,
+  scenario: { targetUser: "凯哥" },
+});
+assert.equal(alternateBegging.verdict, "almost");
+assert.equal(alternateBegging.line_reviews[0].mark, "wrong");
+
+const kneelingScript = "凯哥，我给你跪下了，你愿意就救救我这一次。";
+const kneeling = makeReportForScript(kneelingScript);
+index.applyReportSafetyGates(kneeling, [], {
+  sourceScript: kneelingScript,
+  scenario: { targetUser: "凯哥" },
+});
+assert.equal(kneeling.verdict, "off");
+assert.equal(kneeling.card_type, "logic");
+assert.equal(kneeling.line_reviews[0].mark, "wrong");
+assert.match(kneeling.line_reviews[0].comment, /自贬|施舍/u);
+assert.match(kneeling.card_why, /自贬|姿态逻辑/u);
+assert.doesNotMatch(kneeling.verdict_reason, /可以过关/u);
+
+const notCooperatingScript = "凯哥，你想看返场就补一张，我不配合硬要票。";
+const notCooperating = makeReportForScript(notCooperatingScript, { verdict: "almost" });
+index.applyReportSafetyGates(notCooperating, [], {
+  sourceScript: notCooperatingScript,
+  scenario: { targetUser: "凯哥" },
+});
+assert.equal(notCooperating.verdict, "passed", "“我不配合”不能被“我不配”子串误判为自贬");
+assert.equal(notCooperating.line_reviews[0].mark, "good");
+
+const unworthyScript = "凯哥，你想看返场就补一张，我不配。";
+const unworthy = makeReportForScript(unworthyScript);
+index.applyReportSafetyGates(unworthy, [], {
+  sourceScript: unworthyScript,
+  scenario: { targetUser: "凯哥" },
+});
+assert.equal(unworthy.verdict, "off", "独立的“我不配”必须按明确自贬处理");
+assert.equal(unworthy.card_type, "logic");
+assert.equal(unworthy.line_reviews[0].mark, "wrong");
+
+const negatedUnworthyScript = "凯哥，你想看返场就补一张，我才不会说我不配。";
+const negatedUnworthy = makeReportForScript(negatedUnworthyScript, { verdict: "almost" });
+index.applyReportSafetyGates(negatedUnworthy, [], {
+  sourceScript: negatedUnworthyScript,
+  scenario: { targetUser: "凯哥" },
+});
+assert.equal(negatedUnworthy.verdict, "passed", "被明确否定的“我不配”不能当成主播自贬");
+assert.equal(negatedUnworthy.line_reviews[0].mark, "good");
 
 for (const negatedEntertainmentPleaScript of [
   "凯哥求求你帮帮我，我不撒娇，大家上票。",
@@ -524,6 +632,109 @@ index.applyReportSafetyGates(quotedPlea, [], {
   scenario: { targetUser: "凯哥" },
 });
 assert.equal(quotedPlea.verdict, "almost", "引用观众的求情话不能当成主播卖惨");
+
+for (const otherQuotedPleaScript of [
+  "凯哥，你刚说「求求你可怜我」，这轮你愿意就补一点。",
+  "凯哥，你愿意就补一点，不要再说‘求求你’。",
+]) {
+  const otherQuotedPlea = makeReportForScript(otherQuotedPleaScript, {
+    verdict: "almost",
+    structure_checks: allMetChecks().map((item) =>
+      item.key === "user_reason" ? { ...item, status: "partial" } : item
+    ),
+  });
+  index.applyReportSafetyGates(otherQuotedPlea, [], {
+    sourceScript: otherQuotedPleaScript,
+    scenario: { targetUser: "凯哥" },
+  });
+  assert.equal(otherQuotedPlea.verdict, "almost", `引用或制止语境不能算主播乞求：${otherQuotedPleaScript}`);
+  assert.equal(otherQuotedPlea.line_reviews[0].mark, "good");
+}
+
+const attributedPhraseScript = "凯哥，你那句“求求你”我听见了，这轮你愿意就补一点。";
+const attributedPhrase = makeReportForScript(attributedPhraseScript, {
+  verdict: "almost",
+  structure_checks: allMetChecks().map((item) =>
+    item.key === "user_reason" ? { ...item, status: "partial" } : item
+  ),
+});
+index.applyReportSafetyGates(attributedPhrase, [], {
+  sourceScript: attributedPhraseScript,
+  scenario: { targetUser: "凯哥" },
+});
+assert.equal(attributedPhrase.verdict, "almost", "明确归属于用户的原话不能当成主播本人乞求");
+
+const emphasizedPleaScript = "凯哥，帮帮我，‘求求你’，这轮真的不能走。";
+const emphasizedPlea = makeReportForScript(emphasizedPleaScript, { verdict: "almost" });
+index.applyReportSafetyGates(emphasizedPlea, [], {
+  sourceScript: emphasizedPleaScript,
+  scenario: { targetUser: "凯哥" },
+});
+assert.equal(emphasizedPlea.verdict, "off", "主播用引号强调自己的乞求时不能当成引用豁免");
+assert.equal(emphasizedPlea.line_reviews[0].mark, "wrong");
+
+const addressedQuotedPleaScript = "凯哥，帮帮我，我只能跟你说‘求求你’，这轮真的不能走。";
+const addressedQuotedPlea = makeReportForScript(addressedQuotedPleaScript);
+index.applyReportSafetyGates(addressedQuotedPlea, [], {
+  sourceScript: addressedQuotedPleaScript,
+  scenario: { targetUser: "凯哥" },
+});
+assert.equal(addressedQuotedPlea.verdict, "off", "主播对用户说出的引号内容仍是主播本人的乞求");
+assert.equal(addressedQuotedPlea.line_reviews[0].mark, "wrong");
+
+for (const negatedBeggingScript of [
+  "凯哥，你想看返场就补一张，我没有求求你。",
+  "凯哥，你想看返场就补一张，我没求求你。",
+  "凯哥，你想看返场就补一张，我未求求你。",
+  "凯哥，你想看返场就补一张，我无需去求求你。",
+  "凯哥，你想看返场就补一张，我没必要求求你。",
+  "凯哥，你想看返场就补一张，我不需要再求求你。",
+  "凯哥，你想看返场就补一张，我才不会求求你。",
+  "凯哥，你想看返场就补一张，我不是在求求你。",
+  "凯哥，你想看返场就补一张，我没有真的求求你。",
+]) {
+  const negatedBegging = makeReportForScript(negatedBeggingScript, {
+    verdict: "almost",
+  });
+  index.applyReportSafetyGates(negatedBegging, [], {
+    sourceScript: negatedBeggingScript,
+    scenario: { targetUser: "凯哥" },
+  });
+  assert.equal(
+    negatedBegging.verdict,
+    "passed",
+    `明确否定的乞求词不能被当作主播正在乞求：${negatedBeggingScript}`
+  );
+  assert.equal(negatedBegging.line_reviews[0].mark, "good");
+}
+
+const nestedNegationScript = "凯哥，你想看返场就补一张，我不会说不得不求求你。";
+const nestedNegation = makeReportForScript(nestedNegationScript, { verdict: "almost" });
+index.applyReportSafetyGates(nestedNegation, [], {
+  sourceScript: nestedNegationScript,
+  scenario: { targetUser: "凯哥" },
+});
+assert.equal(nestedNegation.verdict, "passed", "外层明确否定必须覆盖内层“不得不求求你”");
+assert.equal(nestedNegation.line_reviews[0].mark, "good");
+
+for (const doubleNegativeBeggingScript of [
+  "凯哥，我不得不求求你，帮帮我。",
+  "凯哥，我不能不求求你，帮帮我。",
+  "凯哥，我不是不求求你，帮帮我。",
+  "凯哥，我不会不求求你，帮帮我。",
+]) {
+  const doubleNegativeBegging = makeReportForScript(doubleNegativeBeggingScript);
+  index.applyReportSafetyGates(doubleNegativeBegging, [], {
+    sourceScript: doubleNegativeBeggingScript,
+    scenario: { targetUser: "凯哥" },
+  });
+  assert.equal(
+    doubleNegativeBegging.verdict,
+    "off",
+    `双重否定仍表达正在乞求，不能按否定语境豁免：${doubleNegativeBeggingScript}`
+  );
+  assert.equal(doubleNegativeBegging.line_reviews[0].mark, "wrong");
+}
 
 const explicitViewerReasonScript = "凯哥，你要是想看我返场就补一票。";
 const explicitViewerReason = makeReportForScript(explicitViewerReasonScript, {
@@ -861,6 +1072,71 @@ const finerClauseReviews = index.normalizeReport(
   "长句第一段，长句第二段。下一句！"
 );
 assert.equal(finerClauseReviews._lineReviewsContractValid, true);
+
+const missingSoftCommaReviews = index.normalizeReport(
+  makeRawReport({
+    line_reviews: [
+      { original: "长句第一段", mark: "good", comment: "第一段方向正确" },
+      { original: "长句第二段。", mark: "good", comment: "第二段方向正确" },
+    ],
+  }),
+  "长句第一段，长句第二段。"
+);
+assert.equal(missingSoftCommaReviews._lineReviewsContractValid, true);
+assert.equal(
+  missingSoftCommaReviews.line_reviews.map((item) => item.original).join(""),
+  "长句第一段，长句第二段。",
+  "模型拆分时只漏软逗号，后端应按原稿位置无损补回"
+);
+
+const missingAllPunctuationReviews = index.normalizeReport(
+  makeRawReport({
+    line_reviews: [
+      { original: "第一句", mark: "good", comment: "第一句方向正确" },
+      { original: "第二句", mark: "good", comment: "第二句方向正确" },
+    ],
+  }),
+  "第一句。第二句！"
+);
+assert.equal(missingAllPunctuationReviews._lineReviewsContractValid, true);
+assert.deepEqual(
+  missingAllPunctuationReviews.line_reviews.map((item) => item.original),
+  ["第一句。", "第二句！"],
+  "模型只漏原稿标点时可以按原位置补回，并保留逐句边界"
+);
+
+const movedCommaReviews = index.normalizeReport(
+  makeRawReport({
+    line_reviews: [
+      {
+        original: "凯哥，你想看返场，大家不，要投票。",
+        mark: "good",
+        comment: "模型错误移动了逗号",
+      },
+    ],
+  }),
+  "凯哥，你想看返场，大家不要投票。"
+);
+assert.equal(
+  movedCommaReviews._lineReviewsContractValid,
+  false,
+  "模型新增或移动标点可能改变句意，不能借自动修复通过逐字覆盖门槛"
+);
+
+const rewrittenLineReviews = index.normalizeReport(
+  makeRawReport({
+    line_reviews: [
+      { original: "长句第一段，", mark: "good", comment: "第一段方向正确" },
+      { original: "模型改写了。", mark: "good", comment: "第二段被改写" },
+    ],
+  }),
+  "长句第一段，长句第二段。"
+);
+assert.equal(
+  rewrittenLineReviews._lineReviewsContractValid,
+  false,
+  "正文被改写时不能借软标点修复绕过逐字覆盖门槛"
+);
 
 const normalizedDirection = index.normalizeReport(
   makeRawReport({

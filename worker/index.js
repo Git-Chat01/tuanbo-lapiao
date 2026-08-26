@@ -235,7 +235,7 @@ export default {
 const TARGET_INTERACTION_PATTERN =
   /你(?:要|愿|想|说|刚|都|会|还|能)|要不要|愿不愿|考虑|扣(?:个|一)|打个|补(?:一|几|票|上)|上票|投票|给我|冲(?:啊|一|起来|票)|跟上|帮我|求求|偏心|返场|算不算|别(?:装|可怜)|喜欢|点舞|点个|整活|接不接|看我|想看/u;
 const TARGET_INTERACTION_START_PATTERN =
-  /^(?:你(?!们)|刚才(?:主持说)?你(?!们)|要是你(?!们)|如果你(?!们)|假如你(?!们)|这个(?:新舞|节目|整活)?你(?!们)|这支舞你(?!们)|这段(?:舞|表演|才艺)?你(?!们)|主持(?:刚|刚才)?说你(?!们)|那你(?!们)|这轮你(?!们)|现在你(?!们)|接下来你(?!们)|然后你(?!们)|愿意|要不要|想看|觉得|求求你|再偏心|给我|帮我|补|上票|投票|冲|跟上|别(?:装|可怜)|让我们|看我|算不算|喜欢|我给你|我马上)/u;
+  /^(?:你(?!们)|刚才(?:主持说)?你(?!们)|要是你(?!们)|如果你(?!们)|假如你(?!们)|这个(?:新舞|节目|整活)?你(?!们)|这支舞你(?!们)|这段(?:舞|表演|才艺)?你(?!们)|主持(?:刚|刚才)?说你(?!们)|那你(?!们)|这轮你(?!们)|现在你(?!们)|接下来你(?!们)|然后你(?!们)|愿意|要不要|能不能|可不可以|方便(?:的话)?|想看|觉得|求求你|再偏心|给我|帮帮我|帮我|补|上票|投票|冲|跟上|别(?:装|可怜)|让我们|看我|算不算|喜欢|我给你|我马上)/u;
 const GENERIC_TARGET_PATTERN =
   /^(?:大哥|哥哥|小哥哥|帅哥|美女|小美女|靓仔|宝宝|宝贝|宝子|姐姐|小姐姐|大姐|老板|老师|大叔|叔叔|阿姨|哥们|兄弟们?|姐妹们?|老铁|大佬|家人们?|朋友们?|大家|各位|宝宝们?|粉丝们?|观众们?|主持|拜托大家|这一轮|这轮|现在|刚才|谢谢|感谢|我是|我想|我还|我刚|我准备|想看|愿意)/u;
 const AI_FLAVOR_SOURCE_PHRASES = [
@@ -250,13 +250,46 @@ const AI_FLAVOR_SOURCE_PHRASES = [
   "点燃舞台",
 ];
 const POSITIVE_FEEDBACK_PATTERN =
-  /(?:公屏|评论区)?(?:扣|打)(?:个)?(?:[01一零]|叉)|(?:给我)?(?:补|上)(?:一|几|点)?(?:票|张|脚)|投(?:一|几|点)?票|评论(?:一下|告诉我|说一声)|公屏(?:说|打|扣)|(?:你(?:来)?选|让你选)(?:一个|节目|舞|歌)?|(?:你(?:来)?决定|由你决定)|跟上(?:一|几|点)?(?:票|张|脚)?|一人(?:补|上)(?:一|几|点)(?:票|张|脚)?/gu;
+  /(?:公屏|评论区)?(?:扣|打)(?:个)?(?:[01一零]|叉)|(?:给我)?(?:补|上)(?:一|几|点)?(?:票|张|脚)|投(?:一|几|点)?票|帮我(?:组一组|丢一丢|补一补)|评论(?:一下|告诉我|说一声)|公屏(?:说|打|扣)|(?:你(?:来)?选|让你选)(?:一个|节目|舞|歌)?|(?:你(?:来)?决定|由你决定)|跟上(?:一|几|点)?(?:票|张|脚)?|跟(?:一|几|点)(?:票|张|脚)?|一人(?:补|上)(?:一|几|点)(?:票|张|脚)?/gu;
 const NEGATED_ACTION_PREFIX_PATTERN =
   /(?:不|别|没|未|无需|无须|不用|不要|不必|没必要|没有必要|不由|轮不到).{0,3}$/u;
-const ENTERTAINMENT_VALUE_PATTERN =
-  /(?:撒个?娇|整(?:个)?活|跳(?:舞|一段(?:舞)?|一支(?:舞)?|支舞|一个舞|个舞)|唱(?:歌|一段(?:歌)?|一首(?:歌)?|首歌|一个歌|个歌)|返场|新舞|才艺|表演)/gu;
-const NEGATED_ENTERTAINMENT_PREFIX_PATTERN =
-  /(?:不|别|没|未|不会|不想|不愿|不要|不能|不打算|拒绝|不再|并非|不是).{0,6}$/u;
+const EXPLICIT_BEGGING_SIGNALS = [
+  "就当我求你",
+  "真的求你",
+  "求一求大家",
+  "求一求家人",
+  "求一求你",
+  "求求大家",
+  "求求家人",
+  "求求你",
+  "跪求",
+];
+const PITY_OR_DEPENDENCY_SIGNALS = [
+  "可怜可怜我",
+  "可怜我",
+  "行行好",
+  "全靠你救我",
+  "没有你我就完了",
+  "没你我就完了",
+  "救救我",
+];
+const SELF_ABASEMENT_SIGNALS = [
+  "我给你跪下",
+  "给你跪下",
+  "给你磕头",
+  "施舍我",
+  "施舍一票",
+  "给你当牛做马",
+  "我给你当牛做马",
+  "给你当孙子",
+  "你让我干什么都行",
+];
+const BEGGING_REINFORCEMENT_SIGNALS = [
+  "帮帮我",
+  "不想被淘汰",
+  "这轮真的不能走",
+  "我真的不能走",
+];
 
 function hasPositiveFeedbackAction(text) {
   POSITIVE_FEEDBACK_PATTERN.lastIndex = 0;
@@ -270,29 +303,20 @@ function hasPositiveFeedbackAction(text) {
   return false;
 }
 
-function hasPositiveEntertainmentContext(text) {
-  const source = String(text || "");
-  ENTERTAINMENT_VALUE_PATTERN.lastIndex = 0;
-  for (const cue of source.matchAll(ENTERTAINMENT_VALUE_PATTERN)) {
-    const prefix = source
-      .slice(Math.max(0, cue.index - 10), cue.index)
-      .replace(/\s+/g, "");
-    const suffix = source
-      .slice(cue.index + cue[0].length, cue.index + cue[0].length + 8)
-      .replace(/\s+/g, "")
-      .replace(/^[，,。.!！？?；;：:“”"'（）()]+/u, "");
-    if (NEGATED_ENTERTAINMENT_PREFIX_PATTERN.test(prefix)) continue;
-    if (/^(?:才怪|不可能|不行|算了|没门|免了)/u.test(suffix)) continue;
-    return true;
-  }
-  return false;
-}
-
 function splitHardSentences(value) {
   const matches = String(value || "").match(
     /[^。！？!?；;.]+(?:[。！？!?；;.]+[”’"'）】》]*)?|[。！？!?；;.]+[”’"'）】》]*/gu
   );
   return (matches || []).filter((item) => item.trim().length > 0);
+}
+
+function hasMismatchedDelegatedActor(rawBody, target) {
+  const body = String(rawBody || "").replace(/^[，,:：\s]+/u, "").trim();
+  const delegatedActor = body.match(
+    /^(?:能不能|可不可以|方便(?:的话)?)?(?:请|让|麻烦)([\p{L}\p{N}_·-]{1,12}?)(?:来)?帮我/u
+  )?.[1];
+  if (!delegatedActor) return false;
+  return !["你", "一下", "一下子", String(target || "").trim()].includes(delegatedActor);
 }
 
 function hasInteractiveAddressBody(rawBody, target) {
@@ -307,10 +331,24 @@ function hasInteractiveAddressBody(rawBody, target) {
       nextTurn = nextTurn.slice(target.length).replace(/^[，,:：\s]+/u, "");
     }
     // 后续若转向家人们或另一个昵称，下面的受限开头校验会拒绝。
+    if (hasMismatchedDelegatedActor(nextTurn, target)) return false;
+    return TARGET_INTERACTION_START_PATTERN.test(nextTurn) && TARGET_INTERACTION_PATTERN.test(nextTurn);
+  }
+
+  // “我再确认一下”只是承接语；确认后必须立刻把动作递给原目标。
+  // 若转而喊“小王能不能……”，不能借前面的凯哥算作 Q 到凯哥。
+  const confirmationPrefix = body.match(/^我(?:再)?确认(?:一下)?[，,:：\s]*/u)?.[0];
+  if (confirmationPrefix) {
+    let nextTurn = body.slice(confirmationPrefix.length).trim();
+    if (target && nextTurn.startsWith(target)) {
+      nextTurn = nextTurn.slice(target.length).replace(/^[，,:：\s]+/u, "");
+    }
+    if (hasMismatchedDelegatedActor(nextTurn, target)) return false;
     return TARGET_INTERACTION_START_PATTERN.test(nextTurn) && TARGET_INTERACTION_PATTERN.test(nextTurn);
   }
 
   // 非感谢句也必须让动作紧接在这个对象后面，不能借前面的名字承接后方群体动作。
+  if (hasMismatchedDelegatedActor(body, target)) return false;
   return TARGET_INTERACTION_START_PATTERN.test(body) && TARGET_INTERACTION_PATTERN.test(body);
 }
 
@@ -360,16 +398,82 @@ function hasConcreteTargetAddress(sourceScript, scenarioTarget = "") {
   return false;
 }
 
+function hasNegatingPrefix(sourceScript, index) {
+  const prefix = String(sourceScript || "")
+    .slice(Math.max(0, index - 16), index)
+    .replace(/\s+/g, "");
+  const modifiers = "(?:再|去|会|要|想|真的|继续|在|说|讲){0,3}";
+  const negationCue =
+    "(?:不|没|未|别|不要|不用|无需|不必|不能|不该|并不|绝不|从不|从来不|从没|从来没|没有|并没有|才不|不会|才不会|不是|不是在|不想|没必要|没有必要|不需要)";
+  const negatingTail = new RegExp(`${negationCue}${modifiers}(?:我|自己|主播)?$`, "u");
+  // “不得不/不能不”等本身是双重否定；但若外层是“不会说不得不……”，
+  // 外层否定仍支配整段被提及的话，不能只看离信号最近的“不”。
+  const doubleNegative = prefix.match(
+    new RegExp(`(?:不得不|不能不|不是不|不会不|并非不|没有不|未尝不|无不)${modifiers}$`, "u")
+  );
+  if (doubleNegative) {
+    const outerPrefix = prefix.slice(0, doubleNegative.index);
+    return negatingTail.test(outerPrefix);
+  }
+  return negatingTail.test(prefix);
+}
+
 function hasUnnegatedSignal(sourceScript, term) {
   let fromIndex = 0;
   while (fromIndex < sourceScript.length) {
     const index = sourceScript.indexOf(term, fromIndex);
     if (index < 0) return false;
-    const prefix = sourceScript.slice(Math.max(0, index - 5), index).replace(/\s+/g, "");
-    if (!/(?:不|别|不要|不用|才不|绝不|并不|不是|不想)$/u.test(prefix)) return true;
+    if (!hasNegatingPrefix(sourceScript, index)) return true;
     fromIndex = index + term.length;
   }
   return false;
+}
+
+function withoutAttributedQuotedText(value) {
+  const source = String(value || "");
+  const quotePattern = /“([^”]*)”|"([^"]*)"|‘([^’]*)’|'([^']*)'|「([^」]*)」|『([^』]*)』/gu;
+  let result = "";
+  let cursor = 0;
+  for (const match of source.matchAll(quotePattern)) {
+    const index = match.index || 0;
+    result += source.slice(cursor, index);
+    const content = match[1] ?? match[2] ?? match[3] ?? match[4] ?? match[5] ?? match[6] ?? "";
+    const prefix = source.slice(Math.max(0, index - 24), index).replace(/\s+/g, "");
+    const suffix = source
+      .slice(index + match[0].length, index + match[0].length + 18)
+      .replace(/\s+/g, "");
+    const currentSpeakerAddressingSomeone =
+      /(?:跟|对|向|和|给|同|冲)(?:你|他|她|主持|观众|用户|家人|大哥|[\p{L}\p{N}_·-]{1,10}(?:哥|姐|总|老板|老师))(?:刚|刚才|之前|当时)?(?:说|讲|问)(?:的|过|是|了|那句|这句)*$/u.test(
+        prefix
+      );
+    const attributedToSomeoneElse =
+      (!currentSpeakerAddressingSomeone &&
+        /(?:你|他|她|主持|观众|用户|家人|大哥|[\p{L}\p{N}_·-]{1,10}(?:哥|姐|总|老板|老师))(?:刚|刚才|之前|当时)?(?:(?:说|问|写|发|刷|提过|讲过)(?:的|过|是|了|那句|这句)*|(?:的)?(?:原话|那句|这句))$/u.test(
+          prefix
+        )) ||
+      /(?:引用|原话|比如|例如|举例|(?:别|不要|不能|不该)(?:再)?(?:说|讲))(?:是|了|这句|那句)*$/u.test(
+        prefix
+      ) ||
+      /^(?:这|那)(?:几|三|两|两个)?个字|^(?:才|这才)(?:算|是)/u.test(suffix);
+    result += attributedToSomeoneElse ? " " : content;
+    cursor = index + match[0].length;
+  }
+  return result + source.slice(cursor);
+}
+
+function firstUnnegatedSignal(sourceScript, terms) {
+  return terms.find((term) => hasUnnegatedSignal(sourceScript, term)) || "";
+}
+
+function firstSelfAbasementSignal(sourceScript) {
+  const fixedSignal = firstUnnegatedSignal(sourceScript, SELF_ABASEMENT_SIGNALS);
+  if (fixedSignal) return fixedSignal;
+
+  // “我不配”是明确自贬，但“我不配合……”里的“不配”只是“不合作”的词内重合。
+  for (const match of String(sourceScript || "").matchAll(/我不配(?!合)/gu)) {
+    if (!hasNegatingPrefix(sourceScript, match.index || 0)) return match[0];
+  }
+  return "";
 }
 
 function hasExplicitViewerReasonWithFeedback(sourceScript) {
@@ -403,32 +507,27 @@ function hasExplicitViewerReasonWithFeedback(sourceScript) {
   return false;
 }
 
-function hasExplicitUserValueCue(sourceScript) {
-  const patterns = [
-    /(?:复活后|上票后|过了以后).{0,12}(?:你)?(?:点舞|点歌|点节目|选节目|提要求)/u,
-    /你(?:来)?点(?:舞|歌|节目)|你来选|你说跳什么|你定(?:节目|舞|歌|数量|几张|要不要)|你定(?=[。！？!?；;]|$)/u,
-    /你(?:上几张|说个数|说了算|来决定|自己定|愿意上多少|看着补)/u,
-    /满意(?:了|的话)?(?:你)?再(?:补|上票|上(?:一|几|点)(?:票|张|脚)?)|不满意.{0,8}(?:不补|打叉|再说)/u,
-  ];
-  for (const pattern of patterns) {
-    const matcher = new RegExp(pattern.source, `${pattern.flags.replace(/g/g, "")}g`);
-    for (const match of sourceScript.matchAll(matcher)) {
-      const prefix = sourceScript
-        .slice(Math.max(0, match.index - 8), match.index)
-        .replace(/\s+/g, "");
-      const suffix = sourceScript
-        .slice(match.index + match[0].length, match.index + match[0].length + 8)
-        .replace(/\s+/g, "")
-        .replace(/^[，,。.!！？?；;：:“”"'（）()]+/u, "");
-      if (NEGATED_ACTION_PREFIX_PATTERN.test(prefix)) continue;
-      if (/^(?:才怪|不算|不行|没用|也没用|都是假的|逗你的)/u.test(suffix)) continue;
-      return true;
-    }
+function hasSpecificScenarioGratitude(sourceScript, scenario) {
+  const target = typeof scenario?.targetUser === "string" ? scenario.targetUser.trim() : "";
+  const recentGift = typeof scenario?.recentGift === "string" ? scenario.recentGift.trim() : "";
+  if (!recentGift) return true;
+
+  const giftCue = recentGift
+    .replaceAll(target, "")
+    .replace(/(?:刚才|刚刚|刚|送给|送了|送的|送来|刷了|刷的|投了|给了|一份|一个)/gu, "")
+    .replace(/[^\p{L}\p{N}×xX]/gu, "");
+  const sentences = splitHardSentences(sourceScript);
+  for (let index = 0; index < sentences.length; index += 1) {
+    const sentence = sentences[index];
+    if (!/(?:谢谢|感谢|多谢)/u.test(sentence)) continue;
+    if (target && sentence.includes(target)) return true;
+    if (giftCue.length >= 2 && sentence.includes(giftCue)) return true;
+
+    // “凯哥。谢谢你刚才的礼物。”仍是清楚承接；后一句才喊凯哥则不能倒推给前面的泛谢。
+    const previousAddress = String(sentences[index - 1] || "").replace(/[\s\p{P}]/gu, "");
+    if (target && previousAddress === target) return true;
   }
-  return splitHardSentences(sourceScript).some(
-    (sentence) =>
-      hasPositiveEntertainmentContext(sentence) && hasPositiveFeedbackAction(sentence)
-  );
+  return false;
 }
 
 /**
@@ -478,6 +577,25 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
     ? context.scenario
     : null;
 
+  // 现场明确给了礼物事实时，“谢谢大家”只能算泛谢，不能让模型虚判为接住具体支持。
+  // 这是只降不升的事实兜底：模型漏判具体感谢时仍由模型报告负责，不在这里擅自补 met。
+  const gratitudeCheck = Array.isArray(report.structure_checks)
+    ? report.structure_checks.find((item) => item && item.key === "gratitude")
+    : null;
+  if (
+    sourceScript &&
+    gratitudeCheck?.status === "met" &&
+    typeof scenario?.recentGift === "string" &&
+    scenario.recentGift.trim() &&
+    !hasSpecificScenarioGratitude(sourceScript, scenario)
+  ) {
+    gratitudeCheck.status = "partial";
+    const scenarioTarget = typeof scenario?.targetUser === "string"
+      ? scenario.targetUser.trim()
+      : "目标用户";
+    gratitudeCheck.evidence = `只有泛泛感谢，还没接住${scenarioTarget}这次具体支持`;
+  }
+
   // “Q 用户”是毕业硬门槛：必须直接喊到正确对象，并在同一句继续递互动或上票动作。
   // 只在感谢里提到名字、喊泛称、或 Q 到 scenario 之外的人都不算完成。
   const targetCheck = Array.isArray(report.structure_checks)
@@ -509,24 +627,56 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
   }
   const hasSupportEvidence = userReasonCheck?.status === "met";
 
-  // 撒娇或“求你啦”只是一种表现形式。三种以上强卖惨信号直接判方向错误；
-  // 两种信号只有在原稿没有可独立验证的用户交换价值时才拦，不能循环信任模型 status。
+  // 委婉请求与放低姿态是两条不同语义：普通“帮我+具体动作”不命中；
+  // 显性乞求至少不能毕业，乞求叠加乞怜/依赖或明确自贬时再判整体方向错误。
+  // 用户侧交换价值不能洗掉“跪下、施舍”等自贬语义。
+  let hasLowPosture = false;
   if (sourceScript) {
-    const unquotedScript = sourceScript.replace(/“[^”]*”|"[^"]*"/gu, "");
-    const pleadingSignals = [
-      "求求你",
-      "求求大家",
-      "求求家人",
-      "可怜我",
-      "帮帮我",
-      "不想被淘汰",
-      "救救我",
-    ].filter((term) => hasUnnegatedSignal(unquotedScript, term)).length;
-    const hasExplicitUserValue = hasExplicitUserValueCue(unquotedScript);
-    if (pleadingSignals >= 3 || (pleadingSignals >= 2 && !hasExplicitUserValue)) {
-      report.verdict = "off";
+    const unquotedScript = withoutAttributedQuotedText(sourceScript);
+    const beggingSignal = firstUnnegatedSignal(unquotedScript, EXPLICIT_BEGGING_SIGNALS);
+    const pitySignal = firstUnnegatedSignal(unquotedScript, PITY_OR_DEPENDENCY_SIGNALS);
+    const selfAbasementSignal = firstSelfAbasementSignal(unquotedScript);
+    const reinforcementSignal = firstUnnegatedSignal(
+      unquotedScript,
+      BEGGING_REINFORCEMENT_SIGNALS
+    );
+    hasLowPosture = Boolean(beggingSignal || pitySignal || selfAbasementSignal);
+    const severeLowPosture = Boolean(
+      selfAbasementSignal || (beggingSignal && (pitySignal || reinforcementSignal))
+    );
+
+    // 模型若把明确乞求误标为 good，后端按原话证据纠正；否定与引用已在上面排除。
+    if (hasLowPosture && Array.isArray(report.line_reviews)) {
+      for (const review of report.line_reviews) {
+        if (!review || typeof review.original !== "string") continue;
+        const line = withoutAttributedQuotedText(review.original);
+        const lineSelfAbasement = firstSelfAbasementSignal(line);
+        const lineBegging = firstUnnegatedSignal(line, EXPLICIT_BEGGING_SIGNALS);
+        const linePity = firstUnnegatedSignal(line, PITY_OR_DEPENDENCY_SIGNALS);
+        const lineSignal = lineSelfAbasement || lineBegging || linePity;
+        if (!lineSignal || review.mark === "wrong") continue;
+        review.mark = "wrong";
+        review.comment = lineSelfAbasement
+          ? `“${lineSignal}”是在自贬或求施舍，确实把自己放低了。`
+          : `“${lineSignal}”是显性乞求或乞怜，不同于“帮我组一组”这种委婉确认。`;
+      }
+    }
+
+    if (hasLowPosture && !hasPersonaIssue && !hasDetectedRedline && !hasReportedRedline) {
       report.card_type = "logic";
-      report.verdict_reason = `这版把票建立在求情和卖惨上，用户没有得到参与台阶，方向要重新立。${report.verdict_reason || ""}`.trim();
+      const signal = selfAbasementSignal || beggingSignal || pitySignal;
+      report.card_why = selfAbasementSignal
+        ? `“${signal}”把主播摆成自贬或等施舍的一方，主卡点是姿态逻辑。`
+        : `“${signal}”已经是显性乞求或乞怜，主卡点是姿态逻辑。`;
+    }
+    if (severeLowPosture) {
+      report.verdict = "off";
+      const signal = selfAbasementSignal || pitySignal || beggingSignal;
+      report.verdict_reason = `“${signal}”连同上下文已经构成明确乞求或自贬，这不是委婉请求，整体姿态要重新立。`;
+    } else if (hasLowPosture && report.verdict !== "off") {
+      const signal = beggingSignal || pitySignal;
+      report.verdict = "almost";
+      report.verdict_reason = `“${signal}”属于显性乞求或乞怜，把这一处换回平等请求再过关。`;
     }
   }
 
@@ -555,6 +705,7 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
     lineReviewsContractValid &&
     structureContractValid &&
     safetyFieldsContractValid &&
+    !hasLowPosture &&
     !hasPersonaIssue &&
     !hasDetectedRedline &&
     !hasReportedRedline;
@@ -938,7 +1089,95 @@ export function normalizeReport(report, sourceScript) {
   const expectedScript = typeof sourceScript === "string"
     ? compactWhitespace(sourceScript)
     : null;
-  const reviewedScript = rawLineReviews
+  const reviewSeparator = /[\s\p{P}]/u;
+  const isSeparatorDeletionOnly = (reviewed, source) => {
+    const reviewedCharacters = Array.from(String(reviewed || "")).filter(
+      (character) => !/\s/u.test(character)
+    );
+    const sourceCharacters = Array.from(String(source || "")).filter(
+      (character) => !/\s/u.test(character)
+    );
+    let reviewedIndex = 0;
+    let sourceIndex = 0;
+    while (reviewedIndex < reviewedCharacters.length && sourceIndex < sourceCharacters.length) {
+      if (reviewedCharacters[reviewedIndex] === sourceCharacters[sourceIndex]) {
+        reviewedIndex += 1;
+        sourceIndex += 1;
+      } else if (reviewSeparator.test(sourceCharacters[sourceIndex])) {
+        // 只允许模型漏掉原稿中的标点；新增、移动或替换标点都不能通过修复。
+        sourceIndex += 1;
+      } else {
+        return false;
+      }
+    }
+    if (reviewedIndex < reviewedCharacters.length) return false;
+    return sourceCharacters
+      .slice(sourceIndex)
+      .every((character) => reviewSeparator.test(character));
+  };
+  let effectiveLineReviews = rawLineReviews;
+
+  // DeepSeek 偶尔在拆点评时漏掉原稿标点。仅当模型正文是原稿的“只删标点”版本时，
+  // 才按原稿位置补回；新增/移动标点、正文改写仍 fail-closed。补回后继续检查硬句边界，
+  // 因而把多句合成一条 good 仍不能绕过逐句门槛。
+  if (
+    lineReviewsShapeValid &&
+    typeof sourceScript === "string" &&
+    compactWhitespace(rawLineReviews.map((item) => item.original).join("")) !== expectedScript &&
+    isSeparatorDeletionOnly(
+      rawLineReviews.map((item) => item.original).join(""),
+      sourceScript
+    )
+  ) {
+    const sourceCharacters = Array.from(sourceScript);
+    const repaired = [];
+    let sourceIndex = 0;
+    let repairValid = true;
+
+    for (let index = 0; index < rawLineReviews.length; index += 1) {
+      const item = rawLineReviews[index];
+      const start = sourceIndex;
+      if (index === rawLineReviews.length - 1) {
+        sourceIndex = sourceCharacters.length;
+      } else {
+        let remaining = Array.from(item.original).filter(
+          (character) => !reviewSeparator.test(character)
+        ).length;
+        while (sourceIndex < sourceCharacters.length && remaining > 0) {
+          const character = sourceCharacters[sourceIndex];
+          sourceIndex += 1;
+          if (!reviewSeparator.test(character)) remaining -= 1;
+        }
+        if (remaining > 0) {
+          repairValid = false;
+          break;
+        }
+        while (
+          sourceIndex < sourceCharacters.length &&
+          reviewSeparator.test(sourceCharacters[sourceIndex])
+        ) {
+          sourceIndex += 1;
+        }
+      }
+      if (sourceIndex <= start) {
+        repairValid = false;
+        break;
+      }
+      repaired.push({
+        ...item,
+        original: sourceCharacters.slice(start, sourceIndex).join(""),
+      });
+    }
+
+    if (
+      repairValid &&
+      compactWhitespace(repaired.map((item) => item.original).join("")) === expectedScript
+    ) {
+      effectiveLineReviews = repaired;
+    }
+  }
+
+  const reviewedScript = effectiveLineReviews
     .map((item) => (item && typeof item.original === "string" ? item.original : ""))
     .join("")
     .replace(/\s+/g, "");
@@ -956,7 +1195,9 @@ export function normalizeReport(report, sourceScript) {
   };
   const sourceHardBoundaries = cumulativeOffsets(sourceSentences).slice(0, -1);
   const reviewBoundaries = cumulativeOffsets(
-    rawLineReviews.map((item) => (item && typeof item.original === "string" ? item.original : ""))
+    effectiveLineReviews.map((item) =>
+      item && typeof item.original === "string" ? item.original : ""
+    )
   );
   const lineReviewsMatchSentenceBoundaries =
     expectedScript === null ||
@@ -1054,7 +1295,7 @@ export function normalizeReport(report, sourceScript) {
     verdict: report.verdict,
     verdict_reason: str(report.verdict_reason),
     echo: str(report.echo),
-    line_reviews: rawLineReviews.map((r) => ({
+    line_reviews: effectiveLineReviews.map((r) => ({
       original: str(r && r.original),
       mark: MARK_ENUM.includes(r && r.mark) ? r.mark : "partial",
       comment: str(r && r.comment),

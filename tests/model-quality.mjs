@@ -74,6 +74,27 @@ const fullPassScript =
 const farSecuredScript =
   "我是刚跳完开场舞的小满，想把新舞完整跳给你们看。刚才帮我亮灯的家人，谢谢你们。凯哥，你要是还想看我返场，就给我补一脚；其他想看的家人跟上一点。这轮目标还差320票，愿意看新舞的现在帮我补上。";
 
+const postureBoundaryScenario = {
+  id: "qa-v3-posture-boundary-20260825",
+  votesNeeded: 320,
+  targetUser: "凯哥",
+  userSignal: "凯哥刚问这轮还差多少票",
+  recentGift: "凯哥刚送了小心心",
+};
+
+const postureWithoutUserReasonScenario = {
+  id: "qa-v3-posture-no-reason-20260825",
+  votesNeeded: 320,
+  targetUser: "凯哥",
+  recentGift: "凯哥刚送了小心心",
+};
+
+const neutralPoliteScript =
+  "我是刚跳完新舞的小满，还想把返场完整跳给你们看。凯哥，谢谢你刚才送的小心心。凯哥，你刚问这轮还差多少，我再确认一下，能不能帮我组一组、帮我丢一丢？你上几张看着来，想看我返场的家人们跟一点。现在还差320票，愿意看的现在补上。";
+
+const neutralWithoutUserReasonScript =
+  "我是今天第一次上复活台的小满。凯哥，谢谢你刚才送的小心心。凯哥，我再确认一下，能不能帮我组一组？现在还差320票，你愿意就帮我丢一丢。";
+
 const fixtures = [
   {
     id: "1a",
@@ -219,6 +240,57 @@ const fixtures = [
     voteGap: "secured",
     script: farSecuredScript,
     check: checkFullPass,
+  },
+  {
+    id: "9a",
+    label: "姿态边界·委婉确认",
+    voteGap: "close",
+    scenario: postureBoundaryScenario,
+    script: neutralPoliteScript,
+    check(report) {
+      checkFullPass(report);
+      const requestReview = report.line_reviews.find((item) =>
+        item.original.includes("帮我组一组")
+      );
+      requireCondition(requestReview, "逐句点评没有覆盖“帮我组一组”所在句");
+      requireCondition(requestReview.mark !== "wrong", "委婉确认不得被标为 wrong");
+    },
+  },
+  {
+    id: "9b",
+    label: "姿态边界·委婉但缺支点",
+    voteGap: "close",
+    scenario: postureWithoutUserReasonScenario,
+    script: neutralWithoutUserReasonScript,
+    check(report) {
+      requireCondition(report.verdict === "almost", "只缺用户理由的委婉请求应为 almost");
+      requireCondition(statusOf(report, "user_reason") !== "met", "弱请求不应虚构用户理由");
+      const requestReview = report.line_reviews.find((item) =>
+        item.original.includes("帮我组一组")
+      );
+      requireCondition(requestReview, "逐句点评没有覆盖弱请求所在句");
+      requireCondition(
+        requestReview.mark !== "wrong",
+        "缺用户理由可以扣支点，但不得把委婉请求本身标为 wrong"
+      );
+    },
+  },
+  {
+    id: "9c",
+    label: "姿态边界·乞求自贬",
+    voteGap: "close",
+    scenario: postureBoundaryScenario,
+    script:
+      "我是刚跳完新舞的小满，还想把返场完整跳给你们看。凯哥，谢谢你刚才送的小心心。凯哥，求一求你了，我给你跪下了，可怜可怜我，救救我这一次。现在还差320票，凯哥帮我补齐，家人们跟上。",
+    check(report) {
+      requireCondition(report.verdict === "off", "明确乞求和自贬必须 off");
+      requireCondition(report.card_type === "logic", "乞求自贬主卡点必须是 logic");
+      requireCondition(wrongCount(report) >= 1, "乞求自贬至少应有一条 wrong");
+      requireCondition(
+        /求一求你|跪下|可怜可怜我|救救我/u.test(JSON.stringify(report)),
+        "反馈必须引用原稿里的真实乞求或自贬证据"
+      );
+    },
   },
 ];
 
@@ -464,6 +536,6 @@ if (failures.length > 0) {
   process.exitCode = 1;
 } else {
   console.log(
-    `总结果: PASS (${fixtures.length}/${fixtures.length} 请求通过，8类质量门槛全部满足)`
+    `总结果: PASS (${fixtures.length}/${fixtures.length} 请求通过，9类质量门槛全部满足)`
   );
 }
