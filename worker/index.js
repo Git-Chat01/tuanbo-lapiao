@@ -248,6 +248,17 @@ const AI_FLAVOR_SOURCE_PHRASES = [
   "托举我的梦想",
   "助力梦想",
   "点燃舞台",
+  // 作文朗诵型证据：只在模型已判 persona/AI 味时补足原句，不作为词面硬闸。
+  "既然站在这里",
+  "努力到最后一刻",
+  "每一票",
+  "每一颗星辰",
+  "都能感受到",
+  "推着我往前的力量",
+  "专门来照亮我的",
+  "守护后援第一位成员",
+  "好运陪我闯关到底",
+  "见证这一刻",
 ];
 const POSITIVE_FEEDBACK_PATTERN =
   /(?:公屏|评论区)?(?:扣|打)(?:个)?(?:[01一零]|叉)|(?:给我)?(?:补|上)(?:一|几|点)?(?:票|张|脚)|投(?:一|几|点)?票|帮我(?:组一组|丢一丢|补一补)|评论(?:一下|告诉我|说一声)|公屏(?:说|打|扣)|(?:你(?:来)?选|让你选)(?:一个|节目|舞|歌)?|(?:你(?:来)?决定|由你决定)|跟上(?:一|几|点)?(?:票|张|脚)?|跟(?:一|几|点)(?:票|张|脚)?|一人(?:补|上)(?:一|几|点)(?:票|张|脚)?/gu;
@@ -507,6 +518,12 @@ function hasExplicitViewerReasonWithFeedback(sourceScript) {
   return false;
 }
 
+function hasExplicitVoteGap(sourceScript) {
+  return /(?:还|再|只|就)?\s*(?:差|缺)\s*(?:了|个)?\s*(?:\d{1,8}|[零〇一二两三四五六七八九十百千万]+)\s*(?:个|颗|张)?\s*(?:票|星辰|闪耀星辰)/u.test(
+    String(sourceScript || "")
+  );
+}
+
 function hasSpecificScenarioGratitude(sourceScript, scenario) {
   const target = typeof scenario?.targetUser === "string" ? scenario.targetUser.trim() : "";
   const recentGift = typeof scenario?.recentGift === "string" ? scenario.recentGift.trim() : "";
@@ -626,6 +643,20 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
     userReasonCheck.status = "met";
   }
   const hasSupportEvidence = userReasonCheck?.status === "met";
+
+  // “补一点/上几张”是动作，不是准确票差。模型偶发把动作数量当成当前差额时，
+  // 只做降级兜底；不根据 scenario 里的 votesNeeded 替主播补写她没说出口的数字。
+  const voteInstructionCheck = Array.isArray(report.structure_checks)
+    ? report.structure_checks.find((item) => item && item.key === "vote_instruction")
+    : null;
+  if (
+    sourceScript &&
+    voteInstructionCheck?.status === "met" &&
+    !hasExplicitVoteGap(sourceScript)
+  ) {
+    voteInstructionCheck.status = "partial";
+    voteInstructionCheck.evidence = "有上票动作，但主播原话没说准确还差多少票";
+  }
 
   // 委婉请求与放低姿态是两条不同语义：普通“帮我+具体动作”不命中；
   // 显性乞求至少不能毕业，乞求叠加乞怜/依赖或明确自贬时再判整体方向错误。

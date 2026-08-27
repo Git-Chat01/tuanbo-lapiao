@@ -95,6 +95,20 @@ const neutralPoliteScript =
 const neutralWithoutUserReasonScript =
   "我是今天第一次上复活台的小满。凯哥，谢谢你刚才送的小心心。凯哥，我再确认一下，能不能帮我组一组？现在还差320票，你愿意就帮我丢一丢。";
 
+const scriptedSpeechScenario = {
+  id: "qa-v3-scripted-speech-20260826",
+  votesNeeded: 18,
+  targetUser: "月月姐",
+  userSignal: "月月姐刚说想看后面那段舞",
+  recentGift: "月月姐刚送了小心心",
+};
+
+const scriptedSpeechScript =
+  "大家好，现在台上的是新人主播小满，今天是我第一次站上十连舞台。虽然手有点抖，但既然站在这里，我就会努力到最后一刻。月月姐，谢谢你刚才送的小心心。月月姐，你刚说想看后面的舞，那要不要陪我拼一下？现在距离复活还差18票，你愿意就帮我补一补。你投的每一票，我都能感受到，都是推着我往前的力量。月月姐，你名字里有月亮，我就当你是专门来照亮我的。以后你就是守护后援第一位成员，让你的好运陪我闯关到底。星星姐，你名字里有星星，和这个舞台太合适了。来都来了，帮我投一票，咱们一起见证这一刻。";
+
+const naturalSpeechScript =
+  "大家好，我是第一次上十连的小满，手确实有点抖。既然都站这儿了，我先把这轮跳完。月月姐，谢谢你刚才的小心心，我看见了。月月姐，你刚说想看我后面那段舞，对吧？现在还差18票，你愿意就帮我补一点，每一票我都能看到是谁补的。星星姐，你这名字跟台上还挺搭，你也想看后面那段不？想看就跟一点，不想看就说你想看啥。";
+
 const fixtures = [
   {
     id: "1a",
@@ -290,6 +304,64 @@ const fixtures = [
         /求一求你|跪下|可怜可怜我|救救我/u.test(JSON.stringify(report)),
         "反馈必须引用原稿里的真实乞求或自贬证据"
       );
+    },
+  },
+  {
+    id: "10a",
+    label: "口语边界·作文朗诵",
+    voteGap: "close",
+    scenario: scriptedSpeechScenario,
+    script: scriptedSpeechScript,
+    check(report) {
+      requireCondition(metCount(report) === 5, "作文朗诵稿应先被识别为五项结构齐全");
+      requireCondition(report.verdict === "off", "跨段重复作文闭环必须 off");
+      requireCondition(report.card_type === "persona", "跨段重复作文闭环主卡点必须是 persona");
+      requireCondition(report.ai_flavor.trim().length > 0, "作文朗诵稿必须填写 ai_flavor");
+      requireCondition(wrongCount(report) >= 1, "作文朗诵稿至少应点出一条代表性 wrong");
+      const sourcePhrases = [
+        "既然站在这里",
+        "努力到最后一刻",
+        "每一票",
+        "推着我往前的力量",
+        "专门来照亮我的",
+        "守护后援第一位成员",
+        "好运陪我闯关到底",
+        "见证这一刻",
+      ];
+      const hitCount = sourcePhrases.filter((phrase) => report.ai_flavor.includes(phrase)).length;
+      requireCondition(hitCount >= 2, "ai_flavor 至少应逐字引用两处作文朗诵原句");
+      requireCondition(
+        /模板|工整|朗诵|小作文|升华|收口|念稿/u.test(report.ai_flavor),
+        "ai_flavor 必须说明共同的作文模板机制"
+      );
+    },
+  },
+  {
+    id: "10b",
+    label: "口语边界·同事实自然说法",
+    voteGap: "close",
+    scenario: scriptedSpeechScenario,
+    script: naturalSpeechScript,
+    check(report) {
+      checkFullPass(report);
+      const requestReview = report.line_reviews.find((item) =>
+        item.original.includes("帮我补一点")
+      );
+      requireCondition(requestReview, "自然口语逐句点评没有覆盖委婉请求");
+      requireCondition(requestReview.mark !== "wrong", "自然口语里的委婉请求不得标 wrong");
+      const singleCueReviews = report.line_reviews.filter(
+        (item) => item.original.includes("既然") || item.original.includes("每一票")
+      );
+      requireCondition(singleCueReviews.length >= 2, "自然口语逐句点评应覆盖单次“既然/每一票”");
+      requireCondition(
+        singleCueReviews.every((item) => item.mark !== "wrong"),
+        "单次“既然/每一票”不得脱离全稿结构被误判为作文朗诵"
+      );
+      const secondUserReview = report.line_reviews.find((item) =>
+        item.original.includes("星星姐")
+      );
+      requireCondition(secondUserReview, "自然口语逐句点评应覆盖第二位用户的昵称玩梗");
+      requireCondition(secondUserReview.mark !== "wrong", "一次昵称玩梗不得直接判 persona");
     },
   },
 ];
@@ -536,6 +608,6 @@ if (failures.length > 0) {
   process.exitCode = 1;
 } else {
   console.log(
-    `总结果: PASS (${fixtures.length}/${fixtures.length} 请求通过，9类质量门槛全部满足)`
+    `总结果: PASS (${fixtures.length}/${fixtures.length} 请求通过，10类质量门槛全部满足)`
   );
 }

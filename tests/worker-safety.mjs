@@ -64,6 +64,18 @@ assert.match(prompt.SYSTEM_PROMPT, /“?帮我组一组“?.{0,80}不是求情/u
 assert.match(prompt.SYSTEM_PROMPT, /求一求你了/u);
 assert.match(prompt.SYSTEM_PROMPT, /我给你跪下了/u);
 assert.match(prompt.SYSTEM_PROMPT, /案例不能推翻硬边界/u);
+assert.match(prompt.SYSTEM_PROMPT, /再把局部书面和整篇作文朗诵分开/u);
+assert.match(
+  prompt.SYSTEM_PROMPT,
+  /两个及以上点名片段反复使用.{0,120}点名.{0,120}解读昵称\/主页.{0,120}漂亮收口/u
+);
+assert.match(prompt.SYSTEM_PROMPT, /点名片段或意群横向比较，不要求原稿真的换行分段/u);
+assert.match(prompt.SYSTEM_PROMPT, /单次出现"既然\/每一\/到底".{0,40}不能单独触发/u);
+assert.match(prompt.SYSTEM_PROMPT, /ai_flavor 至少逐字引用两处原句/u);
+assert.match(prompt.SYSTEM_PROMPT, /原稿是“A；B。”.{0,80}“A；”和“B。”/u);
+assert.match(prompt.SYSTEM_PROMPT, /"给我补一脚\/跟上一点\/帮我补上\/上几张\/投一票".{0,80}必须判 met/u);
+assert.match(prompt.SYSTEM_PROMPT, /recentGift 只证明这个用户刚才支持过.{0,120}不能把过去送礼直接当 user_reason/u);
+assert.match(prompt.SYSTEM_PROMPT, /"补一点\/上几张\/一人一票".{0,80}不是当前还差的准确票数/u);
 assert.deepEqual(cases.extractTags("帮帮忙，拜托大家帮我组一组"), []);
 assert.deepEqual(cases.extractTags("求一求你了，我给你跪下了"), ["求一求", "跪下"]);
 
@@ -152,6 +164,33 @@ const partialButQualifiedAlmost = index.normalizeReport(
 );
 index.applyReportSafetyGates(partialButQualifiedAlmost, []);
 assert.equal(partialButQualifiedAlmost.verdict, "passed");
+
+const actionWithoutExactVoteGap = index.normalizeReport(
+  makeRawReport(),
+  "大家愿意就帮我补一点。"
+);
+index.applyReportSafetyGates(actionWithoutExactVoteGap, [], {
+  sourceScript: "大家愿意就帮我补一点。",
+});
+assert.equal(
+  actionWithoutExactVoteGap.structure_checks.find((item) => item.key === "vote_instruction")
+    ?.status,
+  "partial"
+);
+assert.equal(actionWithoutExactVoteGap.verdict, "almost");
+
+const actionWithExactChineseVoteGap = index.normalizeReport(
+  makeRawReport(),
+  "现在还差十票，大家愿意就帮我补一点。"
+);
+index.applyReportSafetyGates(actionWithExactChineseVoteGap, [], {
+  sourceScript: "现在还差十票，大家愿意就帮我补一点。",
+});
+assert.equal(
+  actionWithExactChineseVoteGap.structure_checks.find((item) => item.key === "vote_instruction")
+    ?.status,
+  "met"
+);
 
 const qualifiedAlmostWithDetectedRedline = index.normalizeReport(
   makeRawReport({ verdict: "almost" }),
@@ -515,10 +554,10 @@ for (const supportedEntertainmentPleaScript of [
 }
 
 for (const neutralPoliteRequestScript of [
-  "凯哥，能不能帮我组一组，你上几张你说了算。",
-  "凯哥，帮我丢一丢，我撒个娇，满意你再补。",
-  "凯哥，方便的话帮我补一补，想看返场就在公屏扣1。",
-  "凯哥，帮帮我，你愿意上多少看着来。",
+  "现在还差十票，凯哥，能不能帮我组一组，你上几张你说了算。",
+  "现在还差十票，凯哥，帮我丢一丢，我撒个娇，满意你再补。",
+  "现在还差十票，凯哥，方便的话帮我补一补，想看返场就在公屏扣1。",
+  "现在还差十票，凯哥，帮帮我，你愿意上多少看着来。",
 ]) {
   const neutralPoliteRequest = makeReportForScript(neutralPoliteRequestScript, {
     verdict: "almost",
@@ -557,7 +596,7 @@ assert.match(kneeling.line_reviews[0].comment, /自贬|施舍/u);
 assert.match(kneeling.card_why, /自贬|姿态逻辑/u);
 assert.doesNotMatch(kneeling.verdict_reason, /可以过关/u);
 
-const notCooperatingScript = "凯哥，你想看返场就补一张，我不配合硬要票。";
+const notCooperatingScript = "现在还差十票，凯哥，你想看返场就补一张，我不配合硬要票。";
 const notCooperating = makeReportForScript(notCooperatingScript, { verdict: "almost" });
 index.applyReportSafetyGates(notCooperating, [], {
   sourceScript: notCooperatingScript,
@@ -576,7 +615,7 @@ assert.equal(unworthy.verdict, "off", "独立的“我不配”必须按明确�
 assert.equal(unworthy.card_type, "logic");
 assert.equal(unworthy.line_reviews[0].mark, "wrong");
 
-const negatedUnworthyScript = "凯哥，你想看返场就补一张，我才不会说我不配。";
+const negatedUnworthyScript = "现在还差十票，凯哥，你想看返场就补一张，我才不会说我不配。";
 const negatedUnworthy = makeReportForScript(negatedUnworthyScript, { verdict: "almost" });
 index.applyReportSafetyGates(negatedUnworthy, [], {
   sourceScript: negatedUnworthyScript,
@@ -607,7 +646,7 @@ for (const negatedEntertainmentPleaScript of [
   );
 }
 
-const negatedPleaScript = "凯哥，别可怜我，我才不求求大家，你想看就补一票。";
+const negatedPleaScript = "现在还差十票，凯哥，别可怜我，我才不求求大家，你想看就补一票。";
 const negatedPlea = makeReportForScript(negatedPleaScript, {
   verdict: "almost",
   structure_checks: allMetChecks().map((item) =>
@@ -620,7 +659,7 @@ index.applyReportSafetyGates(negatedPlea, [], {
 });
 assert.equal(negatedPlea.verdict, "almost", "否定语境中的求情词不能触发卖惨硬闸");
 
-const quotedPleaScript = "凯哥，你刚说“求求你可怜我”，这轮你愿意就补一点。";
+const quotedPleaScript = "现在还差十票，凯哥，你刚说“求求你可怜我”，这轮你愿意就补一点。";
 const quotedPlea = makeReportForScript(quotedPleaScript, {
   verdict: "almost",
   structure_checks: allMetChecks().map((item) =>
@@ -634,8 +673,8 @@ index.applyReportSafetyGates(quotedPlea, [], {
 assert.equal(quotedPlea.verdict, "almost", "引用观众的求情话不能当成主播卖惨");
 
 for (const otherQuotedPleaScript of [
-  "凯哥，你刚说「求求你可怜我」，这轮你愿意就补一点。",
-  "凯哥，你愿意就补一点，不要再说‘求求你’。",
+  "现在还差十票，凯哥，你刚说「求求你可怜我」，这轮你愿意就补一点。",
+  "现在还差十票，凯哥，你愿意就补一点，不要再说‘求求你’。",
 ]) {
   const otherQuotedPlea = makeReportForScript(otherQuotedPleaScript, {
     verdict: "almost",
@@ -651,7 +690,7 @@ for (const otherQuotedPleaScript of [
   assert.equal(otherQuotedPlea.line_reviews[0].mark, "good");
 }
 
-const attributedPhraseScript = "凯哥，你那句“求求你”我听见了，这轮你愿意就补一点。";
+const attributedPhraseScript = "现在还差十票，凯哥，你那句“求求你”我听见了，这轮你愿意就补一点。";
 const attributedPhrase = makeReportForScript(attributedPhraseScript, {
   verdict: "almost",
   structure_checks: allMetChecks().map((item) =>
@@ -683,15 +722,15 @@ assert.equal(addressedQuotedPlea.verdict, "off", "主播对用户说出的引号
 assert.equal(addressedQuotedPlea.line_reviews[0].mark, "wrong");
 
 for (const negatedBeggingScript of [
-  "凯哥，你想看返场就补一张，我没有求求你。",
-  "凯哥，你想看返场就补一张，我没求求你。",
-  "凯哥，你想看返场就补一张，我未求求你。",
-  "凯哥，你想看返场就补一张，我无需去求求你。",
-  "凯哥，你想看返场就补一张，我没必要求求你。",
-  "凯哥，你想看返场就补一张，我不需要再求求你。",
-  "凯哥，你想看返场就补一张，我才不会求求你。",
-  "凯哥，你想看返场就补一张，我不是在求求你。",
-  "凯哥，你想看返场就补一张，我没有真的求求你。",
+  "现在还差十票，凯哥，你想看返场就补一张，我没有求求你。",
+  "现在还差十票，凯哥，你想看返场就补一张，我没求求你。",
+  "现在还差十票，凯哥，你想看返场就补一张，我未求求你。",
+  "现在还差十票，凯哥，你想看返场就补一张，我无需去求求你。",
+  "现在还差十票，凯哥，你想看返场就补一张，我没必要求求你。",
+  "现在还差十票，凯哥，你想看返场就补一张，我不需要再求求你。",
+  "现在还差十票，凯哥，你想看返场就补一张，我才不会求求你。",
+  "现在还差十票，凯哥，你想看返场就补一张，我不是在求求你。",
+  "现在还差十票，凯哥，你想看返场就补一张，我没有真的求求你。",
 ]) {
   const negatedBegging = makeReportForScript(negatedBeggingScript, {
     verdict: "almost",
@@ -708,7 +747,7 @@ for (const negatedBeggingScript of [
   assert.equal(negatedBegging.line_reviews[0].mark, "good");
 }
 
-const nestedNegationScript = "凯哥，你想看返场就补一张，我不会说不得不求求你。";
+const nestedNegationScript = "现在还差十票，凯哥，你想看返场就补一张，我不会说不得不求求你。";
 const nestedNegation = makeReportForScript(nestedNegationScript, { verdict: "almost" });
 index.applyReportSafetyGates(nestedNegation, [], {
   sourceScript: nestedNegationScript,
@@ -736,7 +775,7 @@ for (const doubleNegativeBeggingScript of [
   assert.equal(doubleNegativeBegging.line_reviews[0].mark, "wrong");
 }
 
-const explicitViewerReasonScript = "凯哥，你要是想看我返场就补一票。";
+const explicitViewerReasonScript = "现在还差十票，凯哥，你要是想看我返场就补一票。";
 const explicitViewerReason = makeReportForScript(explicitViewerReasonScript, {
   verdict: "almost",
   structure_checks: allMetChecks().map((item) =>
@@ -1157,6 +1196,21 @@ const normalizedAiEvidence = index.normalizeReport(
 );
 assert.match(normalizedAiEvidence.ai_flavor, /怀揣舞台梦想/);
 assert.match(normalizedAiEvidence.ai_flavor, /点燃这个舞台/);
+
+const scriptedSpeechSource =
+  "虽然有点紧张，但既然站在这里，我就会努力到最后一刻。你投的每一票，都是推着我往前的力量。";
+const normalizedScriptedSpeechEvidence = index.normalizeReport(
+  makeRawReport({
+    card_type: "persona",
+    ai_flavor: "整段像事先写好的小作文",
+    line_reviews: [
+      { original: scriptedSpeechSource, mark: "wrong", comment: "反复铺前提再升华" },
+    ],
+  }),
+  scriptedSpeechSource
+);
+assert.match(normalizedScriptedSpeechEvidence.ai_flavor, /既然站在这里/);
+assert.match(normalizedScriptedSpeechEvidence.ai_flavor, /努力到最后一刻/);
 
 // 完整走一次 /api/coach：旧 body 仍 200；新 scenario 作为清洗后的第 5 参传给 prompt。
 const baseScript = "我是小夏，凯哥谢谢你刚才的小心心，凯哥你愿意就上几张，我还差十票，家人们一人补一点。";
