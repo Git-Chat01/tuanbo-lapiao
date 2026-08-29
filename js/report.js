@@ -30,15 +30,15 @@ var Report = {
     target_user: {
       number: 3,
       title: "把话递到一个人",
-      standard: "直接喊到一个具体用户，并继续递出一个对方能接住的互动或上票动作。",
+      standard: "这关只看有没有明确对本轮递球的具体用户说话；具体感谢也算，不考理由、票差或上票动作。",
       why: "话没有递到具体的人，就容易变成对全场空喊，谁都不觉得下一拍该由自己来接。",
-      method: "选一个现场里真实的人，先叫到对方，再把下一句话直接说给对方听。",
-      hints: ["选一个真实昵称，先直接叫到对方。", "叫到后再递一个对方能回应的动作。"],
+      method: "直接叫到本轮递球的那个人；具体感谢已经是在对他说，不必为了过关额外造一句。",
+      hints: ["使用现场给出的目标称呼，直接对他说一句话。", "读一遍确认这句话是在对他说；具体感谢也算，这关不用补理由、票差或动作。"],
     },
     user_reason: {
       number: 4,
       title: "给观众一个上票理由",
-      standard: "让对方听见参与后能得到的乐趣、选择权或回应，而不只是听见你需要票。",
+      standard: "这关只看有没有接住用户的兴趣或现场信号，让对方听见参与后能得到的乐趣、选择权或回应；不考票差和上票动作。",
       why: "只说你需要留下，是你的理由；观众还没听见这一票为什么值得自己参与。",
       method: "从对方刚才的信号出发，说清对方为什么会觉得这一票上得有意思。",
       hints: ["先接对方刚才想看、想玩或想决定的事。", "再说对方参与后能看到或得到什么回应。"],
@@ -152,8 +152,166 @@ var Report = {
     return challenge.number ? challenge.method : (direction.summary || challenge.method);
   },
 
+  _scenario: function () {
+    var request = typeof App !== "undefined" && App.state ? App.state.lastRequest : null;
+    return request && request.scenario && typeof request.scenario === "object"
+      ? request.scenario
+      : {};
+  },
+
+  _fact: function (value, fallback) {
+    var text = typeof value === "string" ? value.trim() : "";
+    return text || fallback || "";
+  },
+
+  _metLabels: function (progress, focus) {
+    var checks = progress && Array.isArray(progress.checks) ? progress.checks : [];
+    return checks.filter(function (check) {
+      return check && check.status === "met" && (!focus || check.key !== focus.key);
+    }).map(function (check) { return check.label; });
+  },
+
+  _guidanceFor: function (report, focus, progress) {
+    if (!focus || ["target_user", "user_reason"].indexOf(focus.key) < 0) return null;
+    var scenario = Report._scenario();
+    var target = Report._fact(scenario.targetUser, "这个用户");
+    var signal = Report._fact(scenario.userSignal, "");
+    var request = typeof App !== "undefined" && App.state ? App.state.lastRequest : null;
+    var script = request && typeof request.script === "string" ? request.script : "";
+    var labels = Report._metLabels(progress, focus);
+    var completed = labels.length
+      ? "你已经拿下“" + labels.join("、") + "”，这些内容都先保留。"
+      : "你已经把这一轮想说的话写出来了，不需要推翻整段。";
+
+    if (focus.key === "target_user") {
+      if (target !== "这个用户" && script.indexOf(target) >= 0) {
+        completed = "你的原话里已经出现了“" + target + "”，说明你找对了要说话的人，不用重写整段。";
+      }
+      return {
+        completed: completed,
+        gap: "这关只核对：有没有直接把一句话说给“" + target + "”。最简单的自检是用“" + target + "，……”开头；不考理由、票差或上票动作。",
+      };
+    }
+
+    var targetCheck = progress && Array.isArray(progress.checks)
+      ? progress.checks.filter(function (check) { return check.key === "target_user"; })[0]
+      : null;
+    if (targetCheck && targetCheck.status === "met") {
+      completed = "你已经把话递给“" + target + "”了，称呼这一项已经过关，不用再改。";
+    }
+    var negativeSignal = Report._isNegativeSignal(signal);
+    return {
+      completed: completed,
+      gap: signal && negativeSignal
+        ? "现场这句“" + signal + "”是在表达不想要，先尊重它，不要照着做；这关只补一个对方愿意看的替代回应或选择权，不检查票差和上票动作。"
+        : signal
+        ? "这关只差接住“" + signal + "”：让“" + target + "”听见，参与后能看到什么回应、得到什么乐趣或选择权；不检查票差和上票动作。"
+        : "这关只差一个站在“" + target + "”这边的理由：说清对方参与后能看到什么回应、得到什么乐趣或选择权；不检查票差和上票动作。",
+    };
+  },
+
+  _isNegativeSignal: function (signal) {
+    var text = typeof signal === "string" ? signal.replace(/\s+/g, "") : "";
+    if (!text) return false;
+    if (/(?:不是说|没说过?).{0,10}(?:想看|要看|喜欢看).{0,10}(?:吗|么|呢|嘛|？|\?)/.test(text)) return false;
+    return /(?:不想|不愿意?|不要|不用|不必|无需|无须|不需要|用不着|不喜欢|不想听|不想看|别|没想|没有想|没说|没有说|未说).{0,10}(?:撒娇|撒一个|撒个娇|新舞|返场|跳完|跳舞|舞蹈|才艺|表演|整活|节目|唱歌|点歌|点舞)/.test(text);
+  },
+
+  _signalTerms: function (signal) {
+    if (typeof signal !== "string") return [];
+    return signal.split(/[，。！？：,;；\s]+/).map(function (part) {
+      return part
+        .replace(/^(刚才|刚刚|他说|她说|对方说|用户说|你)/, "")
+        .replace(/(我考虑一下|考虑一下|可以吗|好不好)$/, "")
+        .replace(/个/g, "")
+        .trim();
+    }).filter(function (part) { return part.length >= 2; });
+  },
+
+  _hasHiddenActionRequirement: function (text, focusKey) {
+    if (typeof text !== "string" || !text.trim()) return false;
+    var explicitAction = /(扣\s*[01一零]|打个\s*[01一零]|评论(?:区)?|公屏|反馈入口|补一点|跟一点|组一组|帮我组|补一脚|上几张|上票|投票|补票)/;
+    var abstractAction = /(?:(?:互动|可回应|回应的|可执行|具体).{0,4}动作|缺少.{0,6}动作|还(?:没|没有).{0,6}动作|递出.{0,6}动作|邀请(?:对方|他|她|用户).{0,6}(?:回应|接话)|让(?:对方|他|她|用户).{0,6}(?:回应|接话)|没有让(?:对方|他|她|用户).{0,6}(?:回应|接话)|还没有邀请(?:对方|他|她|用户).{0,6}(?:回应|接话))/;
+    if (explicitAction.test(text) || abstractAction.test(text)) return true;
+    return focusKey === "target_user" && /(?:动作|让.{0,6}接话|邀请.{0,6}回应)/.test(text);
+  },
+
+  _directionMatchesFocus: function (text, focus) {
+    if (typeof text !== "string" || !text.trim() || !focus) return false;
+    var scenario = Report._scenario();
+    var keywords = {
+      self_intro: ["名字", "自我介绍", "看点", "记住你", "你是谁"],
+      gratitude: ["感谢", "谢谢", "礼物", "支持", "接住"],
+      target_user: ["昵称", "点到", "喊到", "叫到", "直接对", "说给", "具体用户"],
+      user_reason: ["理由", "想看", "乐趣", "选择", "回应", "参与", "互动", "撒娇", "愿意"],
+      vote_instruction: ["票差", "票数", "还差", "补一脚", "上票", "投票", "动作"],
+    };
+    var terms = keywords[focus.key] ? keywords[focus.key].slice() : [];
+    var target = Report._fact(scenario.targetUser, "");
+    if (focus.key === "target_user" && target) terms.push(target);
+    if (focus.key === "user_reason") terms = terms.concat(Report._signalTerms(scenario.userSignal));
+    var matches = terms.some(function (term) { return term && text.indexOf(term) >= 0; });
+    if (!matches) return false;
+
+    // 编号关只展示真正属于本关的模型建议，避免把下一关条件偷偷塞进来。
+    if (focus.key === "target_user" && (/(理由|参与后|乐趣|选择权|票差|还差\s*\d)/.test(text) || Report._hasHiddenActionRequirement(text, focus.key))) return false;
+    if (focus.key === "user_reason" && (/(票差|还差\s*\d|投.{0,3}票|上.{0,3}票|准确数字)/.test(text) || Report._hasHiddenActionRequirement(text, focus.key))) return false;
+    if (focus.key === "user_reason" && Report._isNegativeSignal(scenario.userSignal)) {
+      var rejectedContent = ["撒娇", "返场", "新舞", "跳舞", "唱歌", "表演", "整活"].filter(function (term) {
+        return scenario.userSignal.indexOf(term) >= 0 && text.indexOf(term) >= 0;
+      });
+      if (rejectedContent.length && !/(不想|不愿|拒绝|尊重|不要|别|换一个|替代|另一个)/.test(text)) return false;
+    }
+    return true;
+  },
+
+  _specificDirectionFor: function (report, focus) {
+    var challenge = Report._challengeFor(focus);
+    var direction = report && report.direction ? report.direction : {};
+    var summary = typeof direction.summary === "string" ? direction.summary.trim() : "";
+    if (!challenge.number || !Report._directionMatchesFocus(summary, focus)) return "";
+    return summary === challenge.method ? "" : summary;
+  },
+
+  _specificOneThingFor: function (report, focus) {
+    var oneThing = report && typeof report.one_thing === "string"
+      ? report.one_thing.trim()
+      : "";
+    if (!oneThing) return "";
+    var challenge = Report._challengeFor(focus);
+    if (!challenge.number) return oneThing;
+    return Report._directionMatchesFocus(oneThing, focus) ? oneThing : "";
+  },
+
   _helpItemsFor: function (report, focus) {
     var challenge = Report._challengeFor(focus);
+    var scenario = Report._scenario();
+    var target = Report._fact(scenario.targetUser, "这个用户");
+    var signal = Report._fact(scenario.userSignal, "");
+    if (focus && focus.key === "target_user") {
+      return [
+        "先找到你真正要对他说的那句，在前面直接叫“" + target + "”。",
+        "再读一遍：这句话是在对“" + target + "”说，不是在向全场提到他。这关不用补理由、票差或上票动作。",
+      ];
+    }
+    if (focus && focus.key === "user_reason") {
+      var negativeSignal = Report._isNegativeSignal(signal);
+      var scaffold = negativeSignal
+        ? target + "，我听见你不想看这个，那这次你来选想看的。"
+        : (/撒(?:个)?娇/.test(signal)
+        ? target + "，你刚说想看我撒娇，那我现在撒一个给你看。"
+        : (/返场/.test(signal)
+            ? target + "，你刚说想看返场，那我把返场留给你。"
+            : target + "，你刚说想看这个，那我现在给你一个明确回应。"));
+      return [
+        signal && negativeSignal
+          ? "先把现场这句当成拒绝来听：“" + signal + "”不要反着理解，也不要照着做。"
+          : signal
+          ? "先把现场这句接回来：“" + signal + "”"
+          : "先回想“" + target + "”刚才明确表示想看、想玩或想决定什么。",
+        "用这个最小骨架自检：“" + scaffold + "”只换成你平时会说的词，不用照抄整段，也不用补票差或上票动作。",
+      ];
+    }
     if (challenge.number) return Array.isArray(challenge.hints) ? challenge.hints : [];
     var direction = report.direction || {};
     return Array.isArray(direction.examples) ? direction.examples : [];
@@ -399,6 +557,7 @@ var Report = {
 
   _focusPaper: function (report, focus, progress) {
     var challenge = Report._challengeFor(focus);
+    var guidance = Report._guidanceFor(report, focus, progress);
     var paper = Report._el("section", "focus-paper" + (report.redline_note ? " focus-paper--redline" : ""));
     var head = Report._el("div", "focus-paper__head");
     var attemptText = progress.focusAttempts > 1
@@ -409,11 +568,24 @@ var Report = {
     paper.appendChild(head);
 
     paper.appendChild(Report._el("h2", null, challenge.title));
-    paper.appendChild(Report._challengeRow(
-      "真正卡点",
-      report.redline_note || focus.evidence,
-      "challenge-card__row--evidence"
-    ));
+    if (guidance) {
+      paper.appendChild(Report._challengeRow(
+        "已经做到什么",
+        guidance.completed,
+        "challenge-card__row--done"
+      ));
+      paper.appendChild(Report._challengeRow(
+        "这关只差什么",
+        guidance.gap,
+        "challenge-card__row--evidence challenge-card__row--only-gap"
+      ));
+    } else {
+      paper.appendChild(Report._challengeRow(
+        "真正卡点",
+        report.redline_note || focus.evidence,
+        "challenge-card__row--evidence"
+      ));
+    }
     paper.appendChild(Report._challengeRow("为什么会卡", Report._focusWhy(report, focus)));
     paper.appendChild(Report._challengeRow("过关标准", challenge.standard));
 
@@ -422,8 +594,17 @@ var Report = {
       Report._solutionFor(report, focus),
       "challenge-card__row--solution"
     ));
-    if (report.one_thing) {
-      paper.appendChild(Report._el("p", "focus-paper__takeaway", "记住这一点：" + report.one_thing));
+    var specificDirection = Report._specificDirectionFor(report, focus);
+    if (specificDirection) {
+      paper.appendChild(Report._challengeRow(
+        "结合你这版",
+        specificDirection,
+        "challenge-card__row--specific"
+      ));
+    }
+    var specificOneThing = Report._specificOneThingFor(report, focus);
+    if (specificOneThing) {
+      paper.appendChild(Report._el("p", "focus-paper__takeaway", "记住这一点：" + specificOneThing));
     }
     return paper;
   },
@@ -436,8 +617,9 @@ var Report = {
     var isOpen = Report._shouldOpenHelp(progress);
     var panel = Report._el(isOpen ? "section" : "details", "challenge-help" + (isOpen ? " challenge-help--open" : ""));
     if (isOpen) {
-      panel.appendChild(Report._el("span", "challenge-help__eyebrow", "这关已经试了两次，教练扶你一步"));
-      panel.appendChild(Report._el("h3", null, challenge.number ? "不用再猜，先按这两步改" : "不用再猜，先借下面这个角度"));
+      panel.setAttribute("aria-live", "polite");
+      panel.appendChild(Report._el("span", "challenge-help__eyebrow", "先别怀疑自己，我们只核对这一小步"));
+      panel.appendChild(Report._el("h3", null, challenge.number ? "不会再增加新条件，就按这两步检查" : "不用再猜，先借下面这个角度"));
     } else {
       panel.appendChild(Report._el("summary", null, challenge.number ? "卡住了？展开看两个小动作" : "卡住了？展开看一步局部提示"));
     }
@@ -445,7 +627,7 @@ var Report = {
       "p",
       null,
       challenge.number
-        ? "按这两步检查自己的原话，不用寻找一整句标准答案。"
+        ? "这不是整段都不行。按这两步检查自己的原话，不用寻找一整句标准答案。"
         : "只看局部怎么转，不要整句照抄；换回你平时会说的词。"
     ));
     var list = Report._el("ul", "challenge-help__examples");
@@ -511,7 +693,25 @@ var Report = {
     return section;
   },
 
-  _fullReview: function (report, checks) {
+  _reviewCommentFor: function (comment, focus) {
+    var text = typeof comment === "string" ? comment.trim() : "";
+    if (!text || !focus) return text;
+    if (
+      focus.key === "target_user" &&
+      (Report._hasHiddenActionRequirement(text, focus.key) || /(给理由|参与后|乐趣|选择权|票差|还差\s*\d)/.test(text))
+    ) {
+      return "这句还没有明确说给当前目标用户；本关只核对称呼，不检查理由、票差或动作。";
+    }
+    if (
+      focus.key === "user_reason" &&
+      (Report._hasHiddenActionRequirement(text, focus.key) || /(票差|还差\s*\d)/.test(text))
+    ) {
+      return "这句还没说清对方参与后能得到的回应、乐趣或选择；本关不检查评论或上票动作。";
+    }
+    return text;
+  },
+
+  _fullReview: function (report, checks, focus) {
     var details = Report._el("details", "review-details");
     details.appendChild(Report._el("summary", null, "为什么这样判断 · 查看完整复盘"));
 
@@ -535,13 +735,13 @@ var Report = {
     var reviews = Array.isArray(report.line_reviews) ? report.line_reviews : [];
     if (reviews.length) {
       details.appendChild(Report._el("p", null, "逐句看："));
-      details.appendChild(Report._lineReviewList(reviews));
+      details.appendChild(Report._lineReviewList(reviews, focus));
     }
 
     return details;
   },
 
-  _lineReviewList: function (reviews) {
+  _lineReviewList: function (reviews, focus) {
     var list = Report._el("ul", "line-review-list");
     reviews.forEach(function (review) {
       if (!review) return;
@@ -549,7 +749,8 @@ var Report = {
       var label = mark === "good" ? "站对了" : mark === "wrong" ? "这句会吃亏" : "还差一点";
       var item = Report._el("li", "line-review-item line-review-item--" + mark);
       item.appendChild(Report._el("strong", null, label + (review.original ? " · “" + review.original + "”" : "")));
-      if (review.comment) item.appendChild(Report._el("p", null, review.comment));
+      var safeComment = Report._reviewCommentFor(review.comment, focus);
+      if (safeComment) item.appendChild(Report._el("p", null, safeComment));
       list.appendChild(item);
     });
     return list;
@@ -582,7 +783,7 @@ var Report = {
     var help = Report._helpPanel(report, focus, progress);
     if (help) content.appendChild(help);
     content.appendChild(Report._revisionDesk(focus, progress));
-    content.appendChild(Report._fullReview(report, checks));
+    content.appendChild(Report._fullReview(report, checks, focus));
     App.showView("report");
   },
 
