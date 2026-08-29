@@ -76,6 +76,10 @@ assert.match(prompt.SYSTEM_PROMPT, /原稿是“A；B。”.{0,80}“A；”和�
 assert.match(prompt.SYSTEM_PROMPT, /"给我补一脚\/跟上一点\/帮我补上\/上几张\/投一票".{0,80}必须判 met/u);
 assert.match(prompt.SYSTEM_PROMPT, /recentGift 只证明这个用户刚才支持过.{0,120}不能把过去送礼直接当 user_reason/u);
 assert.match(prompt.SYSTEM_PROMPT, /"补一点\/上几张\/一人一票".{0,80}不是当前还差的准确票数/u);
+assert.match(prompt.SYSTEM_PROMPT, /target_user \/ user_reason \/ vote_instruction 是三项彼此独立的原子能力/u);
+assert.match(prompt.SYSTEM_PROMPT, /第 3 项只看有没有明确对到人.{0,60}第 4 项只看有没有给用户侧价值.{0,60}第 5 项只看票差和上票动作/u);
+assert.match(prompt.SYSTEM_PROMPT, /"凯哥，谢谢你刚才的小心心".{0,60}两项都可判 met/u);
+assert.match(prompt.SYSTEM_PROMPT, /不要求再加"扣1"或"补一票"/u);
 assert.deepEqual(cases.extractTags("帮帮忙，拜托大家帮我组一组"), []);
 assert.deepEqual(cases.extractTags("求一求你了，我给你跪下了"), ["求一求", "跪下"]);
 
@@ -177,7 +181,12 @@ assert.equal(
     ?.status,
   "partial"
 );
-assert.equal(actionWithoutExactVoteGap.verdict, "almost");
+assert.equal(
+  actionWithoutExactVoteGap.structure_checks.find((item) => item.key === "user_reason")
+    ?.status,
+  "partial"
+);
+assert.equal(actionWithoutExactVoteGap.verdict, "off");
 
 const actionWithExactChineseVoteGap = index.normalizeReport(
   makeRawReport(),
@@ -366,8 +375,8 @@ assert.equal(
 );
 assert.equal(
   gratitudeOnlyTarget.structure_checks.find((item) => item.key === "target_user").status,
-  "partial",
-  "只在感谢里提到目标用户不算 Q 用户"
+  "met",
+  "直接称呼式感谢既完成 gratitude，也确实在对目标用户说话"
 );
 
 const genericGratitudeScript =
@@ -383,21 +392,21 @@ assert.equal(
   "现场有具体礼物时，泛泛的“谢谢大家”不能虚判为接住礼物"
 );
 
-for (const commaLeakScript of [
+for (const directlyThankedTargetScript of [
   "凯哥，谢谢你刚才的小心心，家人们现在补一点。",
   "凯哥，谢谢你，小王你愿意就补一点。",
   "凯哥，谢谢你，那你们想看的都补一票。",
   "凯哥，谢谢你，你们一起补一票。",
 ]) {
-  const commaLeakTarget = makeReportForScript(commaLeakScript);
-  index.applyReportSafetyGates(commaLeakTarget, [], {
-    sourceScript: commaLeakScript,
+  const directlyThankedTarget = makeReportForScript(directlyThankedTargetScript);
+  index.applyReportSafetyGates(directlyThankedTarget, [], {
+    sourceScript: directlyThankedTargetScript,
     scenario: { targetUser: "凯哥" },
   });
   assert.equal(
-    commaLeakTarget.structure_checks.find((item) => item.key === "target_user").status,
-    "partial",
-    `感谢后的群体或他人动作不能算作 Q 凯哥：${commaLeakScript}`
+    directlyThankedTarget.structure_checks.find((item) => item.key === "target_user").status,
+    "met",
+    `直接向凯哥道谢本身就是对凯哥说话，后句动作不归本项：${directlyThankedTargetScript}`
   );
 }
 
@@ -432,10 +441,137 @@ for (const naturalTargetScript of [
   );
 }
 
+for (const naturalTargetWithoutCommaScript of [
+  "凯哥帮我补一下。",
+  "凯哥给我补一脚。",
+  "凯哥来帮我一下。",
+  "凯哥再帮我一把。",
+  "凯哥听我说一句。",
+  "凯哥看一下这个新舞。",
+  "凯哥别走，听我说。",
+  "凯哥麻烦你帮我一下。",
+  "凯哥是不是想看撒娇？",
+  "凯哥想看我撒娇吗？",
+  "凯哥要不要看返场？",
+  "凯哥刚才不是说想看撒娇吗？",
+]) {
+  const naturalTargetWithoutComma = makeReportForScript(naturalTargetWithoutCommaScript, {
+    verdict: "almost",
+    structure_checks: allMetChecks().map((item) =>
+      item.key === "target_user" ? { ...item, status: "partial" } : item
+    ),
+  });
+  index.applyReportSafetyGates(naturalTargetWithoutComma, [], {
+    sourceScript: naturalTargetWithoutCommaScript,
+    scenario: { targetUser: "凯哥" },
+  });
+  assert.equal(
+    naturalTargetWithoutComma.structure_checks.find((item) => item.key === "target_user").status,
+    "met",
+    `自然口语不应只因没写逗号就卡住：${naturalTargetWithoutCommaScript}`
+  );
+}
+
+for (const postposedTargetScript of [
+  "谢谢你呀凯哥，刚才的小心心我收到了。",
+  "谢谢你凯哥。",
+  "感谢凯哥，刚才的支持我收到了。",
+  "想看返场吗凯哥？",
+  "你想看撒娇吗，凯哥？",
+  "这一脚能不能帮我，凯哥？",
+]) {
+  const postposedTarget = makeReportForScript(postposedTargetScript, {
+    verdict: "almost",
+    structure_checks: allMetChecks().map((item) =>
+      item.key === "target_user" ? { ...item, status: "partial" } : item
+    ),
+  });
+  index.applyReportSafetyGates(postposedTarget, [], {
+    sourceScript: postposedTargetScript,
+    scenario: { targetUser: "凯哥" },
+  });
+  assert.equal(
+    postposedTarget.structure_checks.find((item) => item.key === "target_user").status,
+    "met",
+    `自然的后置称呼也应算在对凯哥说话：${postposedTargetScript}`
+  );
+}
+
+// target_user 是原子能力：只看有没有明确对到人，不能再暗中要求互动或上票动作。
+// A2/A3 语义相同，仅标点不同，必须得到一致结果。
+for (const atomicTargetScript of [
+  "凯哥，现在还差320票。",
+  "凯哥。你刚才说想看我撒娇，我听见了。",
+  "那凯哥，我们先聊一下。",
+  "凯哥啊，我记住了。",
+  "我问下凯哥，你想看什么？",
+  "凯哥，谢谢你刚才的小心心。",
+]) {
+  const atomicTarget = makeReportForScript(atomicTargetScript, {
+    verdict: "almost",
+    structure_checks: allMetChecks().map((item) =>
+      item.key === "target_user" ? { ...item, status: "missing" } : item
+    ),
+  });
+  index.applyReportSafetyGates(atomicTarget, [], {
+    sourceScript: atomicTargetScript,
+    scenario: { targetUser: "凯哥" },
+  });
+  assert.equal(
+    atomicTarget.structure_checks.find((item) => item.key === "target_user").status,
+    "met",
+    `明确对凯哥说话时应纠正模型漏判：${atomicTargetScript}`
+  );
+}
+
+for (const narratedOrWrongTargetScript of [
+  "凯哥",
+  "凯哥刚说想看撒娇。",
+  "主持说凯哥想看撒娇。",
+  "主持说：凯哥，你帮我补一下。",
+  "主持说，凯哥，你帮我补一下。",
+  "凯哥。谢谢大家支持。",
+  "小王，你想看撒娇吗？",
+  "家人们，你们想看撒娇吗？",
+]) {
+  const narratedOrWrongTarget = makeReportForScript(narratedOrWrongTargetScript);
+  index.applyReportSafetyGates(narratedOrWrongTarget, [], {
+    sourceScript: narratedOrWrongTargetScript,
+    scenario: { targetUser: "凯哥" },
+  });
+  assert.equal(
+    narratedOrWrongTarget.structure_checks.find((item) => item.key === "target_user").status,
+    "partial",
+    `叙述、错人或群体不能冒充在对凯哥说话：${narratedOrWrongTargetScript}`
+  );
+}
+
+const atomicTargetEvidenceScript = "主持说凯哥想看撒娇。";
+const atomicTargetEvidence = makeReportForScript(atomicTargetEvidenceScript, {
+  structure_checks: allMetChecks().map((item) =>
+    item.key === "target_user"
+      ? { ...item, evidence: "虽然提到凯哥，但没有让他扣1回应" }
+      : item
+  ),
+});
+index.applyReportSafetyGates(atomicTargetEvidence, [], {
+  sourceScript: atomicTargetEvidenceScript,
+  scenario: { targetUser: "凯哥" },
+});
+assert.match(
+  atomicTargetEvidence.structure_checks.find((item) => item.key === "target_user").evidence,
+  /只检查|不检查理由、票差或上票动作/,
+  "后端必须覆盖模型偷带的 target_user 隐藏动作条件"
+);
+assert.doesNotMatch(
+  atomicTargetEvidence.structure_checks.find((item) => item.key === "target_user").evidence,
+  /扣1/,
+  "完整复盘里不能继续显示与当前关矛盾的旧证据"
+);
+
 for (const guidedWrongPersonScript of [
   "凯哥，刚才小王你愿意就补一点。",
   "凯哥，主持刚说小王你想看返场就扣1。",
-  "凯哥，谢谢你，刚才小王你愿意就补一点。",
   "凯哥，我再确认一下，小王能不能帮我组一组？",
   "凯哥，我再确认一下，能不能请小王帮我组一组？",
 ]) {
@@ -792,6 +928,33 @@ assert.equal(
 );
 assert.equal(explicitViewerReason.verdict, "passed");
 
+// user_reason 也是原子能力：观看、互动、选择或兑现价值成立就过，不再要求扣数/上票动作。
+// B2/B3 只改标点，两个判断必须一致。
+for (const atomicViewerReasonScript of [
+  "凯哥，你不是说想看我撒娇吗？我现在撒一个。",
+  "凯哥。你不是说想看我撒娇吗？我现在撒一个，好玩你再决定。",
+  "凯哥，你想看返场吗？",
+  "凯哥，这次你来选，你当导演。",
+  "凯哥，复活后我给你把新舞跳完。",
+  "凯哥，我撒个娇给你看。",
+]) {
+  const atomicViewerReason = makeReportForScript(atomicViewerReasonScript, {
+    verdict: "almost",
+    structure_checks: allMetChecks().map((item) =>
+      item.key === "user_reason" ? { ...item, status: "missing" } : item
+    ),
+  });
+  index.applyReportSafetyGates(atomicViewerReason, [], {
+    sourceScript: atomicViewerReasonScript,
+    scenario: { targetUser: "凯哥", userSignal: "想看撒娇" },
+  });
+  assert.equal(
+    atomicViewerReason.structure_checks.find((item) => item.key === "user_reason").status,
+    "met",
+    `已有用户侧价值时应纠正模型的 missing：${atomicViewerReasonScript}`
+  );
+}
+
 for (const interactiveQuestionScript of [
   "凯哥，你想不想看新舞，想看就在公屏扣1。",
   "凯哥，你愿不愿意看返场，愿意就在评论区扣1。",
@@ -817,15 +980,7 @@ for (const invalidViewerReasonScript of [
   "凯哥，你不想看新舞，就别补票。",
   "凯哥，你不愿意看返场，就别补票。",
   "凯哥，你想看我返场但不行。",
-  "凯哥，你想看新舞吗？",
-  "凯哥，你想看新舞也别补票。",
-  "凯哥，你想看返场，但没必要扣1。",
-  "凯哥，你想看返场，但没有必要扣1。",
-  "凯哥，你想看返场，也不由你来决定。",
-  "凯哥，你想看新舞，我先补点妆。",
-  "凯哥，你想看新舞就给我倒杯水。",
   "凯哥，你想看新舞，我决定不跳。",
-  "凯哥，你想看新舞，我选节目。",
 ]) {
   const invalidViewerReason = makeReportForScript(invalidViewerReasonScript, {
     verdict: "almost",
@@ -841,6 +996,259 @@ for (const invalidViewerReasonScript of [
     invalidViewerReason.structure_checks.find((item) => item.key === "user_reason").status,
     "partial",
     `否定/无反馈入口不能升级用户理由：${invalidViewerReasonScript}`
+  );
+}
+
+for (const negatedOrNarratedViewerReasonScript of [
+  "凯哥不想看返场。",
+  "凯哥没说想看返场。",
+  "大家不想看新舞。",
+  "主持说凯哥想看撒娇。",
+  "刚才主持说凯哥想看撒娇。",
+  "听主持说凯哥想看撒娇。",
+  "小王说凯哥想看返场。",
+  "主持告诉我凯哥想看撒娇。",
+  "凯哥说他想看返场。",
+]) {
+  const negatedOrNarratedViewerReason = makeReportForScript(
+    negatedOrNarratedViewerReasonScript
+  );
+  index.applyReportSafetyGates(negatedOrNarratedViewerReason, [], {
+    sourceScript: negatedOrNarratedViewerReasonScript,
+    scenario: { targetUser: "凯哥" },
+  });
+  assert.equal(
+    negatedOrNarratedViewerReason.structure_checks.find((item) => item.key === "user_reason").status,
+    "partial",
+    `否定或转述不能冒充给用户的正向理由：${negatedOrNarratedViewerReasonScript}`
+  );
+}
+
+for (const positiveAlternativeScript of [
+  "凯哥，我不返场，但我现在撒个娇给你看。",
+  "我不撒娇，不过复活后给你跳新舞。",
+  "我不返场，给你撒个娇吧。",
+  "我不撒娇，给你跳个新舞。",
+]) {
+  const positiveAlternative = makeReportForScript(positiveAlternativeScript, {
+    verdict: "almost",
+    structure_checks: allMetChecks().map((item) =>
+      item.key === "user_reason" ? { ...item, status: "partial" } : item
+    ),
+  });
+  index.applyReportSafetyGates(positiveAlternative, [], {
+    sourceScript: positiveAlternativeScript,
+    scenario: { targetUser: "凯哥" },
+  });
+  assert.equal(
+    positiveAlternative.structure_checks.find((item) => item.key === "user_reason").status,
+    "met",
+    `先否定一种内容、再给明确替代时应承认后半句价值：${positiveAlternativeScript}`
+  );
+}
+
+for (const vagueOfferScript of [
+  "凯哥，我马上来一个。",
+  "凯哥，那我给你安排。",
+]) {
+  const vagueOffer = makeReportForScript(vagueOfferScript);
+  index.applyReportSafetyGates(vagueOffer, [], {
+    sourceScript: vagueOfferScript,
+    scenario: { targetUser: "凯哥" },
+  });
+  assert.equal(
+    vagueOffer.structure_checks.find((item) => item.key === "user_reason").status,
+    "partial",
+    `没有现场信号时，含糊的“来一个/安排”不能凭空补成用户理由：${vagueOfferScript}`
+  );
+}
+
+const contextualGenericOfferScript = "凯哥，那我给你安排。";
+const contextualGenericOffer = makeReportForScript(contextualGenericOfferScript, {
+  verdict: "almost",
+  structure_checks: allMetChecks().map((item) =>
+    item.key === "user_reason" ? { ...item, status: "partial" } : item
+  ),
+});
+index.applyReportSafetyGates(contextualGenericOffer, [], {
+  sourceScript: contextualGenericOfferScript,
+  scenario: { targetUser: "凯哥", userSignal: "想看返场" },
+});
+assert.equal(
+  contextualGenericOffer.structure_checks.find((item) => item.key === "user_reason").status,
+  "met",
+  "现场已经明确想看返场时，“那我给你安排”有清楚指代，不应被机械卡住"
+);
+
+for (const negatedSignalCase of [
+  { signal: "不想看撒娇", script: "凯哥，那我现在来一个。" },
+  { signal: "别撒娇", script: "凯哥，那我现在来一个。" },
+  { signal: "没说想看返场", script: "凯哥，那我给你安排。" },
+  { signal: "不想听唱歌", script: "凯哥，那我现在走一个。" },
+  { signal: "你不用撒娇了", script: "凯哥，那我现在来一个。" },
+  { signal: "不必撒娇", script: "凯哥，那我现在来一个。" },
+  { signal: "无需返场", script: "凯哥，那我给你安排。" },
+  { signal: "我没想看撒娇", script: "凯哥，那我现在来一个。" },
+  { signal: "你不用给我跳新舞", script: "凯哥，那我现在走一个。" },
+]) {
+  const negatedSignal = makeReportForScript(negatedSignalCase.script);
+  index.applyReportSafetyGates(negatedSignal, [], {
+    sourceScript: negatedSignalCase.script,
+    scenario: { targetUser: "凯哥", userSignal: negatedSignalCase.signal },
+  });
+  assert.equal(
+    negatedSignal.structure_checks.find((item) => item.key === "user_reason").status,
+    "partial",
+    `否定现场信号不能把含糊回应升级为用户理由：${negatedSignalCase.signal}`
+  );
+}
+
+for (const voteOnlyScenarioResponseScript of [
+  "凯哥，我给你安排一个补票任务。",
+  "凯哥，那我给你安排补票。",
+  "凯哥，我给你看一下现在还差多少票。",
+  "凯哥，我马上给你安排上票。",
+  "凯哥，我给你跳票了。",
+]) {
+  const voteOnlyScenarioResponse = makeReportForScript(voteOnlyScenarioResponseScript);
+  index.applyReportSafetyGates(voteOnlyScenarioResponse, [], {
+    sourceScript: voteOnlyScenarioResponseScript,
+    scenario: { targetUser: "凯哥", userSignal: "你撒个娇，我考虑一下" },
+  });
+  assert.equal(
+    voteOnlyScenarioResponse.structure_checks.find((item) => item.key === "user_reason").status,
+    "partial",
+    `票务动作不能借撒娇场景冒充用户理由：${voteOnlyScenarioResponseScript}`
+  );
+}
+
+for (const viewerValueWithoutVoteActionScript of [
+  "凯哥，你想看新舞也别补票。",
+  "凯哥，你想看返场，但没必要扣1。",
+  "凯哥，你想看返场，但没有必要扣1。",
+  "凯哥，你想看返场，也不由你来决定。",
+  "凯哥，你想看新舞，我先补点妆。",
+  "凯哥，你想看新舞就给我倒杯水。",
+  "凯哥，你想看新舞，我选节目。",
+]) {
+  const viewerValueWithoutVoteAction = makeReportForScript(viewerValueWithoutVoteActionScript, {
+    verdict: "almost",
+    structure_checks: allMetChecks().map((item) =>
+      item.key === "user_reason" ? { ...item, status: "partial" } : item
+    ),
+  });
+  index.applyReportSafetyGates(viewerValueWithoutVoteAction, [], {
+    sourceScript: viewerValueWithoutVoteActionScript,
+    scenario: { targetUser: "凯哥" },
+  });
+  assert.equal(
+    viewerValueWithoutVoteAction.structure_checks.find((item) => item.key === "user_reason").status,
+    "met",
+    `上票/反馈动作是否成立不能反向抹掉已有观看价值：${viewerValueWithoutVoteActionScript}`
+  );
+}
+
+for (const hostNeedOrNegatedValueScript of [
+  "凯哥，我不撒娇，我现在只需要你帮我。",
+  "凯哥，你想看返场，但我不跳。",
+  "凯哥，我不想被淘汰，你帮帮我。",
+  "凯哥，现在还差十票，帮我补一票。",
+  "我是新人小满，准备了一支新舞。凯哥帮我补票。",
+  "我是新人小满，我现在准备了一支新舞。凯哥帮我补票。",
+]) {
+  const hostNeedOrNegatedValue = makeReportForScript(hostNeedOrNegatedValueScript);
+  index.applyReportSafetyGates(hostNeedOrNegatedValue, [], {
+    sourceScript: hostNeedOrNegatedValueScript,
+    scenario: { targetUser: "凯哥", userSignal: "想看撒娇" },
+  });
+  assert.equal(
+    hostNeedOrNegatedValue.structure_checks.find((item) => item.key === "user_reason").status,
+    "partial",
+    `否定用户价值或只说主播需要时不能误判为用户理由：${hostNeedOrNegatedValueScript}`
+  );
+}
+
+const atomicReasonEvidenceScript = "凯哥，我会努力。";
+const atomicReasonEvidence = makeReportForScript(atomicReasonEvidenceScript, {
+  verdict: "almost",
+  structure_checks: allMetChecks().map((item) =>
+    item.key === "user_reason"
+      ? { ...item, status: "partial", evidence: "没有让凯哥扣1或上票反馈" }
+      : item
+  ),
+});
+index.applyReportSafetyGates(atomicReasonEvidence, [], {
+  sourceScript: atomicReasonEvidenceScript,
+  scenario: { targetUser: "凯哥" },
+});
+assert.match(
+  atomicReasonEvidence.structure_checks.find((item) => item.key === "user_reason").evidence,
+  /观看、互动、选择或回应|参与后能看到什么回应/,
+  "给理由未过时也要按当前原子标准解释"
+);
+assert.doesNotMatch(
+  atomicReasonEvidence.structure_checks.find((item) => item.key === "user_reason").evidence,
+  /扣1|上票反馈/,
+  "完整复盘里不能保留 user_reason 的隐藏动作条件"
+);
+
+const contextualSignalResponseScript = "凯哥，你刚才不是说想看撒娇吗？那我现在来一个。";
+const contextualSignalResponse = makeReportForScript(contextualSignalResponseScript, {
+  verdict: "almost",
+  structure_checks: allMetChecks().map((item) =>
+    item.key === "user_reason" ? { ...item, status: "missing" } : item
+  ),
+});
+index.applyReportSafetyGates(contextualSignalResponse, [], {
+  sourceScript: contextualSignalResponseScript,
+  scenario: { targetUser: "凯哥", userSignal: "想看撒娇" },
+});
+assert.equal(
+  contextualSignalResponse.structure_checks.find((item) => item.key === "user_reason").status,
+  "met",
+  "接住现场撒娇信号后说“那我现在来一个”应识别为用户侧回应"
+);
+
+for (const naturalSignalResponseScript of [
+  "凯哥，那我现在就撒娇。",
+  "凯哥，你不是说让我撒个娇吗？我这就来。",
+]) {
+  const naturalSignalResponse = makeReportForScript(naturalSignalResponseScript, {
+    verdict: "almost",
+    structure_checks: allMetChecks().map((item) =>
+      item.key === "user_reason" ? { ...item, status: "partial" } : item
+    ),
+  });
+  index.applyReportSafetyGates(naturalSignalResponse, [], {
+    sourceScript: naturalSignalResponseScript,
+    scenario: { targetUser: "凯哥", userSignal: "你撒个娇，我考虑一下" },
+  });
+  assert.equal(
+    naturalSignalResponse.structure_checks.find((item) => item.key === "user_reason").status,
+    "met",
+    `接住明确撒娇信号后的自然回应应过关：${naturalSignalResponseScript}`
+  );
+}
+
+for (const directHostQuestionScript of [
+  "我问凯哥，你想看撒娇吗？",
+  "我问下凯哥，你想看撒娇吗？",
+  "我来问凯哥，你要不要看返场？",
+]) {
+  const directHostQuestion = makeReportForScript(directHostQuestionScript, {
+    verdict: "almost",
+    structure_checks: allMetChecks().map((item) =>
+      item.key === "user_reason" ? { ...item, status: "partial" } : item
+    ),
+  });
+  index.applyReportSafetyGates(directHostQuestion, [], {
+    sourceScript: directHostQuestionScript,
+    scenario: { targetUser: "凯哥" },
+  });
+  assert.equal(
+    directHostQuestion.structure_checks.find((item) => item.key === "user_reason").status,
+    "met",
+    `主播直接问目标用户想看什么，不能被当成第三方转述：${directHostQuestionScript}`
   );
 }
 
@@ -1213,7 +1621,7 @@ assert.match(normalizedScriptedSpeechEvidence.ai_flavor, /既然站在这里/);
 assert.match(normalizedScriptedSpeechEvidence.ai_flavor, /努力到最后一刻/);
 
 // 完整走一次 /api/coach：旧 body 仍 200；新 scenario 作为清洗后的第 5 参传给 prompt。
-const baseScript = "我是小夏，凯哥谢谢你刚才的小心心，凯哥你愿意就上几张，我还差十票，家人们一人补一点。";
+const baseScript = "我是小夏，凯哥谢谢你刚才的小心心，凯哥你想看撒娇我现在来一个，你愿意就上几张，我还差十票，家人们一人补一点。";
 const upstreamReport = {
   card_type: "logic",
   card_why: "结构与方向正确",

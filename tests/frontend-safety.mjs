@@ -505,6 +505,172 @@ function testChallengeSolutionCannotDriftToAnotherProblem() {
   );
 }
 
+function testDefaultScenarioGuidanceIsConcreteAndHuman() {
+  const scenario = {
+    targetUser: "凯哥",
+    userSignal: "你撒个娇，我考虑一下。",
+  };
+  const context = createBrowserContext({
+    App: {
+      state: {
+        lastRequest: {
+          script: "我是小满，谢谢凯哥刚才的小心心。凯哥，谢谢你刚才的小心心。",
+          scenario,
+        },
+      },
+    },
+  });
+  loadScript(context, "site/js/report.js");
+
+  const targetFocus = { key: "target_user", label: "点到人", evidence: "还没有点到人" };
+  const targetProgress = {
+    checks: [
+      { key: "self_intro", label: "认识我", status: "met" },
+      { key: "gratitude", label: "接礼物", status: "met" },
+      { key: "target_user", label: "点到人", status: "partial" },
+      { key: "user_reason", label: "给理由", status: "missing" },
+      { key: "vote_instruction", label: "票数指令", status: "missing" },
+    ],
+  };
+  const targetGuidance = context.Report._guidanceFor({}, targetFocus, targetProgress);
+  assert.match(targetGuidance.completed, /原话里已经出现了“凯哥”/, "应先承认新人已经找对目标用户");
+  assert.match(targetGuidance.gap, /“凯哥，……”/, "应给出能直接核对的称呼方式");
+  assert.match(targetGuidance.gap, /不考理由、票差或上票动作/, "点到人不得偷偷重复考理由或动作");
+  assert.match(context.Report.CHALLENGES.target_user.standard, /只看有没有明确对本轮递球的具体用户说话/);
+  assert.match(context.Report.CHALLENGES.target_user.standard, /具体感谢也算/);
+  assert.doesNotMatch(
+    context.Report.CHALLENGES.target_user.standard,
+    /继续递出|递一个/,
+    "“凯哥，谢谢你刚才的小心心”已经是在对目标用户说话，前端不得再要求额外递动作"
+  );
+  const targetHelp = Array.from(context.Report._helpItemsFor({}, targetFocus));
+  assert.match(targetHelp.join(" "), /凯哥/, "二次扶助必须直接使用当轮目标用户，而不是抽象说“某个人”");
+  assert.match(targetHelp.join(" "), /不用补理由、票差或上票动作/);
+
+  context.App.state.lastRequest.script = "凯哥，你不是说想看我撒娇吗？我现在就回应你。";
+  const reasonFocus = { key: "user_reason", label: "给理由", evidence: "理由还不明确" };
+  const reasonProgress = {
+    checks: targetProgress.checks.map((check) => ({
+      ...check,
+      status: check.key === "target_user" ? "met" : check.status,
+    })),
+  };
+  const reasonGuidance = context.Report._guidanceFor({}, reasonFocus, reasonProgress);
+  assert.match(reasonGuidance.completed, /已经把话递给“凯哥”了/, "上一关过了就明确告诉新人称呼不用再改");
+  assert.match(reasonGuidance.gap, /你撒个娇，我考虑一下/, "给理由必须直接接住现场真实用户信号");
+  assert.match(reasonGuidance.gap, /回应、得到什么乐趣或选择权/, "应把抽象的“给理由”翻译成可检查成分");
+  assert.match(reasonGuidance.gap, /不检查票差和上票动作/, "给理由关不得重复考票数指令");
+  const reasonHelp = Array.from(context.Report._helpItemsFor({}, reasonFocus));
+  assert.match(reasonHelp.join(" "), /你撒个娇，我考虑一下/, "二次扶助必须引用当轮信号");
+  assert.match(reasonHelp.join(" "), /凯哥，你刚说想看我撒娇，那我现在撒一个给你看/, "二次扶助应给完全新人可照着自检的最小骨架");
+  assert.match(reasonHelp.join(" "), /不用照抄整段/, "最小骨架必须明确要求换回自己的词");
+
+  const positiveSignal = scenario.userSignal;
+  for (const negativeSignal of ["别撒娇", "不想看撒娇", "你不用撒娇了", "没说想看返场"]) {
+    context.App.state.lastRequest.scenario.userSignal = negativeSignal;
+    const negativeGuidance = context.Report._guidanceFor({}, reasonFocus, reasonProgress);
+    const negativeHelp = Array.from(context.Report._helpItemsFor({}, reasonFocus)).join(" ");
+    assert.match(negativeGuidance.gap, /不想要|拒绝|尊重/, `负向信号必须按拒绝解释：${negativeSignal}`);
+    assert.match(negativeHelp, /不要反着理解|不要照着做/, `二次扶助不能把拒绝说成兴趣：${negativeSignal}`);
+    assert.doesNotMatch(negativeHelp, /你刚说想看我撒娇|那我现在撒一个|你刚说想看返场/, `负向信号不能生成反向骨架：${negativeSignal}`);
+  }
+  context.App.state.lastRequest.scenario.userSignal = "别撒娇";
+  assert.equal(
+    context.Report._specificDirectionFor(
+      { direction: { summary: "接住凯哥想看撒娇的信号，现在撒一个给他看。" } },
+      reasonFocus
+    ),
+    "",
+    "模型方向也不能把负向现场信号反说成正向兴趣"
+  );
+  context.App.state.lastRequest.scenario.userSignal = positiveSignal;
+
+  const related = {
+    direction: { summary: "接住凯哥想看撒娇的信号，说清他参与后会得到什么回应。" },
+  };
+  assert.match(
+    context.Report._specificDirectionFor(related, reasonFocus),
+    /凯哥.*撒娇/,
+    "模型结合原话且属于本关的具体方向不应被编号关隐藏"
+  );
+  const unrelated = {
+    direction: { summary: "还差320票，请让凯哥马上补票。" },
+  };
+  assert.equal(
+    context.Report._specificDirectionFor(unrelated, reasonFocus),
+    "",
+    "模型方向若偷带票差和动作，不得显示在给理由关造成跨关矛盾"
+  );
+  for (const crossLevelDirection of [
+    "点到凯哥，让他扣1回应你。",
+    "接住撒娇信号，让凯哥在公屏扣1。",
+    "接住撒娇信号，让凯哥去评论区给反馈。",
+    "点到凯哥，让他补一点、跟一点。",
+    "点到凯哥，再让他帮我组一组。",
+  ]) {
+    const crossLevelFocus = crossLevelDirection.indexOf("点到凯哥") === 0
+      ? targetFocus
+      : reasonFocus;
+    assert.equal(
+      context.Report._specificDirectionFor(
+        { direction: { summary: crossLevelDirection } },
+        crossLevelFocus
+      ),
+      "",
+      `评论或上票动作不能作为当前原子关的隐藏条件：${crossLevelDirection}`
+    );
+  }
+
+  assert.equal(
+    context.Report._specificOneThingFor(
+      { one_thing: "记得说还差320票，再让凯哥马上补票。" },
+      reasonFocus
+    ),
+    "",
+    "旧的 one_thing 若属于票数关，也不得在给理由关制造第二套标准"
+  );
+  assert.match(
+    context.Report._specificOneThingFor(
+      { one_thing: "接住凯哥想看撒娇的信号，给他一个明确回应。" },
+      reasonFocus
+    ),
+    /撒娇.*回应/,
+    "真正属于当前关的一句话提醒应保留"
+  );
+
+  assert.equal(
+    context.Report._reviewCommentFor("虽然提到凯哥，但没有让他扣1回应", targetFocus),
+    "这句还没有明确说给当前目标用户；本关只核对称呼，不检查理由、票差或动作。",
+    "完整复盘的逐句评论也必须消除点到人隐藏门槛"
+  );
+  assert.equal(
+    context.Report._reviewCommentFor("没有让凯哥扣1或上票反馈", reasonFocus),
+    "这句还没说清对方参与后能得到的回应、乐趣或选择；本关不检查评论或上票动作。",
+    "完整复盘的逐句评论也必须消除给理由隐藏门槛"
+  );
+  for (const hiddenTargetComment of [
+    "虽然喊了凯哥，但还没递出一个互动动作",
+    "点到凯哥后还需要给出一个可回应的动作",
+    "虽然说了凯哥，但没有让对方接话",
+  ]) {
+    assert.match(
+      context.Report._reviewCommentFor(hiddenTargetComment, targetFocus),
+      /本关只核对称呼，不检查理由、票差或动作/,
+      `点到人完整复盘必须过滤隐藏动作同义词：${hiddenTargetComment}`
+    );
+  }
+  for (const hiddenReasonComment of [
+    "有兴趣点，但缺少可执行动作",
+    "说了返场，还没有邀请对方回应",
+  ]) {
+    assert.match(
+      context.Report._reviewCommentFor(hiddenReasonComment, reasonFocus),
+      /本关不检查评论或上票动作/,
+      `给理由完整复盘必须过滤隐藏动作同义词：${hiddenReasonComment}`
+    );
+  }
+}
+
 async function testCoachTabResponsesStayInTheirOwnTab() {
   const context = createBrowserContext({
     document: { addEventListener() {} },
@@ -579,6 +745,7 @@ try {
   testSafetyAndRootCauseTakePriorityOverChecklist();
   testFiveStructureItemsDoNotMasqueradeAsFullPass();
   testChallengeSolutionCannotDriftToAnotherProblem();
+  testDefaultScenarioGuidanceIsConcreteAndHuman();
   await testCoachTabResponsesStayInTheirOwnTab();
   testCoachCodeIsSessionScoped();
   console.log("PASS");

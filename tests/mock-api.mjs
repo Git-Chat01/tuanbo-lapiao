@@ -29,38 +29,72 @@ const candidate = {
   deleted: false,
 };
 
-const structure = (passed) => [
+const structure = ({ targetMet, reasonMet, voteMet }) => [
   { key: "self_intro", status: "met", evidence: "“我是首播的小满，今天想把新舞留给你们看”" },
   { key: "gratitude", status: "met", evidence: "“谢谢凯哥刚才的小心心”" },
-  { key: "target_user", status: "met", evidence: "话术明确点到凯哥" },
+  {
+    key: "target_user",
+    status: targetMet ? "met" : "partial",
+    evidence: targetMet ? "话术明确是在对凯哥说" : "已经写到现场人物，但还没有明确对凯哥说话",
+  },
   {
     key: "user_reason",
-    status: passed ? "met" : "missing",
-    evidence: passed ? "接住撒娇互动，并把复活后的反馈说清楚" : "只说自己想复活，没给凯哥参与的乐趣",
+    status: reasonMet ? "met" : "missing",
+    evidence: reasonMet ? "接住撒娇互动，并给了观看、选择或回应价值" : "已经把请求说出来，只差凯哥参与后能得到的回应",
   },
   {
     key: "vote_instruction",
-    status: passed ? "met" : "partial",
-    evidence: passed ? "明确说还差 320 票并给出补票动作" : "说了冲一冲，但没告诉大家还差多少票",
+    status: voteMet ? "met" : "partial",
+    evidence: voteMet ? "明确说还差 320 票并给出补票动作" : "还缺准确票差或可执行的上票动作",
   },
 ];
 
 const reportFor = (script) => {
-  const passed = script.includes("还差320票") && script.includes("撒娇");
+  // 本地假接口也按三个原子能力判断，避免浏览器回归掩盖生产上的交叉门槛。
+  const targetMet = /(?:^|[，。！？!?；;])(?:那|我问下)?凯哥(?:啊|呀|嘛|呢)?(?=[，。！？!?：:你])/u.test(script);
+  const reasonMet =
+    !/(?:不|别|没|不想|不愿).{0,4}(?:撒娇|返场|新舞|表演|回应)/u.test(script) &&
+    /(?:撒娇|返场|新舞|跳完|才艺|表演|整活|好玩|有意思|你来选|你决定|你说了算|当导演|复活后|点的节目)/u.test(script);
+  const voteMet = /还差\s*320\s*票/u.test(script) && /(?:补|上票|投票|跟上|跟一点)/u.test(script);
+  const passed = targetMet && reasonMet && voteMet;
+  const checks = structure({ targetMet, reasonMet, voteMet });
+  const focus = !targetMet ? "target" : (!reasonMet ? "reason" : "vote");
   return {
     card_type: "logic",
-    card_why: passed ? "五项结构都落到了当前现场。" : "你感谢了人，但上票理由还停在自己的需要上。",
+    card_why: passed
+      ? "五项结构都落到了当前现场。"
+      : (focus === "target"
+          ? "你已经写出人物，只差让凯哥听出这句话是在对他说。"
+          : (focus === "reason"
+              ? "你已经对准凯哥，只差接住他想看撒娇的现场信号。"
+              : "前四项已经齐了，只差准确票差和上票动作。")),
     audience: "在对刚刚送礼并接梗的凯哥说，也给看戏的人留了参与入口。",
-    structure_checks: structure(passed),
+    structure_checks: checks,
     verdict: passed ? "passed" : "almost",
-    verdict_reason: passed ? "认识你、接礼物、点人、给理由和票数指令都齐了。" : "方向没错，先把凯哥为什么愿意参与说出来。",
+    verdict_reason: passed
+      ? "认识你、接礼物、点人、给理由和票数指令都齐了。"
+      : (focus === "target"
+          ? "感谢已经接住了，这次只把一句话明确说给凯哥。"
+          : (focus === "reason"
+              ? "点到凯哥已经过关，这次只说他参与后能看到什么回应。"
+              : "前四项不用再改，只补准确票差和上票动作。")),
     echo: "你想接住刚才送礼物的凯哥，再请大家帮你补最后一段票。",
     line_reviews: [
       { original: script, mark: passed ? "good" : "partial", comment: passed ? "这次把互动和补票动作接到了一起。" : "感谢接住了，但观众还没听到参与后能得到什么。" },
     ],
-    one_thing: passed ? "上票理由要落到观众能参与、能得到的情绪反馈上。" : "别只说你想复活，要说他为什么会觉得这一票上得好玩。",
+    one_thing: passed
+      ? "上票理由要落到观众能参与、能得到的情绪反馈上。"
+      : (focus === "target"
+          ? "点到人只看话是不是明确说给这个人。"
+          : (focus === "reason"
+              ? "给理由只看用户参与后能得到什么。"
+              : "票数指令只看准确票差和可执行动作。")),
     direction: {
-      summary: "接住凯哥的撒娇梗，说清复活后怎么回应，再落到 320 票的具体动作。用你自己的话说。",
+      summary: focus === "target"
+        ? "让凯哥一听就知道这句话是在对他说，不用重写整段。用你自己的话说。"
+        : (focus === "reason"
+            ? "接住凯哥想看撒娇的信号，只补他参与后能看到的回应或乐趣。用你自己的话说。"
+            : "保留原话，只补准确票差和一个马上能做的上票动作。用你自己的话说。"),
       examples: ["凯哥，你这五颗心把我胆子送上来了", "还差320票，想看我撒娇的补一脚"],
     },
     ai_flavor: "",

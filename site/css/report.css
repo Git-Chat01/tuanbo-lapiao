@@ -219,6 +219,17 @@
   color: #6e4b1d;
   background: #fff2d8;
 }
+.presenter-page .challenge-card__row--done {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-top: 0;
+  border-left: 3px solid var(--stage-mint);
+  color: #245e49;
+  background: var(--stage-mint-soft);
+}
+.presenter-page .challenge-card__row--only-gap {
+  margin-top: 8px;
+}
 .presenter-page .focus-paper--redline .challenge-card__row--evidence {
   border-left-color: var(--stage-red);
   color: #7d2e2d;
@@ -232,6 +243,15 @@
   background: var(--stage-panel);
 }
 .presenter-page .challenge-card__row--solution .challenge-card__label { color: var(--stage-amber); }
+.presenter-page .challenge-card__row--specific {
+  padding: 10px 12px;
+  border-top: 0;
+  border-left: 3px solid #9d7854;
+  color: #503d2e;
+  background: #f4ece3;
+}
+.presenter-page .challenge-card__row--done .challenge-card__label { color: #147651; }
+.presenter-page .challenge-card__row--specific .challenge-card__label { color: #704b2b; }
 .presenter-page .focus-paper__takeaway {
   margin: 12px 0 0;
   padding-top: 10px;
@@ -281,6 +301,12 @@
   font-size: var(--font-size-xs);
   font-weight: 800;
   letter-spacing: 0.04em;
+}
+.presenter-page .challenge-help--open .challenge-help__eyebrow {
+  display: inline-block;
+  padding: 4px 7px;
+  color: #245e49;
+  background: var(--stage-mint-soft);
 }
 
 .presenter-page .revision-desk { margin-top: 18px; }

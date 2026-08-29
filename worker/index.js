@@ -232,10 +232,6 @@ export default {
   },
 };
 
-const TARGET_INTERACTION_PATTERN =
-  /你(?:要|愿|想|说|刚|都|会|还|能)|要不要|愿不愿|考虑|扣(?:个|一)|打个|补(?:一|几|票|上)|上票|投票|给我|冲(?:啊|一|起来|票)|跟上|帮我|求求|偏心|返场|算不算|别(?:装|可怜)|喜欢|点舞|点个|整活|接不接|看我|想看/u;
-const TARGET_INTERACTION_START_PATTERN =
-  /^(?:你(?!们)|刚才(?:主持说)?你(?!们)|要是你(?!们)|如果你(?!们)|假如你(?!们)|这个(?:新舞|节目|整活)?你(?!们)|这支舞你(?!们)|这段(?:舞|表演|才艺)?你(?!们)|主持(?:刚|刚才)?说你(?!们)|那你(?!们)|这轮你(?!们)|现在你(?!们)|接下来你(?!们)|然后你(?!们)|愿意|要不要|能不能|可不可以|方便(?:的话)?|想看|觉得|求求你|再偏心|给我|帮帮我|帮我|补|上票|投票|冲|跟上|别(?:装|可怜)|让我们|看我|算不算|喜欢|我给你|我马上)/u;
 const GENERIC_TARGET_PATTERN =
   /^(?:大哥|哥哥|小哥哥|帅哥|美女|小美女|靓仔|宝宝|宝贝|宝子|姐姐|小姐姐|大姐|老板|老师|大叔|叔叔|阿姨|哥们|兄弟们?|姐妹们?|老铁|大佬|家人们?|朋友们?|大家|各位|宝宝们?|粉丝们?|观众们?|主持|拜托大家|这一轮|这轮|现在|刚才|谢谢|感谢|我是|我想|我还|我刚|我准备|想看|愿意)/u;
 const AI_FLAVOR_SOURCE_PHRASES = [
@@ -260,10 +256,6 @@ const AI_FLAVOR_SOURCE_PHRASES = [
   "好运陪我闯关到底",
   "见证这一刻",
 ];
-const POSITIVE_FEEDBACK_PATTERN =
-  /(?:公屏|评论区)?(?:扣|打)(?:个)?(?:[01一零]|叉)|(?:给我)?(?:补|上)(?:一|几|点)?(?:票|张|脚)|投(?:一|几|点)?票|帮我(?:组一组|丢一丢|补一补)|评论(?:一下|告诉我|说一声)|公屏(?:说|打|扣)|(?:你(?:来)?选|让你选)(?:一个|节目|舞|歌)?|(?:你(?:来)?决定|由你决定)|跟上(?:一|几|点)?(?:票|张|脚)?|跟(?:一|几|点)(?:票|张|脚)?|一人(?:补|上)(?:一|几|点)(?:票|张|脚)?/gu;
-const NEGATED_ACTION_PREFIX_PATTERN =
-  /(?:不|别|没|未|无需|无须|不用|不要|不必|没必要|没有必要|不由|轮不到).{0,3}$/u;
 const EXPLICIT_BEGGING_SIGNALS = [
   "就当我求你",
   "真的求你",
@@ -302,18 +294,6 @@ const BEGGING_REINFORCEMENT_SIGNALS = [
   "我真的不能走",
 ];
 
-function hasPositiveFeedbackAction(text) {
-  POSITIVE_FEEDBACK_PATTERN.lastIndex = 0;
-  for (const action of String(text || "").matchAll(POSITIVE_FEEDBACK_PATTERN)) {
-    const prefix = String(text || "")
-      .slice(Math.max(0, action.index - 8), action.index)
-      .replace(/\s+/g, "");
-    if (NEGATED_ACTION_PREFIX_PATTERN.test(prefix)) continue;
-    return true;
-  }
-  return false;
-}
-
 function splitHardSentences(value) {
   const matches = String(value || "").match(
     /[^。！？!?；;.]+(?:[。！？!?；;.]+[”’"'）】》]*)?|[。！？!?；;.]+[”’"'）】》]*/gu
@@ -330,41 +310,131 @@ function hasMismatchedDelegatedActor(rawBody, target) {
   return !["你", "一下", "一下子", String(target || "").trim()].includes(delegatedActor);
 }
 
-function hasInteractiveAddressBody(rawBody, target) {
-  const body = String(rawBody || "").replace(/^[，,:：\s]+/u, "").trim();
-  if (!body) return false;
+const DIRECT_CONTINUATION_PATTERN =
+  /^(?:(?:那|这轮|现在|接下来|然后|刚才|主持(?:刚|刚才)?说)[，,\s]*)?(?:你(?!们)|要是你(?!们)|如果你(?!们)|这个(?:新舞|节目|整活)?你(?!们)|这支舞你(?!们)|这段(?:舞|表演|才艺)?你(?!们)|愿不愿意|想不想|要不要|是不是|能不能|可不可以|方便(?:的话)?|请你|麻烦你|帮我|给我|来帮我|再帮我|听我|看一下|别走|我给你|我来给你|我问你|听你的)/u;
+const AUDIENCE_SWITCH_PATTERN =
+  /^(?:家人们?|朋友们?|大家|各位|宝宝们?|粉丝们?|观众们?|你们|兄弟们?|姐妹们?)(?:[，,:：\s]|$)/u;
+const GENERIC_AUDIENCE_THANKS_PATTERN =
+  /^(?:先)?(?:谢谢|感谢|多谢)(?:大家|家人们?|朋友们?|各位|宝宝们?|粉丝们?|观众们?|你们|兄弟们?|姐妹们?)/u;
 
-  // 只说“谢谢你刚才送礼”仍属于感谢项；感谢之后又继续递动作，才算真的 Q 到。
-  if (/^(?:谢谢|感谢|多谢)/u.test(body)) {
-    let nextTurn = (body.match(/[，,；;](.+)$/u)?.[1] || "").trim();
-    if (!nextTurn) return false;
-    if (target && nextTurn.startsWith(target)) {
-      nextTurn = nextTurn.slice(target.length).replace(/^[，,:：\s]+/u, "");
-    }
-    // 后续若转向家人们或另一个昵称，下面的受限开头校验会拒绝。
-    if (hasMismatchedDelegatedActor(nextTurn, target)) return false;
-    return TARGET_INTERACTION_START_PATTERN.test(nextTurn) && TARGET_INTERACTION_PATTERN.test(nextTurn);
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function looksLikeAnotherAddressee(rawBody, target) {
+  const body = String(rawBody || "")
+    .replace(/^[，,:：\s]+/u, "")
+    .replace(/^(?:刚才|主持(?:刚|刚才)?说|我(?:再)?确认(?:下|一下)?)[，,:：\s]*/u, "")
+    .trim();
+  if (
+    !body ||
+    AUDIENCE_SWITCH_PATTERN.test(body) ||
+    GENERIC_AUDIENCE_THANKS_PATTERN.test(body)
+  ) {
+    return Boolean(body);
+  }
+  if (hasMismatchedDelegatedActor(body, target)) return true;
+  if (DIRECT_CONTINUATION_PATTERN.test(body)) return false;
+
+  const other = body.match(
+    /^(?:请|让|麻烦)?([\p{L}\p{N}_·-]{1,12}?)(?:你(?!们)|能不能|可不可以|愿不愿意|想不想|来帮我)/u
+  )?.[1];
+  if (!other) return false;
+  return ![String(target || "").trim(), "那", "现在", "这轮", "接下来"].includes(other);
+}
+
+function isNaturalNoDelimiterAddress(rawTail) {
+  const sentence = String(rawTail || "").split(/[。！？!?；;]/u)[0].trim();
+  if (!sentence) return false;
+
+  // 先排除“凯哥刚说/送了/告诉我他……”这类在谈论凯哥的叙述。反问式的
+  // “凯哥刚才不是说……吗”仍然是在当面对话，不属于这里。
+  if (
+    /^(?:(?:刚|刚才|刚刚|之前|当时|已经)?(?:说|讲|表示|提到|送了|刷了|投了|发了|给了)|告诉我(?:他|她|自己)|(?:是|在|成为)(?:榜|直播间))/u.test(
+      sentence
+    ) &&
+    !/^(?:刚才|刚刚)?不是说.{0,20}(?:吗|么|呢|嘛)/u.test(sentence)
+  ) {
+    return false;
   }
 
-  // “我再确认一下”只是承接语；确认后必须立刻把动作递给原目标。
-  // 若转而喊“小王能不能……”，不能借前面的凯哥算作 Q 到凯哥。
-  const confirmationPrefix = body.match(/^我(?:再)?确认(?:一下)?[，,:：\s]*/u)?.[0];
-  if (confirmationPrefix) {
-    let nextTurn = body.slice(confirmationPrefix.length).trim();
-    if (target && nextTurn.startsWith(target)) {
-      nextTurn = nextTurn.slice(target.length).replace(/^[，,:：\s]+/u, "");
-    }
-    if (hasMismatchedDelegatedActor(nextTurn, target)) return false;
-    return TARGET_INTERACTION_START_PATTERN.test(nextTurn) && TARGET_INTERACTION_PATTERN.test(nextTurn);
+  // 新人常省略呼语后的逗号。这里按“对话语气”识别，而不是限定某几个完整句式：
+  // 有一/二人称、请求/命令动词或疑问语气，都说明名字是在被直接呼叫。
+  if (/(?:[！？!?]|(?:吗|么|呢|嘛|吧|呀|啊)[。！!?]?$)/u.test(sentence)) return true;
+  if (/^.{0,8}(?:你(?!们)|我(?!们)|咱)/u.test(sentence)) return true;
+  return /^(?:请|麻烦|帮|给|来|再|先|别|不要|不用|听|看|等|留|走|告诉|问|谢谢|感谢|多谢|现在|这轮|接下来|还差|想看|愿意|要不要|是不是|能否|能不能|可不可以|方便)/u.test(
+    sentence
+  );
+}
+
+function hasAddressedContent(rawTail, target, usedCallingParticle = false) {
+  let tail = String(rawTail || "");
+  const rawTrimmedTail = tail.trimStart();
+  const particle = tail.match(/^\s*(啊|呀|呢|哈|哎|欸|嘛)/u)?.[1] || "";
+  if (particle) tail = tail.slice(tail.indexOf(particle) + particle.length);
+
+  const leadingDelimiter = tail.match(/^\s*([，,:：。！？!?；;]*)/u)?.[1] || "";
+  tail = tail.replace(/^\s*[，,:：。！？!?；;]*\s*/u, "");
+  // 只有一个孤立昵称还没有形成一句对话，不能因为模型猜测就算过关。
+  if (!tail) return false;
+
+  // “凯哥刚说……”是在叙述凯哥，不是在叫凯哥；直接呼语可无逗号，但后面通常会接
+  // 二人称、自己的回应、感谢、票差或当轮安排。
+  if (
+    !particle &&
+    !leadingDelimiter &&
+    !usedCallingParticle &&
+    !isNaturalNoDelimiterAddress(rawTrimmedTail)
+  ) {
+    return false;
   }
 
-  // 非感谢句也必须让动作紧接在这个对象后面，不能借前面的名字承接后方群体动作。
-  if (hasMismatchedDelegatedActor(body, target)) return false;
-  return TARGET_INTERACTION_START_PATTERN.test(body) && TARGET_INTERACTION_PATTERN.test(body);
+  const crossedHardStop = /[。！？!?；;]/u.test(leadingDelimiter);
+  const currentSentence = tail.split(/[。！？!?；;]/u)[0].trim();
+
+  // “凯哥。你……”是自然的跨句承接；孤立称呼后若立刻转向群体/别人，则不算。
+  if (crossedHardStop) {
+    return !looksLikeAnotherAddressee(currentSentence, target);
+  }
+
+  // “凯哥，谢谢你……”既是感谢，也确实在对凯哥说话；原子能力允许同一句同时满足两项。
+  if (/^(?:先)?(?:谢谢|感谢|多谢)/u.test(currentSentence)) {
+    return !GENERIC_AUDIENCE_THANKS_PATTERN.test(currentSentence);
+  }
+
+  if (looksLikeAnotherAddressee(currentSentence, target)) return false;
+
+  // 直接呼名后，只要还有一句实际内容，就已经明确在对这个人说话；
+  // 动作和票差分别交给 user_reason / vote_instruction，不再偷偷并入这一关。
+  return currentSentence.length > 0;
+}
+
+function isAttributedTargetMention(sourceScript, targetStart) {
+  const prefix = String(sourceScript || "")
+    .slice(Math.max(0, targetStart - 28), targetStart)
+    .replace(/\s+/g, "");
+  const clauses = prefix.split(/[。！？!?；;，,]/u).filter(Boolean);
+  const clause = clauses[clauses.length - 1] || "";
+  if (
+    /^(?:主持|他|她|用户|别人|有人|旁人)(?:刚|刚才)?(?:说|讲|问|提到|表示)[：:“”"']*$/u.test(
+      clause
+    )
+  ) {
+    return true;
+  }
+  return (
+    !/^我/u.test(clause) &&
+    /^[\p{L}\p{N}_·-]{2,8}(?:刚|刚才)?(?:说|讲|问|提到|表示)[：:“”"']*$/u.test(
+      clause
+    )
+  );
 }
 
 function freeModeTargetToken(segment, hasFollowingSegment) {
-  const text = String(segment || "").trim();
+  const text = String(segment || "")
+    .trim()
+    .replace(/^(?:那|然后|所以|这轮|这一轮)[，,\s]*/u, "")
+    .replace(/^我(?:想|来|再)?(?:问|确认)(?:下|一下)?[，,\s]*/u, "");
   if (!text || GENERIC_TARGET_PATTERN.test(text)) return "";
 
   const atTarget = text.match(/^@[\p{L}\p{N}_·-]{1,24}/u)?.[0];
@@ -383,8 +453,77 @@ function freeModeTargetToken(segment, hasFollowingSegment) {
   return "";
 }
 
+function hasPostposedDirectAddress(sourceScript, target) {
+  const escapedTarget = escapeRegExp(target);
+  const targetAtEnd = new RegExp(
+    `${escapedTarget}(?!们)(?:啊|呀|呢|哈|嘛|啦)?\\s*[。！？!?；;]*$`,
+    "u"
+  );
+  for (const sentence of splitHardSentences(sourceScript)) {
+    const match = sentence.match(targetAtEnd);
+    if (!match) continue;
+    const targetIndex = sentence.lastIndexOf(target);
+    const prefix = sentence.slice(0, targetIndex).replace(/\s+/g, "").replace(/[，,:：]+$/u, "");
+    if (!prefix) continue;
+    if (
+      /^(?:(?:刚|刚才|刚刚|之前)?(?:听|听到))?(?:主持|他|她|用户|别人|有人|旁人|[\p{L}\p{N}_·-]{2,8})(?:刚|刚才)?(?:说|讲|问|提到|表示|告诉)/u.test(
+        prefix
+      )
+    ) {
+      continue;
+    }
+    if (
+      /(?:你(?!们)|谢谢你|感谢你|多谢你|想不想|要不要|是不是|愿不愿意|能不能|可不可以|方便吗|帮我|听我|告诉我|[吗么呢嘛][，,]?$|[？?][，,]?$)/u.test(
+        prefix
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function hasConcreteTargetAddress(sourceScript, scenarioTarget = "") {
   const requiredTarget = String(scenarioTarget || "").trim();
+
+  if (requiredTarget) {
+    const escapedTarget = escapeRegExp(requiredTarget);
+    const source = String(sourceScript || "");
+    const postposedThanks = new RegExp(
+      `(?:谢谢|感谢|多谢)(?:你)?(?:啊|呀|呢|哈|啦)?[，,\\s]*${escapedTarget}(?!们)(?=$|[。！？!?；;，,:：])`,
+      "gu"
+    );
+    for (const match of source.matchAll(postposedThanks)) {
+      const thanksOffset = match[0].search(/(?:谢谢|感谢|多谢)/u);
+      const thanksStart = (match.index || 0) + Math.max(0, thanksOffset);
+      if (!isAttributedTargetMention(source, thanksStart)) return true;
+    }
+    if (hasPostposedDirectAddress(source, requiredTarget)) return true;
+
+    const patterns = [
+      new RegExp(
+        `(?:^|[。！？!?；;，,:：])\\s*(?:(?:那|然后|所以|这轮|这一轮)[，,\\s]*)?${escapedTarget}(?!们)`,
+        "gu"
+      ),
+      new RegExp(
+        `(?:^|[。！？!?；;，,:：])\\s*我(?:想|来|再)?(?:问|确认)(?:下|一下)?[，,\\s]*${escapedTarget}(?!们)`,
+        "gu"
+      ),
+    ];
+
+    for (const pattern of patterns) {
+      for (const match of source.matchAll(pattern)) {
+        const targetOffset = match[0].lastIndexOf(requiredTarget);
+        const targetStart = (match.index || 0) + targetOffset;
+        if (isAttributedTargetMention(sourceScript, targetStart)) continue;
+        const tailStart = (match.index || 0) + targetOffset + requiredTarget.length;
+        if (hasAddressedContent(source.slice(tailStart), requiredTarget)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
 
   for (const sentence of splitHardSentences(sourceScript)) {
     const segments = sentence.split(/[，,:：]/u).map((item) => item.trim());
@@ -393,17 +532,15 @@ function hasConcreteTargetAddress(sourceScript, scenarioTarget = "") {
       if (!segment) continue;
 
       let target = "";
-      if (requiredTarget) {
-        if (!segment.startsWith(requiredTarget)) continue;
-        if (segment.slice(requiredTarget.length).startsWith("们")) continue;
-        target = requiredTarget;
-      } else {
-        target = freeModeTargetToken(segment, index < segments.length - 1);
-      }
+      target = freeModeTargetToken(segment, index < segments.length - 1);
       if (!target) continue;
 
-      const body = [segment.slice(target.length), ...segments.slice(index + 1)].join("，");
-      if (hasInteractiveAddressBody(body, target)) return true;
+      const targetIndex = segment.indexOf(target);
+      const body = [
+        segment.slice(targetIndex >= 0 ? targetIndex + target.length : target.length),
+        ...segments.slice(index + 1),
+      ].join("，");
+      if (hasAddressedContent(body, target)) return true;
     }
   }
   return false;
@@ -487,35 +624,223 @@ function firstSelfAbasementSignal(sourceScript) {
   return "";
 }
 
-function hasExplicitViewerReasonWithFeedback(sourceScript) {
-  const reasonPattern =
-    /(?:你|家人们?|大家|榜(?:一|二|三|1|2|3)|@[\p{L}\p{N}_·-]+|[\p{L}\p{N}_·-]{1,8}(?:哥|姐)).{0,12}(?:想看|愿意看).{0,12}(?:新舞|返场|跳完|才艺|表演|整活)/gu;
-  const negativePattern = /(?:不|别|没|未|并不|不太|不怎么).{0,3}(?:想看|愿意看)|不愿意看/gu;
+const VIEWER_CONTENT_PATTERN =
+  /(?:撒娇|撒一个|撒个娇|新舞|返场|跳完|跳舞|舞蹈|才艺|表演|整活|节目|唱歌|点歌|点舞|复活后的兑现)/u;
+const VIEWER_SUBJECT_SOURCE =
+  "(?:你(?!们)|家人们?|大家|榜(?:一|二|三|1|2|3)|@[\\p{L}\\p{N}_·-]+|[\\p{L}\\p{N}_·-]{1,8}(?:哥|姐))";
+const PURE_HOST_NEED_PATTERN =
+  /(?:我(?:真的)?(?:想|要|需要)(?:留下|复活|晋级|票)|我不想(?:走|被淘汰|淘汰)|帮帮我|帮我(?:补|上|投|冲|组|丢)|救救我|可怜我|还差\s*(?:\d+|[零〇一二两三四五六七八九十百千万]+)\s*票)/u;
 
-  for (const sentence of splitHardSentences(sourceScript)) {
-    negativePattern.lastIndex = 0;
-    const negativeRanges = Array.from(sentence.matchAll(negativePattern))
-      .filter((match) => {
-        const previous = sentence.slice(Math.max(0, match.index - 1), match.index);
-        // “想不想看 / 愿不愿意看”是互动提问，不是负面信号。
-        return !(
-          (previous === "想" && match[0].includes("不想看")) ||
-          (previous === "愿" && match[0].includes("不愿意看"))
+function hasClearlyNegatedViewerValue(sentence) {
+  const text = String(sentence || "").replace(/\s+/g, "");
+  if (!text) return false;
+
+  const interactiveQuestion = new RegExp(
+    `${VIEWER_SUBJECT_SOURCE}.{0,4}(?:想不想|愿不愿意|要不要)看`,
+    "u"
+  ).test(text);
+  const negativeViewing = new RegExp(
+    `${VIEWER_SUBJECT_SOURCE}.{0,4}(?:(?:并不|不太|不怎么|不|没)(?:想|愿意|喜欢)?看|(?:没|没有|未)说(?:过)?(?:想|愿意|喜欢)?看)`,
+    "u"
+  ).test(text);
+  if (negativeViewing && !interactiveQuestion) return true;
+
+  if (
+    /(?:不|别|没|未|并不|不会|不想|不要)(?:再|给你|来|去)?(?:撒娇|撒一个|撒个娇|返场|跳(?!过)|跳舞|跳完|表演|整活|兑现|安排)/u.test(
+      text
+    )
+  ) {
+    return true;
+  }
+  if (
+    /(?:想看|愿意看|喜欢看).{0,16}(?:但|可是|不过|可我).{0,8}(?:不行|不跳|不演|不唱|不给看|算了)/u.test(
+      text
+    )
+  ) {
+    return true;
+  }
+  return /(?:想看|愿意看|喜欢看).{0,16}(?:我决定不|我不(?:跳|演|唱)|不给你看)/u.test(text);
+}
+
+function positiveClauseAfterNegation(sentence) {
+  const text = String(sentence || "");
+  const contrasts = Array.from(text.matchAll(/(?:但(?:是)?|不过|可是|可(?=我|现在|马上|这就|复活))/gu));
+  if (contrasts.length) {
+    const last = contrasts[contrasts.length - 1];
+    return text.slice((last.index || 0) + last[0].length).replace(/^[，,:：\s]+/u, "");
+  }
+
+  // 直播口语经常省略“但是”：“我不返场，给你撒个娇吧”。只要后一个
+  // 逗号分句不再是否定，就继续核对它有没有真实的正向替代。
+  const clauses = text.split(/[，,:：]/u).map((item) => item.trim()).filter(Boolean);
+  for (let index = 1; index < clauses.length; index += 1) {
+    const candidate = clauses.slice(index).join("，");
+    if (!hasClearlyNegatedViewerValue(candidate)) return candidate;
+  }
+  return "";
+}
+
+function isNegatedScenarioViewerSignal(signal) {
+  const text = String(signal || "").replace(/\s+/g, "");
+  if (!text) return false;
+  // “你不是说想看……吗”是确认正向意愿，不按字面上的“不”处理。
+  if (/(?:不是说|没说过?).{0,10}(?:想看|要看|喜欢看).{0,10}(?:吗|么|呢|嘛|？|\?)/u.test(text)) {
+    return false;
+  }
+  return new RegExp(
+    `(?:不想|不愿意?|不要|不用|不必|无需|无须|不需要|用不着|不喜欢|不想听|不想看|别|没想|没有想|没说|没有说|未说).{0,10}${VIEWER_CONTENT_PATTERN.source}`,
+    "u"
+  ).test(text);
+}
+
+function isAttributedViewerInterest(sentence) {
+  const text = String(sentence || "").replace(/\s+/g, "");
+  if (!text) return false;
+  const viewingCue = "(?:想看|愿意看|喜欢看|要看)";
+  const directHostQuestion = new RegExp(
+    `^我(?:想|来|再)?问(?:下|一下)?${VIEWER_SUBJECT_SOURCE}[，,:：]你(?!们).{0,10}(?:想不想看|愿不愿意看|要不要看|想看|愿意看|喜欢看)`,
+    "u"
+  );
+  if (directHostQuestion.test(text)) return false;
+  const narratorFirst = new RegExp(
+    `^(?:刚|刚才|刚刚|之前)?(?:听|听到)?(?:主持|他|她|用户|别人|有人|旁人|我|[\\p{L}\\p{N}_·-]{2,8})(?:刚|刚才)?(?:说|讲|问|提到|表示|告诉我)[：:,，]?${VIEWER_SUBJECT_SOURCE}.{0,12}${viewingCue}`,
+    "u"
+  );
+  const viewerSelfReport = new RegExp(
+    `^${VIEWER_SUBJECT_SOURCE}(?:刚|刚才)?(?:说|讲|表示)(?:他|她|自己)?${viewingCue}`,
+    "u"
+  );
+  const heardViewerSelfReport = new RegExp(
+    `^(?:刚|刚才|刚刚|之前)?(?:听|听到)${VIEWER_SUBJECT_SOURCE}(?:说|讲|表示)(?:他|她|自己)?${viewingCue}`,
+    "u"
+  );
+  return narratorFirst.test(text) || viewerSelfReport.test(text) || heardViewerSelfReport.test(text);
+}
+
+function detectViewerReason(sourceScript, scenario = null) {
+  const unquotedScript = withoutAttributedQuotedText(sourceScript);
+  const scenarioSignal = typeof scenario?.userSignal === "string"
+    ? scenario.userSignal.trim()
+    : "";
+  const scenarioSignalIsNegated = isNegatedScenarioViewerSignal(scenarioSignal);
+  const scenarioWantsCoquetry =
+    !scenarioSignalIsNegated && /(?:想看|要看|喜欢看)?.{0,4}撒娇/u.test(scenarioSignal);
+  const scenarioHasViewerContent =
+    !scenarioSignalIsNegated && VIEWER_CONTENT_PATTERN.test(scenarioSignal);
+  let sawInvalidValue = false;
+
+  for (const rawSentence of splitHardSentences(unquotedScript)) {
+    const sentence = rawSentence.replace(/\s+/g, "");
+    if (!sentence) continue;
+    let candidateSentence = sentence;
+    if (hasClearlyNegatedViewerValue(sentence)) {
+      sawInvalidValue = true;
+      candidateSentence = positiveClauseAfterNegation(sentence);
+      // “不返场，但现在撒个娇”仍给了一个真实替代；只有后半句也是否定或没有
+      // 正向内容时，才把整句当作无效理由。
+      if (!candidateSentence || hasClearlyNegatedViewerValue(candidateSentence)) continue;
+    }
+
+    if (isAttributedViewerInterest(candidateSentence)) {
+      sawInvalidValue = true;
+      continue;
+    }
+
+    const viewingInterest = new RegExp(
+      `${VIEWER_SUBJECT_SOURCE}.{0,12}(?:想不想看|愿不愿意看|要不要看|想看|愿意看|喜欢看).{0,16}${VIEWER_CONTENT_PATTERN.source}`,
+      "u"
+    );
+    if (viewingInterest.test(candidateSentence)) {
+      return { state: "met", evidence: "已经接住对方想看的内容" };
+    }
+
+    const contentOffer = new RegExp(
+      `(?:那我|现在我|我现在|我马上|我这就|这就|马上|待会我|复活后我).{0,8}(?:撒娇|撒一个|撒个娇|返场|跳(?:完|舞|个|一段|一支)|唱歌|表演|整活)|${VIEWER_CONTENT_PATTERN.source}.{0,10}(?:给你看|给你安排|我来一个|我走一个|马上来|这就来)|(?:给你|让你|陪你).{0,8}(?:撒娇|撒一个|撒个娇|新舞|返场|跳(?:完|舞|个|一段|一支)|唱歌|表演|整活)`,
+      "u"
+    );
+    if (/跳票/u.test(candidateSentence)) {
+      sawInvalidValue = true;
+      continue;
+    }
+    if (contentOffer.test(candidateSentence)) {
+      return { state: "met", evidence: "已经给了对方可以看的内容" };
+    }
+    if (
+      scenarioWantsCoquetry &&
+      /(?:(?:那我|我)?(?:现在|马上|这就).{0,4}(?:来|走)(?:一个|个|一下)?(?:了|啦|吧)?[。！？!?]*$|(?:我|那我).{0,6}撒(?:娇|一个|个|一下))/u.test(
+        candidateSentence
+      )
+    ) {
+      return { state: "met", evidence: "已经接住对方想看撒娇的信号" };
+    }
+
+    const vaguePerformanceResponse =
+      /(?:那我|我)?(?:现在|马上|这就).{0,5}(?:来|走)(?:一个|一下)?/u;
+    const genericArrangementMention =
+      /(?:那我|我)(?:现在|马上|这就)?.{0,3}(?:给你安排|给你看)/u;
+    const genericArrangementResolved =
+      /(?:那我|我)(?:现在|马上|这就)?.{0,3}(?:给你安排|给你看)(?:一下|一个|上|好|了|啦|吧|呀|啊|哈)?[。！？!?]*$/u;
+    const voteOnlyResponse =
+      /(?:补票|上票|投票|票差|还差|多少票|几票|票数|补一脚|跟一点|组一组|任务|按钮)/u;
+    if (vaguePerformanceResponse.test(candidateSentence)) {
+      const resolvedPerformance =
+        /(?:那我|我)?(?:现在|马上|这就).{0,5}(?:来|走)(?:一个|一下)?(?:了|啦|吧)?[。！？!?]*$/u.test(
+          candidateSentence
         );
-      })
-      .map((match) => [match.index, match.index + match[0].length]);
-    reasonPattern.lastIndex = 0;
-    for (const match of sentence.matchAll(reasonPattern)) {
-      const start = match.index;
-      const end = start + match[0].length;
-      const overlapsNegative = negativeRanges.some(
-        ([negativeStart, negativeEnd]) => negativeStart < end && negativeEnd > start
-      );
-      if (overlapsNegative) continue;
-      if (hasPositiveFeedbackAction(sentence.slice(end))) return true;
+      if (scenarioHasViewerContent && resolvedPerformance && !voteOnlyResponse.test(candidateSentence)) {
+        return { state: "met", evidence: "已经用现场信号说明了要给对方的回应" };
+      }
+      sawInvalidValue = true;
+      continue;
+    }
+    if (genericArrangementMention.test(candidateSentence)) {
+      if (
+        scenarioHasViewerContent &&
+        genericArrangementResolved.test(candidateSentence) &&
+        !voteOnlyResponse.test(candidateSentence)
+      ) {
+        return { state: "met", evidence: "已经用现场信号说明了要给对方的回应" };
+      }
+      sawInvalidValue = true;
+      continue;
+    }
+
+    if (
+      /(?:你(?:来)?(?:选|挑|点(?:舞|歌|节目)|当导演)|你说了算|听你的|(?:由|让)你(?:来)?(?:选|决定|当导演)|交给你(?:来)?定|你定(?:吧|呀|啊|哪个|哪一个|节目|舞|歌|了|一下|，|,|。|$)|你(?:愿意)?(?:上|补|投)(?:多少|几张|几票).{0,6}(?:看着来|你定|随你))/u.test(
+        candidateSentence
+      )
+    ) {
+      return { state: "met", evidence: "已经把选择权交给对方" };
+    }
+
+    if (
+      /(?:逗你|哄你|让你).{0,4}(?:笑|开心|乐)|给你看个乐|(?:好玩|有意思|满意|喜欢).{0,8}(?:你再|你就|再决定|再说)|你觉得.{0,10}(?:好玩|有意思|怎么样)/u.test(
+        candidateSentence
+      )
+    ) {
+      return { state: "met", evidence: "已经给了对方观看或互动的乐趣" };
+    }
+
+    if (
+      /复活(?:后|了|回来).{0,18}(?:给你|我就|马上|一定|兑现|安排|撒娇|撒一个|返场|跳|唱|表演|整活|点舞|点歌)|(?:答应你|给你兑现|说到做到).{0,12}(?:撒娇|返场|跳|唱|表演|整活|节目)/u.test(
+        candidateSentence
+      )
+    ) {
+      return { state: "met", evidence: "已经给了对方复活后的兑现" };
+    }
+
+    if (/(?:不由你|轮不到你|不听你的|不让你选)/u.test(candidateSentence)) {
+      sawInvalidValue = true;
     }
   }
-  return false;
+
+  if (sawInvalidValue) {
+    return { state: "invalid", evidence: "提到了互动内容，但还没有形成给对方的明确正向理由" };
+  }
+  if (PURE_HOST_NEED_PATTERN.test(unquotedScript)) {
+    return { state: "invalid", evidence: "现在说的是自己的需要，还没给对方观看或参与的理由" };
+  }
+  return { state: "unknown", evidence: "" };
 }
 
 function hasExplicitVoteGap(sourceScript) {
@@ -613,34 +938,45 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
     gratitudeCheck.evidence = `只有泛泛感谢，还没接住${scenarioTarget}这次具体支持`;
   }
 
-  // “Q 用户”是毕业硬门槛：必须直接喊到正确对象，并在同一句继续递互动或上票动作。
-  // 只在感谢里提到名字、喊泛称、或 Q 到 scenario 之外的人都不算完成。
+  // target_user 只检查“有没有明确在对这个人说话”。感谢、用户价值和上票动作
+  // 分属其他原子能力，不再把它们藏进这一项；直接称呼式感谢可同时完成两项。
   const targetCheck = Array.isArray(report.structure_checks)
     ? report.structure_checks.find((item) => item && item.key === "target_user")
     : null;
-  if (sourceScript && targetCheck && targetCheck.status === "met") {
+  if (sourceScript && targetCheck) {
     const scenarioTarget = typeof scenario?.targetUser === "string"
       ? scenario.targetUser.trim()
       : "";
-    if (!hasConcreteTargetAddress(sourceScript, scenarioTarget)) {
-      targetCheck.status = "partial";
+    if (hasConcreteTargetAddress(sourceScript, scenarioTarget)) {
+      targetCheck.status = "met";
       targetCheck.evidence = scenarioTarget
-        ? `还没有直接喊到${scenarioTarget}并递出互动动作`
-        : "还没有直接喊到一个可识别用户并递出互动动作";
+        ? `已经明确在对${scenarioTarget}说话`
+        : "已经直接称呼一个可识别的用户";
+    } else {
+      if (targetCheck.status === "met") targetCheck.status = "partial";
+      targetCheck.evidence = scenarioTarget
+        ? `还没有明确在对${scenarioTarget}说话；这一项不检查理由、票差或上票动作`
+        : "还没有直接称呼一个可识别的用户；这一项不检查理由、票差或上票动作";
     }
   }
 
   const userReasonCheck = Array.isArray(report.structure_checks)
     ? report.structure_checks.find((item) => item && item.key === "user_reason")
     : null;
-  if (
-    sourceScript &&
-    userReasonCheck?.status === "partial" &&
-    hasExplicitViewerReasonWithFeedback(sourceScript)
-  ) {
-    // 明确把“你想看的具体节目/返场”与动作连起来，本身就是用户侧支点；
-    // 同一句还必须有评论/选择/上票等反馈动作；单纯提问或否定语境不能触发校正。
+  const viewerReason = sourceScript
+    ? detectViewerReason(sourceScript, scenario)
+    : { state: "unknown", evidence: "" };
+  if (userReasonCheck && viewerReason.state === "met") {
+    // 观看内容、互动乐趣、选择权或兑现本身就是用户侧价值；评论/上票动作
+    // 由 vote_instruction 单独检查，不能因为缺动作把这一项再卡一次。
     userReasonCheck.status = "met";
+    userReasonCheck.evidence = viewerReason.evidence;
+  } else if (userReasonCheck && viewerReason.state === "invalid") {
+    if (userReasonCheck.status === "met") userReasonCheck.status = "partial";
+    userReasonCheck.evidence = `${viewerReason.evidence}；这一项只看观看、互动、选择或回应价值，不检查票差和上票动作`;
+  } else if (userReasonCheck && userReasonCheck.status !== "met") {
+    userReasonCheck.evidence =
+      "还没说清对方参与后能看到什么回应、得到什么乐趣或选择；这一项不检查票差和上票动作";
   }
   const hasSupportEvidence = userReasonCheck?.status === "met";
 
