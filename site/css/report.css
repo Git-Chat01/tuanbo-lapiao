@@ -35,6 +35,10 @@
   background: #fbe7e4;
 }
 .presenter-page .report-error p { margin: 0; }
+.presenter-page .report-error:focus-visible {
+  outline: 3px solid var(--stage-amber);
+  outline-offset: 4px;
+}
 
 .presenter-page .redline-banner {
   margin-bottom: 14px;
@@ -45,19 +49,70 @@
 }
 
 .presenter-page .review-heading {
-  margin-bottom: 16px;
+  margin-bottom: 14px;
   padding-left: 12px;
   border-left: 3px solid var(--stage-red);
 }
-.presenter-page .review-heading > span { color: var(--stage-red-dark); font-size: var(--font-size-sm); }
+.presenter-page .review-heading > span {
+  color: var(--stage-red-dark);
+  font-size: var(--font-size-xs);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
 .presenter-page .review-heading h1 { margin: 2px 0 0; font-size: var(--font-size-xl); line-height: 1.38; }
+.presenter-page .review-heading h1:focus-visible,
+.presenter-page #passed-title:focus-visible,
+.presenter-page .coach-thinking h1:focus-visible {
+  outline: 3px solid var(--stage-amber);
+  outline-offset: 4px;
+}
 .presenter-page .review-heading p { margin: 7px 0 0; color: var(--stage-muted); }
+.presenter-page .review-heading .review-heading__progress {
+  color: var(--stage-text);
+  font-weight: 650;
+}
+.presenter-page .review-heading .review-heading__echo {
+  padding-top: 8px;
+  border-top: 1px dashed var(--stage-line);
+  font-size: var(--font-size-sm);
+}
+
+.presenter-page .challenge-map {
+  margin: 0 0 16px;
+  padding: 15px 14px 13px;
+  color: #fffaf7;
+  background: var(--stage-panel);
+  box-shadow: 0 8px 22px rgba(35, 20, 26, 0.14);
+}
+.presenter-page .challenge-map__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 9px;
+}
+.presenter-page .challenge-map__head strong { font-size: var(--font-size-sm); }
+.presenter-page .challenge-map__head span { color: #d6c9cc; font-size: var(--font-size-xs); }
+.presenter-page .challenge-progress {
+  height: 6px;
+  overflow: hidden;
+  background: #49373e;
+}
+.presenter-page .challenge-progress__fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform: scaleX(0);
+  transform-origin: left center;
+  background: var(--stage-mint);
+  transition: transform 420ms var(--stage-ease);
+}
 
 .presenter-page .structure-track {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
   gap: 5px;
-  margin: 4px 0 18px;
+  margin: 13px 0 0;
 }
 .presenter-page .structure-check,
 .presenter-page .structure-track > span {
@@ -71,27 +126,45 @@
 }
 .presenter-page .structure-check::before,
 .presenter-page .structure-track > span::before {
-  content: "";
-  width: 22px;
-  height: 22px;
+  content: attr(data-step);
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
-  background: #ddd3cc;
-  box-shadow: inset 0 0 0 6px var(--stage-canvas);
-  border: 1px solid #bbaeae;
+  border: 1px solid #66535a;
+  color: #bdaeb3;
+  background: #35282d;
+  box-shadow: none;
+  font-size: 11px;
+  font-weight: 800;
 }
 .presenter-page .structure-check--met::before,
 .presenter-page .structure-track--passed > span::before {
+  content: "✓";
   border-color: var(--stage-mint);
+  color: #173a2e;
   background: var(--stage-mint);
-  box-shadow: inset 0 0 0 5px var(--stage-mint-soft);
+  box-shadow: none;
 }
-.presenter-page .structure-check--partial,
-.presenter-page .structure-check--missing { color: var(--stage-red-dark); }
-.presenter-page .structure-check--partial::before,
-.presenter-page .structure-check--missing::before {
+.presenter-page .challenge-map .structure-check { color: #a99a9f; }
+.presenter-page .challenge-map .structure-check--met { color: #bfe7d5; }
+.presenter-page .challenge-map .structure-check.is-current {
+  color: #fff3d9;
+  font-weight: 700;
+}
+.presenter-page .challenge-map .structure-check.is-current::before {
   border-color: var(--stage-amber);
+  color: var(--stage-ink);
   background: var(--stage-amber);
-  box-shadow: inset 0 0 0 5px var(--stage-warn-soft);
+  box-shadow: 0 0 0 4px rgba(244, 190, 89, 0.15);
+}
+.presenter-page .structure-track--passed {
+  margin: 4px 0 18px;
+}
+.presenter-page .structure-track--passed > span { color: #147651; }
+.presenter-page .structure-track--passed > span::before {
+  color: #173a2e;
 }
 
 .presenter-page .focus-paper,
@@ -102,6 +175,11 @@
   box-shadow: 0 7px 20px rgba(76, 52, 45, 0.09);
   clip-path: polygon(0 0, 97% 0, 100% 5%, 100% 100%, 0 100%);
 }
+.presenter-page .focus-paper {
+  border-top: 4px solid var(--stage-amber);
+  animation: challenge-reveal 320ms var(--stage-ease);
+}
+.presenter-page .focus-paper--redline { border-top-color: var(--stage-red); }
 .presenter-page .focus-paper__head,
 .presenter-page .passed-paper__head {
   display: flex;
@@ -118,25 +196,100 @@
   background: var(--stage-warn-soft);
 }
 .presenter-page .focus-paper h2 { margin: 10px 0 12px; font-size: var(--font-size-lg); line-height: 1.5; }
-.presenter-page .focus-paper blockquote {
-  margin: 0 0 12px;
+.presenter-page .challenge-card__row {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #eadfd2;
+}
+.presenter-page .challenge-card__row:first-of-type { margin-top: 0; }
+.presenter-page .challenge-card__label {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--stage-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+.presenter-page .challenge-card__row p { margin: 0; line-height: 1.65; }
+.presenter-page .challenge-card__row--evidence {
+  margin-top: 8px;
   padding: 10px 12px;
+  border-top: 0;
   border-left: 3px solid var(--stage-amber);
   color: #6e4b1d;
   background: #fff2d8;
 }
-.presenter-page .focus-paper__why { margin: 0; color: var(--stage-muted); }
-.presenter-page .focus-paper__line {
-  width: 58%;
-  height: 3px;
-  margin-top: 16px;
-  transform: rotate(-1deg);
-  background: var(--stage-red);
-  opacity: 0.72;
+.presenter-page .focus-paper--redline .challenge-card__row--evidence {
+  border-left-color: var(--stage-red);
+  color: #7d2e2d;
+  background: #fbe7e4;
+}
+.presenter-page .challenge-card__row--solution {
+  margin-top: 13px;
+  padding: 12px 13px;
+  border-top: 0;
+  color: #fffaf7;
+  background: var(--stage-panel);
+}
+.presenter-page .challenge-card__row--solution .challenge-card__label { color: var(--stage-amber); }
+.presenter-page .focus-paper__takeaway {
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 1px dashed #ddcdbd;
+  color: var(--stage-red-dark);
+  font-size: var(--font-size-sm);
+  font-weight: 650;
 }
 
-.presenter-page .revision-desk { margin-top: 17px; }
-.presenter-page .revision-desk label { display: block; margin-bottom: 8px; font-weight: 700; }
+.presenter-page .challenge-help {
+  margin-top: 13px;
+  padding: 0 14px;
+  border: 1px solid #dfcfb4;
+  color: var(--stage-muted);
+  background: rgba(255, 249, 238, 0.74);
+}
+.presenter-page .challenge-help summary {
+  display: flex;
+  align-items: center;
+  min-height: 48px;
+  color: var(--stage-red-dark);
+  font-weight: 700;
+  cursor: pointer;
+}
+.presenter-page .challenge-help > p { margin: 0 0 10px; font-size: var(--font-size-sm); }
+.presenter-page .challenge-help__examples {
+  list-style: none;
+  margin: 0 0 13px;
+  padding: 0;
+}
+.presenter-page .challenge-help__examples li {
+  margin-top: 7px;
+  padding: 9px 11px;
+  border-left: 3px solid var(--stage-amber);
+  color: var(--stage-text);
+  background: var(--stage-paper);
+}
+.presenter-page .challenge-help--open {
+  padding: 14px;
+  border-color: #c8ab70;
+  background: var(--stage-warn-soft);
+  animation: coach-help-in 320ms var(--stage-ease);
+}
+.presenter-page .challenge-help--open h3 { margin: 3px 0 7px; font-size: var(--font-size-md); }
+.presenter-page .challenge-help__eyebrow {
+  color: #815b13;
+  font-size: var(--font-size-xs);
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.presenter-page .revision-desk { margin-top: 18px; }
+.presenter-page .revision-desk label { display: block; font-weight: 800; }
+.presenter-page .revision-desk__hint {
+  margin: 4px 0 9px;
+  color: var(--stage-muted);
+  font-size: var(--font-size-sm);
+}
 .presenter-page .revision-input {
   width: 100%;
   min-height: 155px;
@@ -147,8 +300,22 @@
   color: var(--stage-text);
   background: var(--stage-paper);
   line-height: 1.7;
+  transition: border-color 160ms var(--stage-ease), box-shadow 160ms var(--stage-ease);
 }
-.presenter-page .revision-count { margin-top: 5px; color: var(--stage-muted); font-size: var(--font-size-sm); text-align: right; }
+.presenter-page .revision-input:focus {
+  border-color: var(--stage-amber);
+  box-shadow: 0 0 0 3px rgba(244, 190, 89, 0.16);
+}
+.presenter-page .revision-desk__foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 5px;
+  color: var(--stage-muted);
+  font-size: var(--font-size-xs);
+}
+.presenter-page .revision-state { color: #76604a; }
+.presenter-page .revision-count { flex: 0 0 auto; text-align: right; }
 .presenter-page .revision-submit { margin-top: 14px; }
 
 .presenter-page .review-details {
@@ -193,6 +360,19 @@
 .presenter-page .passed-paper__head span:last-child { background: var(--stage-mint-soft); }
 .presenter-page #passed-learn p { margin: 12px 0 0; }
 .presenter-page #passed-learn p:first-child { margin-top: 10px; font-size: var(--font-size-lg); }
+.presenter-page #passed-learn .passed-new-skill {
+  padding: 9px 11px;
+  border-left: 3px solid var(--stage-mint);
+  color: #146545;
+  background: var(--stage-mint-soft);
+  font-weight: 700;
+}
+.presenter-page #passed-learn .passed-self-check {
+  padding-top: 11px;
+  border-top: 1px dashed #ddcdbd;
+  color: var(--stage-muted);
+  font-size: var(--font-size-sm);
+}
 
 .presenter-page .passed-script-section { margin-top: 17px; }
 .presenter-page .passed-script-section h2 { margin: 0 0 9px; font-size: var(--font-size-md); }
@@ -207,6 +387,16 @@
 .presenter-page #view-passed .training-primary { margin-top: 18px; }
 .presenter-page #view-passed .training-secondary { margin-top: 8px; }
 
+@keyframes challenge-reveal {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes coach-help-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 @keyframes thinking-line {
   from { transform: scaleX(0.45); opacity: 0.45; }
   to { transform: scaleX(1); opacity: 1; }
@@ -220,4 +410,6 @@
   .presenter-page .focus-paper,
   .presenter-page .passed-paper { padding-inline: 14px; }
   .presenter-page .structure-track { gap: 2px; }
+  .presenter-page .challenge-map { padding-inline: 10px; }
+  .presenter-page .challenge-map__head { align-items: flex-start; flex-direction: column; gap: 2px; }
 }

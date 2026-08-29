@@ -9,6 +9,15 @@ var App = {
     currentView: "form",
     freeMode: false,
     sessionAccessCode: "",
+    coaching: {
+      totalAttempts: 0,
+      focusAttempts: 0,
+      currentFocusKey: "",
+      previousReport: null,
+      currentReport: null,
+      lastProgress: null,
+      masteredKeys: {},
+    },
   },
 
   _stageOrder: ["form", "report", "voice"],
@@ -34,6 +43,29 @@ var App = {
     App._syncStage(App._stageForView(name));
     try { window.scrollTo({ top: 0, behavior: "auto" }); }
     catch (error) { window.scrollTo(0, 0); }
+    setTimeout(function () { App._focusViewHeading(name); }, 0);
+  },
+
+  _focusViewHeading: function (name) {
+    var view = document.getElementById("view-" + name);
+    if (!view) return;
+    var headings = view.querySelectorAll("h1, h2");
+    var heading = null;
+    for (var i = 0; i < headings.length; i++) {
+      if (headings[i].getClientRects().length) {
+        heading = headings[i];
+        break;
+      }
+    }
+    if (!heading) return;
+    App.focusElement(heading);
+  },
+
+  focusElement: function (element) {
+    if (!element) return;
+    element.setAttribute("tabindex", "-1");
+    try { element.focus({ preventScroll: true }); }
+    catch (error) { element.focus(); }
   },
 
   unlockStage: function (stage) {
@@ -57,6 +89,18 @@ var App = {
       buttons[i].classList.remove("is-complete");
     }
     App._syncStage("form");
+  },
+
+  resetCoachingProgress: function () {
+    App.state.coaching = {
+      totalAttempts: 0,
+      focusAttempts: 0,
+      currentFocusKey: "",
+      previousReport: null,
+      currentReport: null,
+      lastProgress: null,
+      masteredKeys: {},
+    };
   },
 
   _syncStage: function (activeStage) {
