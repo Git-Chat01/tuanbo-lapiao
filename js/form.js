@@ -181,10 +181,23 @@ var Form = {
     return null;
   },
 
+  _isSameAsLast: function (data) {
+    return Boolean(
+      App.state.lastReport &&
+      App.state.lastRequest &&
+      data &&
+      data.script === App.state.lastRequest.script
+    );
+  },
+
   _updateInputState: function () {
     var data = Form.collect();
+    var sameAsLast = Form._isSameAsLast(data);
+    var button = document.getElementById("btn-submit");
     document.getElementById("script-count").textContent = data.script.length + " / " + LIMITS.scriptMax;
-    document.getElementById("btn-submit").disabled = Boolean(Form.validate(data));
+    button.disabled = Boolean(Form.validate(data)) || sameAsLast;
+    var label = button.querySelector("span:first-child");
+    if (label) label.textContent = sameAsLast ? "先改动一处" : "帮我看这版";
   },
 
   _onSubmit: function () {
@@ -192,6 +205,10 @@ var Form = {
     var error = Form.validate(data);
     if (error) {
       App.toast(error);
+      return;
+    }
+    if (Form._isSameAsLast(data)) {
+      App.toast("先按教练指出的关卡改动一处，再提交下一次挑战");
       return;
     }
     if (!App.getAccessCode()) {
