@@ -13,6 +13,7 @@ const CONTRACT_KEYS = [
   "card_type",
   "card_why",
   "audience",
+  "round_dynamics",
   "structure_checks",
   "verdict",
   "verdict_reason",
@@ -23,6 +24,19 @@ const CONTRACT_KEYS = [
   "ai_flavor",
   "redline_note",
 ];
+const HUMAN_DRIVER_ENUM = new Set([
+  "visibility",
+  "status",
+  "protection",
+  "belonging",
+  "control",
+  "curiosity",
+  "competition",
+  "social_proof",
+  "reciprocity",
+  "urgency",
+  "other",
+]);
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 
 function fail(message) {
@@ -109,10 +123,27 @@ const scriptedSpeechScript =
 const naturalSpeechScript =
   "大家好，我是第一次上十连的小满，手确实有点抖。既然都站这儿了，我先把这轮跳完。月月姐，谢谢你刚才的小心心，我看见了。月月姐，你刚说想看我后面那段舞，对吧？现在还差18票，你愿意就帮我补一点，每一票我都能看到是谁补的。星星姐，你这名字跟台上还挺搭，你也想看后面那段不？想看就跟一点，不想看就说你想看啥。";
 
+const wholeRoundScenario = {
+  id: "qa-v4-whole-round-20260830",
+  secondsLeft: 40,
+  votesNeeded: 20,
+  targetUser: "凯哥",
+  trainingGoal: "读懂递减票差和连续换人后的真实反馈",
+};
+
+const wholeRoundScript =
+  "大家好，我是第一次上十连的跳跳糖，今天把压箱底的新舞带来了。多多哥，谢谢你先帮我补了一手。刚开口还差20个星辰，月月姐组一个后到18个，现在小唐哥又接上一手，只差8个。00姐姐，你想看我把十连才艺跳完，就帮我搭把手；小明哥也可以投一票，喜欢新舞的家人们一起跟一下。谁补到最后一手，下一段舞让你来选。";
+
+const contextualDriversScript =
+  "大家好，我是第一次上十连的小满，手还有点抖，但我想把准备的新舞跳完。月月姐，谢谢你刚才先补的那一手，我看见了。榜上已经有三个人跟着月月姐，想看返场的家人们也投一票。久皇哥，最后这一手你要是接上，全场都知道是你把我送过线；老朋友们陪我守过前面几轮，这一轮咱们一起走完。";
+
+const driverKeywordTrapScript =
+  "我是今天来守十连的小满，想把没跳过的新舞留给你们看。凯哥，谢谢你刚才的小心心。凯哥，我先念几个词：保护欲、存在感、归属感、从众。想看新舞就帮我补一手，愿意看的家人们投一票。";
+
 const fixtures = [
   {
     id: "1a",
-    label: "五项真好稿·第1次",
+    label: "核心真好稿·第1次",
     voteGap: "far",
     scenario: fullScenario,
     script: fullPassScript,
@@ -120,7 +151,7 @@ const fixtures = [
   },
   {
     id: "1b",
-    label: "五项真好稿·第2次",
+    label: "核心真好稿·第2次",
     voteGap: "far",
     scenario: fullScenario,
     script: fullPassScript,
@@ -184,9 +215,9 @@ const fixtures = [
     script:
       "我是今天第一次上复活台的小满，刚才愿意停下来看我的朋友谢谢你们。我准备了一段没跳过的新舞，想看的家人们就在公屏扣个1，也可以给我补一点让我看看有多少人想看。",
     check(report) {
-      requireCondition(report.verdict === "almost", "自由模式此稿应为 almost");
+      requireCondition(report.verdict === "passed", "两个核心成立时，不得因自由模式没有固定点名挡住通过");
       requireCondition(statusOf(report, "target_user") !== "met", "没有具体用户不得 target_user=met");
-      requireCondition(statusOf(report, "vote_instruction") !== "met", "没有准确票数不得 vote_instruction=met");
+      requireCondition(statusOf(report, "vote_instruction") === "met", "“给我补一点”已经是明确要票动作");
       const forbiddenFacts = ["凯哥", "小心心", "火箭", "320", "38", "撒娇"];
       const reportText = JSON.stringify(report);
       for (const fact of forbiddenFacts) {
@@ -364,6 +395,75 @@ const fixtures = [
       requireCondition(secondUserReview.mark !== "wrong", "一次昵称玩梗不得直接判 persona");
     },
   },
+  {
+    id: "11",
+    label: "整轮递减票差与多用户切换",
+    voteGap: "far",
+    scenario: wholeRoundScenario,
+    script: wholeRoundScript,
+    check(report) {
+      checkFullPass(report);
+      requireCondition(statusOf(report, "target_user") === "met", "切换多个具体用户仍应 target_user=met");
+      requireCondition(statusOf(report, "vote_instruction") === "met", "组一个/搭把手/投一票应满足明确动作");
+      requireCondition(
+        /20.{0,40}18.{0,40}8|递减|下降|缩小|追到|推进/u.test(report.round_dynamics.flow_read),
+        "flow_read 必须把20→18→8读成整轮推进，不能当数字矛盾"
+      );
+      requireCondition(
+        !/矛盾|冲突|数字不一致/u.test(report.round_dynamics.flow_read),
+        "递减票差不得被解释为自相矛盾"
+      );
+    },
+  },
+  {
+    id: "12a",
+    label: "人性驱动必须落到现场机制",
+    voteGap: "close",
+    script: contextualDriversScript,
+    check(report) {
+      checkFullPass(report);
+      const driverNames = report.round_dynamics.human_drivers.map((item) => item.driver);
+      requireCondition(driverNames.includes("social_proof"), "三个人跟票的上下文应识别 social_proof");
+      requireCondition(
+        driverNames.includes("status") || driverNames.includes("visibility"),
+        "最后一手被全场看见的上下文应识别 status/visibility"
+      );
+      for (const item of report.round_dynamics.human_drivers) {
+        const explanation = `${item.evidence} ${item.mechanism}`;
+        if (item.driver === "social_proof") {
+          requireCondition(/三个人|跟着|月月姐|已出手/u.test(explanation), "social_proof 必须解释真实跟票上下文");
+        }
+        if (item.driver === "status" || item.driver === "visibility") {
+          requireCondition(/最后一手|全场|送过线|关键/u.test(explanation), "status/visibility 必须解释关键人物机制");
+        }
+        if (item.driver === "protection") {
+          requireCondition(/第一次|手抖|新人|托住|守住/u.test(explanation), "protection 必须有脆弱处境和可行动位置");
+        }
+        if (item.driver === "belonging") {
+          requireCondition(/老朋友|前面几轮|一起/u.test(explanation), "belonging 必须有共同经历或共同身份");
+        }
+      }
+    },
+  },
+  {
+    id: "12b",
+    label: "人性关键词不能代替机制",
+    voteGap: "close",
+    script: driverKeywordTrapScript,
+    check(report) {
+      const driverNames = report.round_dynamics.human_drivers.map((item) => item.driver);
+      for (const keywordOnlyDriver of ["protection", "visibility", "status", "belonging", "social_proof"]) {
+        requireCondition(
+          !driverNames.includes(keywordOnlyDriver),
+          `原稿只念心理词，不得机械贴 ${keywordOnlyDriver}`
+        );
+      }
+      requireCondition(
+        report.round_dynamics.human_drivers.every((item) => item.evidence.trim() && item.mechanism.trim()),
+        "关键词陷阱稿也必须返回有事实和机制的有效驱动契约"
+      );
+    },
+  },
 ];
 
 function compact(value) {
@@ -385,6 +485,37 @@ function evidenceOf(report, key) {
   return report.structure_checks.find((item) => item.key === key)?.evidence || "";
 }
 
+function assertRoundDynamicsContract(report) {
+  const dynamics = report.round_dynamics;
+  requireCondition(
+    dynamics && typeof dynamics === "object" && !Array.isArray(dynamics),
+    "round_dynamics 必须是对象"
+  );
+  for (const key of ["flow_read", "response_read", "next_move"]) {
+    requireCondition(
+      typeof dynamics[key] === "string" && dynamics[key].trim().length > 0,
+      `round_dynamics.${key} 不能为空`
+    );
+  }
+  requireCondition(Array.isArray(dynamics.human_drivers), "round_dynamics.human_drivers 必须是数组");
+  requireCondition(
+    dynamics.human_drivers.length >= 1 && dynamics.human_drivers.length <= 3,
+    "round_dynamics.human_drivers 必须有1-3项"
+  );
+  dynamics.human_drivers.forEach((item, index) => {
+    requireCondition(item && typeof item === "object" && !Array.isArray(item), `第${index + 1}项 driver 无效`);
+    requireCondition(HUMAN_DRIVER_ENUM.has(item.driver), `第${index + 1}项 driver 枚举非法`);
+    requireCondition(
+      typeof item.evidence === "string" && item.evidence.trim().length > 0,
+      `第${index + 1}项 driver evidence 为空`
+    );
+    requireCondition(
+      typeof item.mechanism === "string" && item.mechanism.trim().length > 0,
+      `第${index + 1}项 driver mechanism 为空`
+    );
+  });
+}
+
 function metCount(report) {
   return report.structure_checks.filter((item) => item.status === "met").length;
 }
@@ -395,7 +526,8 @@ function wrongCount(report) {
 
 function checkFullPass(report) {
   requireCondition(report.verdict === "passed", "真好稿必须 passed");
-  requireCondition(metCount(report) === 5, "真好稿必须五项全 met");
+  requireCondition(statusOf(report, "user_reason") === "met", "通过稿 user_reason 必须 met");
+  requireCondition(statusOf(report, "vote_instruction") === "met", "通过稿 vote_instruction 必须 met");
   requireCondition(wrongCount(report) === 0, "真好稿不能有 wrong");
   requireCondition(report.card_type !== "persona", "真好稿不能判 persona");
   requireCondition(report.ai_flavor.trim() === "", "真好稿 ai_flavor 必须为空");
@@ -404,9 +536,9 @@ function checkFullPass(report) {
 
 function checkScenarioPass(report) {
   checkFullPass(report);
-  requireCondition(/凯哥|小心心/u.test(evidenceOf(report, "gratitude")), "感谢证据未落到凯哥/小心心");
-  requireCondition(evidenceOf(report, "target_user").includes("凯哥"), "目标用户证据未落到凯哥");
-  requireCondition(evidenceOf(report, "vote_instruction").includes("320"), "上票指令证据未包含320");
+  requireCondition(statusOf(report, "gratitude") === "met", "具体感谢凯哥/小心心时 gratitude 应为 met");
+  requireCondition(statusOf(report, "target_user") === "met", "明确呼叫凯哥时 target_user 应为 met");
+  requireCondition(statusOf(report, "vote_instruction") === "met", "已有明确上票动作时 vote_instruction 应为 met");
 }
 
 function assertGlobalContract(report, script) {
@@ -414,6 +546,7 @@ function assertGlobalContract(report, script) {
   for (const key of CONTRACT_KEYS) {
     requireCondition(Object.prototype.hasOwnProperty.call(report, key), `报告缺少字段 ${key}`);
   }
+  assertRoundDynamicsContract(report);
   requireCondition(["passed", "almost", "off"].includes(report.verdict), "verdict 非法");
   requireCondition(
     ["logic", "expression", "mentality", "persona"].includes(report.card_type),
@@ -507,7 +640,8 @@ function assertGlobalContract(report, script) {
   });
 
   if (report.verdict === "passed") {
-    requireCondition(metCount(report) === 5, "passed 但五项未全 met");
+    requireCondition(statusOf(report, "user_reason") === "met", "passed 但 user_reason 未 met");
+    requireCondition(statusOf(report, "vote_instruction") === "met", "passed 但 vote_instruction 未 met");
     requireCondition(wrongCount(report) === 0, "passed 但仍有 wrong");
     requireCondition(report.card_type !== "persona", "passed 但 card_type=persona");
     requireCondition(report.ai_flavor.trim() === "", "passed 但 ai_flavor 非空");

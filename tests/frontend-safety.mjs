@@ -339,6 +339,18 @@ function makeChallengeReport(statuses, overrides = {}) {
     verdict: "almost",
     verdict_reason: "已经接住了人，这一关只差一个具体理由。",
     line_reviews: [],
+    round_dynamics: {
+      flow_read: "票数正在下降，说明前一拍有人接住",
+      human_drivers: [
+        {
+          driver: "social_proof",
+          evidence: "已经有人先补一手",
+          mechanism: "真实跟进会降低其他观众的行动门槛",
+        },
+      ],
+      response_read: "已经看到补票反馈",
+      next_move: "接住最新出手的人，再递下一拍",
+    },
     ai_flavor: "",
     redline_note: "",
     ...overrides,
@@ -424,14 +436,31 @@ function testChallengeProgressTracksRealLearning() {
   });
   loadScript(directContext, "site/js/report.js");
   const directPass = makeChallengeReport(
-    ["met", "met", "met", "met", "met"],
+    ["partial", "partial", "partial", "met", "met"],
     { verdict: "passed" }
   );
   const directProgress = directContext.Report._recordResult(directPass);
-  assert.equal(
+  assert.equal(directProgress.focus, null, "两个核心 met 的 passed 报告不应继续生成结构关卡");
+  assert.equal(directProgress.metCount, 2, "非核心项 partial 时应如实保留能力地图，而不是伪装成5/5");
+  assert.doesNotMatch(
     directContext.Report._passAchievement(directProgress),
-    "第一次挑战就把五项全部说齐了。",
-    "首稿通关应庆祝一次完成，而不是误称最后补上五项"
+    /五项全部|五关|5\/5/,
+    "新门槛通过后不得宣称五项全部完成"
+  );
+}
+
+function testPassedUiDoesNotHardcodeFiveOfFive() {
+  const reportSource = readFileSync(resolve(projectRoot, "site/js/report.js"), "utf8");
+  const htmlSource = readFileSync(resolve(projectRoot, "site/index.html"), "utf8");
+  assert.doesNotMatch(
+    reportSource,
+    /话术闯关\s*·\s*5\/5|五关全部拿下|五项结构都接住了/,
+    "通过页脚本不能把两个核心过关写成五项全满"
+  );
+  assert.doesNotMatch(
+    htmlSource,
+    /话术闯关\s*·\s*5\/5|五关拿下|五项话术结构均已达标/,
+    "通过页静态文案不能继续承诺5/5"
   );
 }
 
@@ -742,6 +771,7 @@ try {
   testNewSubmissionInvalidatesOldPass();
   testReviewFocusDoesNotBlameCompletedStructure();
   testChallengeProgressTracksRealLearning();
+  testPassedUiDoesNotHardcodeFiveOfFive();
   testSafetyAndRootCauseTakePriorityOverChecklist();
   testFiveStructureItemsDoNotMasqueradeAsFullPass();
   testChallengeSolutionCannotDriftToAnotherProblem();

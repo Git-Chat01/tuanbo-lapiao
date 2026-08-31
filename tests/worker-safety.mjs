@@ -73,13 +73,25 @@ assert.match(prompt.SYSTEM_PROMPT, /点名片段或意群横向比较，不要�
 assert.match(prompt.SYSTEM_PROMPT, /单次出现"既然\/每一\/到底".{0,40}不能单独触发/u);
 assert.match(prompt.SYSTEM_PROMPT, /ai_flavor 至少逐字引用两处原句/u);
 assert.match(prompt.SYSTEM_PROMPT, /原稿是“A；B。”.{0,80}“A；”和“B。”/u);
-assert.match(prompt.SYSTEM_PROMPT, /"给我补一脚\/跟上一点\/帮我补上\/上几张\/投一票".{0,80}必须判 met/u);
+assert.match(prompt.SYSTEM_PROMPT, /(?:组一个|帮一把|投一票).{0,120}vote_instruction.{0,80}met/u);
 assert.match(prompt.SYSTEM_PROMPT, /recentGift 只证明这个用户刚才支持过.{0,120}不能把过去送礼直接当 user_reason/u);
-assert.match(prompt.SYSTEM_PROMPT, /"补一点\/上几张\/一人一票".{0,80}不是当前还差的准确票数/u);
+assert.match(prompt.SYSTEM_PROMPT, /20.{0,80}18.{0,80}8.{0,160}(?:整轮|递减|进展|反馈)/u);
 assert.match(prompt.SYSTEM_PROMPT, /target_user \/ user_reason \/ vote_instruction 是三项彼此独立的原子能力/u);
-assert.match(prompt.SYSTEM_PROMPT, /第 3 项只看有没有明确对到人.{0,60}第 4 项只看有没有给用户侧价值.{0,60}第 5 项只看票差和上票动作/u);
+assert.match(prompt.SYSTEM_PROMPT, /第 3 项只看有没有明确对到人.{0,80}第 4 项只看有没有给用户侧价值.{0,80}第 5 项只看有没有明确上票动作/u);
+assert.match(prompt.SYSTEM_PROMPT, /(?:多个用户|切换用户|人名切换|轮流点名).{0,160}(?:不能|不得).{0,80}(?:错人|不匹配|降级)/u);
 assert.match(prompt.SYSTEM_PROMPT, /"凯哥，谢谢你刚才的小心心".{0,60}两项都可判 met/u);
 assert.match(prompt.SYSTEM_PROMPT, /不要求再加"扣1"或"补一票"/u);
+assert.match(prompt.SYSTEM_PROMPT, /round_dynamics/u);
+assert.match(prompt.SYSTEM_PROMPT, /flow_read/u);
+assert.match(prompt.SYSTEM_PROMPT, /human_drivers/u);
+assert.match(prompt.SYSTEM_PROMPT, /response_read/u);
+assert.match(prompt.SYSTEM_PROMPT, /next_move/u);
+assert.match(
+  prompt.SYSTEM_PROMPT,
+  /原稿没有才艺、节目或整活.{0,120}不要把.{0,40}才艺诱饵.{0,40}默认答案/u
+);
+assert.doesNotMatch(prompt.SYSTEM_PROMPT, /verdict=passed 必须同时满足：五项全 met/u);
+assert.doesNotMatch(prompt.SYSTEM_PROMPT, /vote_instruction 必须同时有主播原话中的准确票差/u);
 assert.deepEqual(cases.extractTags("帮帮忙，拜托大家帮我组一组"), []);
 assert.deepEqual(cases.extractTags("求一求你了，我给你跪下了"), ["求一求", "跪下"]);
 
@@ -92,6 +104,19 @@ const structureKeys = [
 ];
 const allMetChecks = () =>
   structureKeys.map((key) => ({ key, status: "met", evidence: `${key}证据` }));
+const validRoundDynamics = (overrides = {}) => ({
+  flow_read: "票数从20追到8，整轮在持续推进",
+  human_drivers: [
+    {
+      driver: "social_proof",
+      evidence: "月月姐先补一手，其他人开始跟",
+      mechanism: "已有真实行动降低了其他观众跟票的犹豫",
+    },
+  ],
+  response_read: "点名后的补票说明观众接住了这一拍",
+  next_move: "继续接住最新出手的人，再把下一手递给愿意跟的观众",
+  ...overrides,
+});
 const makeRawReport = (overrides = {}) => ({
   card_type: "logic",
   card_why: "结构与方向正确",
@@ -103,6 +128,7 @@ const makeRawReport = (overrides = {}) => ({
   line_reviews: [{ original: "测试原句", mark: "good", comment: "方向正确" }],
   one_thing: "先对准人",
   direction: { summary: "保持方向，用你自己的话说", examples: [] },
+  round_dynamics: validRoundDynamics(),
   ai_flavor: "",
   redline_note: "",
   ...overrides,
@@ -169,6 +195,81 @@ const partialButQualifiedAlmost = index.normalizeReport(
 index.applyReportSafetyGates(partialButQualifiedAlmost, []);
 assert.equal(partialButQualifiedAlmost.verdict, "passed");
 
+const normalizedRoundDynamics = index.normalizeReport(makeRawReport(), "测试原句");
+assert.deepEqual(normalizedRoundDynamics.round_dynamics, validRoundDynamics());
+
+const invalidRoundDynamicsCases = [
+  ["缺少整个字段", undefined],
+  ["flow_read 为空", validRoundDynamics({ flow_read: "" })],
+  ["human_drivers 为空", validRoundDynamics({ human_drivers: [] })],
+  [
+    "human_drivers 超过3项",
+    validRoundDynamics({
+      human_drivers: [
+        ...validRoundDynamics().human_drivers,
+        { driver: "status", evidence: "成为关键人物", mechanism: "关键一手带来地位感" },
+        { driver: "belonging", evidence: "老朋友一起守", mechanism: "共同经历形成归属" },
+        { driver: "urgency", evidence: "最后十秒", mechanism: "时间窗口推动立即行动" },
+      ],
+    }),
+  ],
+  [
+    "driver 枚举非法",
+    validRoundDynamics({
+      human_drivers: [{ driver: "keyword_only", evidence: "保护欲", mechanism: "因为写了保护欲" }],
+    }),
+  ],
+  [
+    "driver evidence 为空",
+    validRoundDynamics({
+      human_drivers: [{ driver: "protection", evidence: "", mechanism: "新人紧张让观众愿意照顾" }],
+    }),
+  ],
+  [
+    "driver mechanism 为空",
+    validRoundDynamics({
+      human_drivers: [{ driver: "visibility", evidence: "全场都看见你补最后一手", mechanism: "" }],
+    }),
+  ],
+  ["response_read 为空", validRoundDynamics({ response_read: "" })],
+  ["next_move 为空", validRoundDynamics({ next_move: "" })],
+];
+
+for (const [label, roundDynamics] of invalidRoundDynamicsCases) {
+  const raw = makeRawReport({ round_dynamics: roundDynamics });
+  if (roundDynamics === undefined) delete raw.round_dynamics;
+  const normalizedInvalidRound = index.normalizeReport(raw, "测试原句");
+  index.applyReportSafetyGates(normalizedInvalidRound, []);
+  assert.notEqual(
+    normalizedInvalidRound.verdict,
+    "passed",
+    `round_dynamics 契约无效时不得 passed：${label}`
+  );
+}
+
+for (const driver of [
+  "visibility",
+  "status",
+  "protection",
+  "belonging",
+  "control",
+  "curiosity",
+  "competition",
+  "social_proof",
+  "reciprocity",
+  "urgency",
+  "other",
+]) {
+  const raw = makeRawReport({
+    round_dynamics: validRoundDynamics({
+      human_drivers: [{ driver, evidence: `${driver}现场证据`, mechanism: `${driver}作用机制` }],
+    }),
+  });
+  const normalizedValidDriver = index.normalizeReport(raw, "测试原句");
+  index.applyReportSafetyGates(normalizedValidDriver, []);
+  assert.equal(normalizedValidDriver.verdict, "passed", `合法 driver 应保留 passed：${driver}`);
+}
+
 const actionWithoutExactVoteGap = index.normalizeReport(
   makeRawReport(),
   "大家愿意就帮我补一点。"
@@ -179,14 +280,19 @@ index.applyReportSafetyGates(actionWithoutExactVoteGap, [], {
 assert.equal(
   actionWithoutExactVoteGap.structure_checks.find((item) => item.key === "vote_instruction")
     ?.status,
-  "partial"
+  "met",
+  "已有明确补票动作时 vote_instruction 应 met，不再把准确差额当作隐藏门槛"
 );
 assert.equal(
   actionWithoutExactVoteGap.structure_checks.find((item) => item.key === "user_reason")
     ?.status,
   "partial"
 );
-assert.equal(actionWithoutExactVoteGap.verdict, "off");
+assert.equal(
+  actionWithoutExactVoteGap.verdict,
+  "almost",
+  "只缺 user_reason 是一个核心缺口，应留在可局部修正的 almost"
+);
 
 const actionWithExactChineseVoteGap = index.normalizeReport(
   makeRawReport(),
@@ -199,6 +305,68 @@ assert.equal(
   actionWithExactChineseVoteGap.structure_checks.find((item) => item.key === "vote_instruction")
     ?.status,
   "met"
+);
+
+for (const explicitVoteActionScript of [
+  "凯哥，想看返场就帮我组一个。",
+  "凯哥，想看新舞就帮我一把。",
+  "凯哥，想看这段才艺就投一票。",
+]) {
+  const explicitVoteAction = makeReportForScript(explicitVoteActionScript, {
+    verdict: "almost",
+    structure_checks: allMetChecks().map((item) =>
+      item.key === "vote_instruction" ? { ...item, status: "partial" } : item
+    ),
+  });
+  index.applyReportSafetyGates(explicitVoteAction, [], {
+    sourceScript: explicitVoteActionScript,
+    scenario: { targetUser: "凯哥" },
+  });
+  assert.equal(
+    explicitVoteAction.structure_checks.find((item) => item.key === "vote_instruction")
+      ?.status,
+    "met",
+    `明确动作无需再报准确差额：${explicitVoteActionScript}`
+  );
+}
+
+const exactTwoTicketFeedbackScript =
+  "刚开口还差20个，月月姐组了两个，现在还差18个，小唐哥你愿意就接下一手。";
+const exactTwoTicketFeedback = makeReportForScript(exactTwoTicketFeedbackScript, {
+  round_dynamics: validRoundDynamics({
+    flow_read: "票差有变化",
+    response_read: "有人响应",
+  }),
+});
+index.applyReportSafetyGates(exactTwoTicketFeedback, [], {
+  sourceScript: exactTwoTicketFeedbackScript,
+});
+assert.match(
+  exactTwoTicketFeedback.round_dynamics.response_read,
+  /20.{0,24}18.{0,24}2个上票反馈/u,
+  "20→18 必须确定性读成期间收到2个上票反馈"
+);
+
+const stalledTicketFeedbackScript =
+  "现在还差17个，多多哥能组一组吗？谢谢久皇哥，现在还差15个，老朋友们再冲一冲，现在还差15个。";
+const stalledTicketFeedback = makeReportForScript(stalledTicketFeedbackScript, {
+  round_dynamics: validRoundDynamics({
+    flow_read: "票差从17到15再到15，前两拍各收到2个反馈。",
+    response_read: "前两拍各收到2个反馈。",
+  }),
+});
+index.applyReportSafetyGates(stalledTicketFeedback, [], {
+  sourceScript: stalledTicketFeedbackScript,
+});
+assert.match(
+  stalledTicketFeedback.round_dynamics.response_read,
+  /17.{0,24}15.{0,24}2个上票反馈.{0,40}仍是15.{0,24}暂未看到新的票差变化/u,
+  "17→15→15 只能确认一次减少2，随后应读成暂时没变化"
+);
+assert.doesNotMatch(
+  `${stalledTicketFeedback.round_dynamics.flow_read}${stalledTicketFeedback.round_dynamics.response_read}`,
+  /前两拍各收到2/u,
+  "模型的错误算术不得残留在报告"
 );
 
 const qualifiedAlmostWithDetectedRedline = index.normalizeReport(
@@ -250,7 +418,11 @@ const twoStructureGapsWithoutSupport = index.normalizeReport(
   "测试原句"
 );
 index.applyReportSafetyGates(twoStructureGapsWithoutSupport, []);
-assert.equal(twoStructureGapsWithoutSupport.verdict, "off");
+assert.equal(
+  twoStructureGapsWithoutSupport.verdict,
+  "almost",
+  "gratitude 是非核心项，和一个 user_reason 缺口叠加也不应误判成整体 off"
+);
 
 const oneUserReasonGap = index.normalizeReport(
   makeRawReport({
@@ -323,7 +495,11 @@ for (const genericTargetScript of [
     "partial",
     `泛称不能算具体用户：${genericTargetScript}`
   );
-  assert.equal(genericAudienceTarget.verdict, "almost");
+  assert.equal(
+    genericAudienceTarget.verdict,
+    genericTargetScript.includes("扣1") ? "almost" : "passed",
+    `泛称本身不挡通过；只有“扣1”这类非要票动作仍应保留核心缺口：${genericTargetScript}；${genericAudienceTarget.verdict_reason}`
+  );
 }
 
 for (const namedTargetScript of [
@@ -353,9 +529,45 @@ index.applyReportSafetyGates(wrongScenarioTarget, [], {
 });
 assert.equal(
   wrongScenarioTarget.structure_checks.find((item) => item.key === "target_user").status,
-  "partial",
-  "有现场目标时不能用另一个昵称替代"
+  "met",
+  "整轮话术切到另一个具体用户时仍完成了点到人，不能被单一场景名降级"
 );
+
+const decreasingRoundScript =
+  "我是第一次上十连的跳跳糖，想把新舞跳完。多多哥，谢谢你先帮我补了一手。刚开口还差20个星辰，月月姐接上后到18个，现在小唐哥又帮一把，只差8个。00姐姐想看返场就帮我组一个，小明哥也可以投一票，其他想看的家人们跟一下。";
+const decreasingRound = makeReportForScript(decreasingRoundScript, {
+  line_reviews: [
+    { original: "我是第一次上十连的跳跳糖，想把新舞跳完。", mark: "good", comment: "新人和看点清楚" },
+    { original: "多多哥，谢谢你先帮我补了一手。", mark: "good", comment: "接住具体支持" },
+    { original: "刚开口还差20个星辰，月月姐接上后到18个，现在小唐哥又帮一把，只差8个。", mark: "good", comment: "数字是在复述整轮进展" },
+    { original: "00姐姐想看返场就帮我组一个，小明哥也可以投一票，其他想看的家人们跟一下。", mark: "good", comment: "给不同用户递出明确动作" },
+  ],
+  round_dynamics: validRoundDynamics({
+    flow_read: "从20到18再到8，多个数字是在复述整轮递减进展",
+    human_drivers: [
+      {
+        driver: "social_proof",
+        evidence: "月月姐和小唐哥先后接上",
+        mechanism: "连续有人出手会带动其他观众跟进",
+      },
+    ],
+  }),
+});
+index.applyReportSafetyGates(decreasingRound, [], {
+  sourceScript: decreasingRoundScript,
+  scenario: { targetUser: "凯哥", votesNeeded: 20 },
+});
+assert.equal(
+  decreasingRound.structure_checks.find((item) => item.key === "target_user").status,
+  "met",
+  "多个人名和用户切换不能因不匹配场景 targetUser 而降级"
+);
+assert.equal(
+  decreasingRound.structure_checks.find((item) => item.key === "vote_instruction").status,
+  "met",
+  "20→18→8 是整轮反馈，且组一个/帮一把/投一票已给出明确动作"
+);
+assert.equal(decreasingRound.verdict, "passed", "递减数字本身不能阻止完整好稿通过");
 
 const gratitudeOnlyTargetScript = "凯哥，谢谢你刚才的小心心。家人们现在补一点。";
 const gratitudeOnlyTarget = makeReportForScript(gratitudeOnlyTargetScript, {
@@ -531,7 +743,6 @@ for (const narratedOrWrongTargetScript of [
   "主持说：凯哥，你帮我补一下。",
   "主持说，凯哥，你帮我补一下。",
   "凯哥。谢谢大家支持。",
-  "小王，你想看撒娇吗？",
   "家人们，你们想看撒娇吗？",
 ]) {
   const narratedOrWrongTarget = makeReportForScript(narratedOrWrongTargetScript);
@@ -569,6 +780,94 @@ assert.doesNotMatch(
   "完整复盘里不能继续显示与当前关矛盾的旧证据"
 );
 
+for (const switchedUserScript of [
+  "小王，你想看撒娇吗？",
+  "月月姐先帮我组一个，小唐哥想看新舞也可以投一票。",
+  "00姐姐谢谢你刚才帮我，小明哥你愿意就接下一手。",
+]) {
+  const switchedUser = makeReportForScript(switchedUserScript, {
+    verdict: "almost",
+    structure_checks: allMetChecks().map((item) =>
+      item.key === "target_user" ? { ...item, status: "partial" } : item
+    ),
+  });
+  index.applyReportSafetyGates(switchedUser, [], {
+    sourceScript: switchedUserScript,
+    scenario: { targetUser: "凯哥" },
+  });
+  assert.equal(
+    switchedUser.structure_checks.find((item) => item.key === "target_user").status,
+    "met",
+    `整轮切换到其他具体用户仍应算明确点到人：${switchedUserScript}`
+  );
+}
+
+const switchedAudience = makeReportForScript(
+  "月月姐先组一个，小唐哥愿意就接下一手。",
+  { audience: "月月姐、小唐哥轮流点了一遍，但喊得很散，像在撒网。" }
+);
+index.applyReportSafetyGates(switchedAudience, [], {
+  sourceScript: "月月姐先组一个，小唐哥愿意就接下一手。",
+  scenario: { targetUser: "凯哥" },
+});
+assert.doesNotMatch(
+  switchedAudience.audience,
+  /点名太多|对象太散|喊得(?:很)?散|没有对准/u,
+  "模型不得在 audience 里把正常扫场写成点名错误"
+);
+
+const noDefaultTalentScript =
+  "月月哥，还差20个，你刚才这一手我看见了；现在还差8个，帮我再组一组，我们一起拿下。";
+const noDefaultTalent = makeReportForScript(noDefaultTalentScript, {
+  round_dynamics: validRoundDynamics({
+    next_move: "下一拍承诺票够就跳舞，用才艺诱饵继续追票",
+  }),
+  direction: {
+    summary: "加一个跳舞节目，再用才艺换下一手，用你自己的话说",
+    examples: ["票够我就跳一支舞", "你们想看节目就再补一脚"],
+  },
+  line_reviews: [{
+    original: noDefaultTalentScript,
+    mark: "partial",
+    comment: "这里最好加一个跳舞才艺作为交换",
+  }],
+});
+index.applyReportSafetyGates(noDefaultTalent, [], {
+  sourceScript: noDefaultTalentScript,
+  scenario: null,
+});
+assert.doesNotMatch(
+  JSON.stringify({
+    nextMove: noDefaultTalent.round_dynamics.next_move,
+    direction: noDefaultTalent.direction,
+    comments: noDefaultTalent.line_reviews.map((item) => item.comment),
+  }),
+  /跳舞|才艺|节目/u,
+  "原稿没有内容交换时，模型不得把新加才艺当成默认下一拍"
+);
+
+const inventedGiftDriver = makeReportForScript(
+  "久皇哥，谢谢你刚才的支持，你愿意就再补一脚。",
+  {
+    round_dynamics: validRoundDynamics({
+      human_drivers: [{
+        driver: "reciprocity",
+        evidence: "久皇哥刚才的礼物",
+        mechanism: "具体感谢他的礼物，让付出有来有回",
+      }],
+    }),
+  }
+);
+index.applyReportSafetyGates(inventedGiftDriver, [], {
+  sourceScript: "久皇哥，谢谢你刚才的支持，你愿意就再补一脚。",
+  scenario: null,
+});
+assert.doesNotMatch(
+  JSON.stringify(inventedGiftDriver.round_dynamics),
+  /礼物/u,
+  "原稿只说支持时，人性机制不得擅自编成送礼物"
+);
+
 for (const guidedWrongPersonScript of [
   "凯哥，刚才小王你愿意就补一点。",
   "凯哥，主持刚说小王你想看返场就扣1。",
@@ -582,8 +881,8 @@ for (const guidedWrongPersonScript of [
   });
   assert.equal(
     guidedWrongPerson.structure_checks.find((item) => item.key === "target_user").status,
-    "partial",
-    `引导词中夹入别人时不能算 Q 凯哥：${guidedWrongPersonScript}`
+    "met",
+    `整轮话术明确转向另一个具体用户时不能因场景名不匹配降级：${guidedWrongPersonScript}`
   );
 }
 
@@ -911,6 +1210,78 @@ for (const doubleNegativeBeggingScript of [
   assert.equal(doubleNegativeBegging.line_reviews[0].mark, "wrong");
 }
 
+for (const contextualHumanDriverCase of [
+  {
+    driver: "protection",
+    script: "月月姐，我第一次上十连手还在抖，这最后一轮你愿意托住我、帮我补一脚吗？",
+    evidence: "第一次上十连手还在抖；月月姐可以托住最后一轮",
+    mechanism: "真实的新人与临门一轮给了具体用户一个可执行的守护位置",
+  },
+  {
+    driver: "belonging",
+    script: "小豹总，你陪我守过前面两轮，这一轮咱们也一起走完，再帮我补一脚好吗？",
+    evidence: "陪我守过前面两轮；这轮咱们一起走完",
+    mechanism: "共同经历把补票变成继续完成我们这一轮，而不是单向施舍",
+  },
+  {
+    driver: "reciprocity",
+    script: "久皇哥，你刚才那一手我看见了，这轮你再帮我补一脚，我马上把这份支持接回来、当场点名谢谢你。",
+    evidence: "看见刚才那一手，并承诺当场点名接回支持",
+    mechanism: "用户的付出得到即时、明确的回应，形成有来有回",
+  },
+]) {
+  const report = makeReportForScript(contextualHumanDriverCase.script, {
+    round_dynamics: validRoundDynamics({
+      flow_read: "主播在同一轮接住已有关系，再递出下一拍",
+      human_drivers: [
+        {
+          driver: contextualHumanDriverCase.driver,
+          evidence: contextualHumanDriverCase.evidence,
+          mechanism: contextualHumanDriverCase.mechanism,
+        },
+      ],
+      response_read: "原稿只提供既有支持或共同经历，不虚构新的上票结果",
+      next_move: "先等对方是否接这一脚，再根据真实反馈换人或继续",
+    }),
+  });
+  index.applyReportSafetyGates(report, [], {
+    sourceScript: contextualHumanDriverCase.script,
+    scenario: null,
+  });
+  assert.equal(
+    report.structure_checks.find((item) => item.key === "user_reason").status,
+    "met",
+    `有上下文和机制的人性支点不能仅因没有才艺承诺被旧规则压掉：${contextualHumanDriverCase.driver}`
+  );
+  assert.equal(report.verdict, "passed", `有效 ${contextualHumanDriverCase.driver} 支点应满足新通过门槛`);
+}
+
+const keywordOnlyProtectionScript = "我不想这么早下去，我真的好难，大家帮我补一脚。";
+const keywordOnlyProtection = makeReportForScript(keywordOnlyProtectionScript, {
+  round_dynamics: validRoundDynamics({
+    flow_read: "主播表达自己不想下去",
+    human_drivers: [
+      {
+        driver: "protection",
+        evidence: "我不想这么早下去，我真的好难",
+        mechanism: "因为说自己很难，所以观众会保护她",
+      },
+    ],
+    response_read: "没有看到用户已经回应或上票",
+    next_move: "先给观众一个平等、可参与的理由",
+  }),
+});
+index.applyReportSafetyGates(keywordOnlyProtection, [], {
+  sourceScript: keywordOnlyProtectionScript,
+  scenario: null,
+});
+assert.notEqual(
+  keywordOnlyProtection.structure_checks.find((item) => item.key === "user_reason").status,
+  "met",
+  "纯粹‘我不想下去/我好难’不能靠 protection 标签洗成用户理由"
+);
+assert.notEqual(keywordOnlyProtection.verdict, "passed", "关键词式保护欲不得放过纯主播需要");
+
 const explicitViewerReasonScript = "现在还差十票，凯哥，你要是想看我返场就补一票。";
 const explicitViewerReason = makeReportForScript(explicitViewerReasonScript, {
   verdict: "almost",
@@ -1183,7 +1554,7 @@ index.applyReportSafetyGates(atomicReasonEvidence, [], {
 });
 assert.match(
   atomicReasonEvidence.structure_checks.find((item) => item.key === "user_reason").evidence,
-  /观看、互动、选择或回应|参与后能看到什么回应/,
+  /人性参与支点|才艺、保护、归属、身份、互惠/,
   "给理由未过时也要按当前原子标准解释"
 );
 assert.doesNotMatch(
@@ -1356,7 +1727,8 @@ assert.match(referencePrompt, /绝不能迁移成当前现场事实/);
 
 const noScenarioPrompt = prompt.buildUserPrompt("close", "测试原句", [], [], null);
 assert.match(noScenarioPrompt, /没有 hostCue 时不得用“没接住主持”扣分/);
-assert.match(noScenarioPrompt, /五项全 met、line_reviews 中 0 个 wrong/);
+assert.match(noScenarioPrompt, /user_reason.{0,80}vote_instruction.{0,160}(?:两项|核心).{0,80}met/u);
+assert.match(noScenarioPrompt, /self_intro.{0,80}gratitude.{0,80}target_user.{0,160}partial/u);
 
 // structure_checks：无论模型乱序、缺项或非法枚举，后端固定重建五项。
 const normalized = index.normalizeReport({
@@ -1390,16 +1762,52 @@ assert.deepEqual(
 assert.ok(normalized.structure_checks.every((item) => item.evidence.length <= 80));
 assert.ok(normalized.structure_checks.every((item) => !/[\r\n\t]/.test(item.evidence)));
 
-// passed 硬门槛：结构缺口或 wrong → almost；AI 味/人设问题 → off。
-const structureGap = index.normalizeReport(
+// passed 硬门槛只把 user_reason + vote_instruction 视为两项核心；
+// self_intro / gratitude / target_user 可以 partial，wrong 与安全问题仍会拦截。
+const optionalStructurePartials = index.normalizeReport(
   makeRawReport({
-    structure_checks: allMetChecks().map((item, itemIndex) =>
-      itemIndex === 1 ? { ...item, status: "partial" } : item
+    structure_checks: allMetChecks().map((item) =>
+      ["self_intro", "gratitude", "target_user"].includes(item.key)
+        ? { ...item, status: "partial" }
+        : item
     ),
   })
 );
-index.applyReportSafetyGates(structureGap, []);
-assert.equal(structureGap.verdict, "almost");
+index.applyReportSafetyGates(optionalStructurePartials, []);
+assert.equal(
+  optionalStructurePartials.verdict,
+  "passed",
+  "三个非核心项为 partial 时，只要两项核心和其余安全门槛有效就应通过"
+);
+
+for (const coreKey of ["user_reason", "vote_instruction"]) {
+  const coreGap = index.normalizeReport(
+    makeRawReport({
+      structure_checks: allMetChecks().map((item) =>
+        item.key === coreKey ? { ...item, status: "partial" } : item
+      ),
+    })
+  );
+  index.applyReportSafetyGates(coreGap, []);
+  assert.notEqual(coreGap.verdict, "passed", `核心项 ${coreKey} 未 met 时不得通过`);
+}
+
+const promotableOptionalPartials = index.normalizeReport(
+  makeRawReport({
+    verdict: "almost",
+    structure_checks: allMetChecks().map((item) =>
+      ["self_intro", "gratitude", "target_user"].includes(item.key)
+        ? { ...item, status: "partial" }
+        : item
+    ),
+  })
+);
+index.applyReportSafetyGates(promotableOptionalPartials, []);
+assert.equal(
+  promotableOptionalPartials.verdict,
+  "passed",
+  "模型仅因非核心项 partial 给 almost 时，后端应按新门槛稳定晋级"
+);
 
 const wrongPassed = index.normalizeReport(
   makeRawReport({
@@ -1473,6 +1881,26 @@ assert.equal(
   mergedSentenceReviews.verdict,
   "almost",
   "模型把多个句子合并成一条 good 时不能绕过逐句硬门槛"
+);
+
+const paragraphLineReviews = index.normalizeReport(
+  makeRawReport({
+    line_reviews: [
+      { original: "第一拍收到反馈。接着换人！", mark: "good", comment: "第一段方向正确" },
+      { original: "第二拍暂时没动？下一拍换角度。", mark: "partial", comment: "第二段需要调整" },
+    ],
+  }),
+  "第一拍收到反馈。接着换人！第二拍暂时没动？下一拍换角度。"
+);
+assert.equal(
+  paragraphLineReviews._lineReviewsContractValid,
+  true,
+  "模型已按多个自然段独立判断时，可机械拆开段内硬标点"
+);
+assert.equal(paragraphLineReviews.line_reviews.length, 4);
+assert.deepEqual(
+  paragraphLineReviews.line_reviews.map((item) => item.mark),
+  ["good", "good", "partial", "partial"]
 );
 
 const exactSentenceReviews = index.normalizeReport(
@@ -1633,6 +2061,7 @@ const upstreamReport = {
   line_reviews: [{ original: baseScript, mark: "good", comment: "方向正确" }],
   one_thing: "先对准人",
   direction: { summary: "保持方向，用你自己的话说", examples: [] },
+  round_dynamics: validRoundDynamics(),
   ai_flavor: "",
   redline_note: "",
 };

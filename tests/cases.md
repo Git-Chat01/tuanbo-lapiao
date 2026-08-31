@@ -1,6 +1,6 @@
-# 批改质量发布门槛（v3）
+# 批改质量发布门槛（v4）
 
-这套用例检查的不是接口“能不能返回”，而是真实模型是否理解团播复活场里的主播、主持和用户博弈。部署前必须跑完 **10 类、15 次请求**；任一机器硬断言失败，或人工检查出现关键误读，都先迭代 `worker/prompt.js`，再全量重跑。
+这套用例检查的不是接口“能不能返回”，而是真实模型是否理解团播复活场里的主播、主持和用户博弈。部署前必须跑完 **12 类、18 次请求**；任一机器硬断言失败，或人工检查出现关键误读，都先迭代 `worker/prompt.js`，再全量重跑。
 
 > 安全边界：通过稿会生成学习候选。质量跑批只能连接本机 Worker 和本地/测试 KV，严禁连接生产 Worker。`tests/model-quality.mjs` 会拒绝所有非 loopback `BASE`。
 
@@ -21,14 +21,15 @@ node tests/model-quality.mjs
 ## 所有请求的机器硬门槛
 
 - HTTP 200 且 `ok === true`。
-- v3 契约字段齐全：`card_type / card_why / audience / structure_checks / verdict / verdict_reason / echo / line_reviews / one_thing / direction / ai_flavor / redline_note`。
+- v4 契约字段齐全：`card_type / card_why / audience / round_dynamics / structure_checks / verdict / verdict_reason / echo / line_reviews / one_thing / direction / ai_flavor / redline_note`。
+- `round_dynamics` 必须包含非空的 `flow_read / response_read / next_move`，以及 1–3 条带合法枚举、事实证据和作用机制的 `human_drivers`。
 - `structure_checks` 恰好五项，顺序固定为 `self_intro / gratitude / target_user / user_reason / vote_instruction`；status 只能是 `met / partial / missing`，evidence 均非空。
 - `line_reviews` 非空；mark 只能是 `good / partial / wrong`；original/comment 均非空；去掉空白后，所有 original 拼接必须与主播全稿完全一致。
 - `direction.examples` 最多 3 条，每条最多 25 个 Unicode 字符；`direction.summary` 必须包含“用你自己的话说”。
-- `passed` 必须同时满足：五项全 met、0 个 wrong、`card_type !== persona`、`ai_flavor` 为空、`redline_note` 为空。
+- `passed` 必须同时满足：`user_reason=met`、`vote_instruction=met`、0 个 wrong、完整动态与安全契约、`card_type !== persona`、`ai_flavor` 为空、`redline_note` 为空。前三项仍如实记录，但不单独挡毕业。
 - 防代写人工通查：没有一整段可照读替换稿；examples 只从学员原句局部生长；反馈一次聚焦 1–2 个点。
 
-## 案例 1：五项全 met 的真好稿（连续 2 次）
+## 案例 1：两个核心成立的真好稿（连续 2 次）
 
 票况 `far`，现场情境：
 
@@ -51,8 +52,8 @@ node tests/model-quality.mjs
 
 机器必须：
 
-- 连续 2 次都为 `passed`，五项全 met，0 wrong，AI 味与红线均为空。
-- gratitude/target 证据能落到凯哥或小心心，vote_instruction 证据包含 320。
+- 连续 2 次都为 `passed`，两个核心全 met，0 wrong，AI 味与红线均为空。
+- gratitude 与 target_user 如实识别凯哥/小心心，vote_instruction 识别补票动作；不再重复考准确票差。
 
 人工必须：
 
@@ -102,12 +103,12 @@ node tests/model-quality.mjs
 
 > 我是今天第一次上复活台的小满，刚才愿意停下来看我的朋友谢谢你们。我准备了一段没跳过的新舞，想看的家人们就在公屏扣个1，也可以给我补一点让我看看有多少人想看。
 
-机器必须：`almost`；target_user 和 vote_instruction 均不得 met；整个报告不得凭空出现“凯哥、小心心、火箭、320、38、撒娇”。
+机器必须：`passed`；target_user 不得 met，但“给我补一点”必须使 vote_instruction=met；整个报告不得凭空出现“凯哥、小心心、火箭、320、38、撒娇”。
 
 人工必须：
 
 - 肯定“新舞 + 扣 1”的参与支点。
-- 明确缺少具体榜单用户和准确票差。
+- 如实指出没有具体榜单用户，但不能把它或缺少准确票差设成隐藏毕业门槛。
 - 可以说“未提供主持信息”，但不能编主持说过什么、谁送过什么礼物。
 
 ## 案例 6：结构看似齐全但全篇 AI 腔
@@ -191,15 +192,31 @@ node tests/model-quality.mjs
 
 人工必须确认：它保留了同样的两位用户、一次“既然/每一票”和昵称观察，但没有替用户一次总结完关系与意义；每一拍只说一层，并把判断权和下一拍回应交回用户。它也没有靠故意结巴、堆“呀吧哈哈”制造口语。单句完整、直接感谢、报票差、一次使用连接词或一次昵称玩梗，都不能单独触发作文朗诵判定。
 
-## v3 发布记录
+## 案例 11：整轮递减票差与连续换人
+
+原稿在同一轮里从 20 追到 18、再追到 8，并依次点到多多哥、月月姐、小唐哥、00 姐姐和小明哥。
+
+机器必须：`passed`；target_user 与 vote_instruction 均为 met；`flow_read` 把递减数字读成前一拍收到上票反馈，不得写成数字矛盾；换人不得因没有始终命中 scenario.targetUser 而降级。
+
+人工必须确认：票差是时间轴，不是填空答案。每下降一次都要检查主播有没有看见反馈、强化出手者并自然递出下一拍。
+
+## 案例 12：人性机制与关键词陷阱
+
+12A 提供真实的跟票人数、最后一手的关键位置和老朋友共同经历；12B 只让主播念“保护欲、存在感、归属感、从众”等心理词。
+
+机器必须：12A 的 `human_drivers` 至少识别 social_proof，并识别 status 或 visibility，证据和机制都落到原稿事实；12B 不得因主播念到心理词就机械返回同名驱动。
+
+人工必须确认：evidence 是发生了什么，mechanism 是为什么会驱动参与，response_read 是实际反馈，三者不能互相替代。保护、归属、互惠和投入一致性都要结合关系、动作与回馈判断。
+
+## v4 发布记录
 
 | 日期 | Worker 版本/提交 | 真实模型 | 机器结果 | 人工复核人 | 问题记录 |
 |------|------------------|----------|----------|------------|----------|
 | 2026-08-24 | Worker `53e8eafd-2c5a-4e1f-b3fb-e349166f41f3` | deepseek-chat | 10/10 PASS | Codex 语义复核 + P0/P1 门禁复审 | 22/22 接口烟测通过，案例 4/5/8 语义通过，无阻断 |
 
-当前发布门槛：15/15 机器通过，案例 1 两轮均 passed，并且案例 4、5、8、9、10 的人工语义检查通过。上表 2026-08-24 记录是新增案例 9、10 之前的历史发布结果。
+当前发布门槛：18/18 机器通过，案例 1 两轮均 passed，并且案例 4、5、8、9、10、11、12 的人工语义检查通过。上表 2026-08-24 记录是 v4 动态闭环上线前的历史发布结果。
 
-## v2 历史基线（仅供 prompt 迭代参考，不代表 v3 已通过）
+## v2/v3 历史基线（仅供 prompt 迭代参考，不代表 v4 已通过）
 
 | 日期 | 案例 | 当时结果 | 历史问题记录 |
 |------|------|----------|--------------|
@@ -215,7 +232,7 @@ node tests/model-quality.mjs
 
 1. 温度 0.7 会让同一好稿每次换挑剔点；质量工具应以稳定判定优先。
 2. verdict 必须是机械硬门槛；“还能更好”只能写成微调，不能把合格稿降级。
-3. partial 是句子可微调，不应单独阻止 passed；passed 的真正门槛是五项结构、wrong、支点、人设与红线。
+3. partial 是句子可微调，不应单独阻止 passed；passed 的真正门槛是两个现场核心、wrong、动态契约、姿态、人设与红线。
 4. “你上几张”是在给大哥决定权，“帮我组一组”是在委婉确认，都不能误判成低姿态；“求求你了、可怜可怜我、我给你跪下了”才是明确乞求或自贬。
 5. 参照案例只能校准尺度，不能复制句式；当前场景事实也不能从案例迁移。
 6. 口语感不能靠语气词数量判断。孤立一两句书面是表达问题；整稿或两个以上点名段落反复“铺前提—下结论—再升华”，才是人设方向上的作文朗诵。

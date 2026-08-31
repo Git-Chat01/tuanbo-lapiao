@@ -1,4 +1,4 @@
-// 团播拉票话术教练 v3 — Cloudflare Worker
+// 团播拉票话术教练 v4 — Cloudflare Worker
 // 职责：CORS → 鉴权 → 参数白名单校验 → 红线检测 → 检索案例 → 调 DeepSeek
 //       → 契约校验 → 红线/吸收闸门 → 返回结构化批改报告 + 教练后台管理接口
 // 安全设计沿用 cide wardrobe-api-v2 的模式：Origin 白名单回显、fail-closed 鉴权、
@@ -25,7 +25,7 @@ const ALLOWED_ORIGINS = [
   "http://localhost:8080",
 ];
 
-// 基础票况枚举；v3 可再附加可选现场情境。
+// 基础票况枚举；可再附加可选现场情境。
 const VOTE_GAP_ENUM = ["far", "close", "secured"];
 
 // 文本长度限制（前后端双重限制，后端兜底）
@@ -36,6 +36,9 @@ const LIMITS = {
   whyGoodMin: 1, // 投喂理由必填——"为什么好"是 manual 案例的灵魂（给 AI 的判断尺子）
   whyGoodMax: 320, // 投喂理由上限（1.6×200）：给 AI 的判断尺子，太长检索时也读不动
   structureEvidenceMax: 80, // 五项结构证据只保留短句，避免模型在证据栏写小作文
+  roundDynamicsTextMax: 180, // 本轮流动判断/反馈判断/下一拍都只保留短复盘
+  driverEvidenceMax: 80, // 人性驱动证据必须落到原稿或现场里的短证据
+  driverMechanismMax: 160, // 机制允许比证据多解释一层，但禁止写成长篇心理分析
   bodyMaxBytes: 10 * 1024, // 请求体上限 10KB，防超大 payload（800 字话术 + 320 字理由 < 4KB，安全）
 };
 
@@ -50,6 +53,19 @@ const STRUCTURE_CHECK_KEYS = [
   "target_user",
   "user_reason",
   "vote_instruction",
+];
+const HUMAN_DRIVER_ENUM = [
+  "visibility",
+  "status",
+  "protection",
+  "belonging",
+  "control",
+  "curiosity",
+  "competition",
+  "social_proof",
+  "reciprocity",
+  "urgency",
+  "other",
 ];
 
 // 可选现场情境只接受这些字段。未知字段直接丢弃；已知字段类型/范围非法则 400。
@@ -233,7 +249,7 @@ export default {
 };
 
 const GENERIC_TARGET_PATTERN =
-  /^(?:大哥|哥哥|小哥哥|帅哥|美女|小美女|靓仔|宝宝|宝贝|宝子|姐姐|小姐姐|大姐|老板|老师|大叔|叔叔|阿姨|哥们|兄弟们?|姐妹们?|老铁|大佬|家人们?|朋友们?|大家|各位|宝宝们?|粉丝们?|观众们?|主持|拜托大家|这一轮|这轮|现在|刚才|谢谢|感谢|我是|我想|我还|我刚|我准备|想看|愿意)/u;
+  /^(?:大哥|哥哥|小哥哥|帅哥|美女|小美女|靓仔|宝宝|宝贝|宝子|姐姐|小姐姐|大姐|老板|老师|大叔|叔叔|阿姨|哥们|兄弟们?|姐妹们?|老铁|大佬|家人们?|朋友们?|大家|各位|宝宝们?|粉丝们?|观众们?|你们?|我们?|他们?|她们?|它们?|主持|拜托大家|这一轮|这轮|现在|刚才|谢谢|感谢|我是|我想|我还|我刚|我准备|想看|愿意)/u;
 const AI_FLAVOR_SOURCE_PHRASES = [
   "怀揣舞台梦想",
   "热爱点亮",
@@ -301,15 +317,6 @@ function splitHardSentences(value) {
   return (matches || []).filter((item) => item.trim().length > 0);
 }
 
-function hasMismatchedDelegatedActor(rawBody, target) {
-  const body = String(rawBody || "").replace(/^[，,:：\s]+/u, "").trim();
-  const delegatedActor = body.match(
-    /^(?:能不能|可不可以|方便(?:的话)?)?(?:请|让|麻烦)([\p{L}\p{N}_·-]{1,12}?)(?:来)?帮我/u
-  )?.[1];
-  if (!delegatedActor) return false;
-  return !["你", "一下", "一下子", String(target || "").trim()].includes(delegatedActor);
-}
-
 const DIRECT_CONTINUATION_PATTERN =
   /^(?:(?:那|这轮|现在|接下来|然后|刚才|主持(?:刚|刚才)?说)[，,\s]*)?(?:你(?!们)|要是你(?!们)|如果你(?!们)|这个(?:新舞|节目|整活)?你(?!们)|这支舞你(?!们)|这段(?:舞|表演|才艺)?你(?!们)|愿不愿意|想不想|要不要|是不是|能不能|可不可以|方便(?:的话)?|请你|麻烦你|帮我|给我|来帮我|再帮我|听我|看一下|别走|我给你|我来给你|我问你|听你的)/u;
 const AUDIENCE_SWITCH_PATTERN =
@@ -333,7 +340,6 @@ function looksLikeAnotherAddressee(rawBody, target) {
   ) {
     return Boolean(body);
   }
-  if (hasMismatchedDelegatedActor(body, target)) return true;
   if (DIRECT_CONTINUATION_PATTERN.test(body)) return false;
 
   const other = body.match(
@@ -433,9 +439,16 @@ function isAttributedTargetMention(sourceScript, targetStart) {
 function freeModeTargetToken(segment, hasFollowingSegment) {
   const text = String(segment || "")
     .trim()
-    .replace(/^(?:那|然后|所以|这轮|这一轮)[，,\s]*/u, "")
+    .replace(/^(?:那|然后|所以|这轮|这一轮|现在|刚才|刚刚)[，,\s]*/u, "")
     .replace(/^我(?:想|来|再)?(?:问|确认)(?:下|一下)?[，,\s]*/u, "");
   if (!text || GENERIC_TARGET_PATTERN.test(text)) return "";
+  if (
+    /^(?:(?:刚|刚才|刚刚|之前)?(?:主持|他|她|用户|别人|有人|旁人)|[\p{L}\p{N}_·-]{2,8})(?:刚|刚才)?(?:说|讲|问|提到|表示|告诉(?:我)?)(?:的)?$/u.test(
+      text
+    )
+  ) {
+    return "";
+  }
 
   const atTarget = text.match(/^@[\p{L}\p{N}_·-]{1,24}/u)?.[0];
   if (atTarget) return atTarget;
@@ -447,6 +460,12 @@ function freeModeTargetToken(segment, hasFollowingSegment) {
     /^[\p{L}\p{N}_·-]{1,10}(?:哥|姐|爷|叔|姨|总|老板|老师)/u
   )?.[0];
   if (titledTarget && !GENERIC_TARGET_PATTERN.test(titledTarget)) return titledTarget;
+
+  // 口语里昵称后经常直接接“你/能不能”，不一定写逗号，也不一定带哥姐后缀。
+  const directNickname = text.match(
+    /^([\p{L}\p{N}_·-]{1,10}?)(?=你(?!们)|能不能|可不可以|愿不愿意|想不想|要不要|来帮我|帮我)/u
+  )?.[1];
+  if (directNickname && !GENERIC_TARGET_PATTERN.test(directNickname)) return directNickname;
 
   // 没有固定后缀的昵称只在“昵称，后续互动”这种直接呼语里接受。
   if (hasFollowingSegment && /^[\p{L}\p{N}_·-]{1,10}$/u.test(text)) return text;
@@ -531,8 +550,25 @@ function hasConcreteTargetAddress(sourceScript, scenarioTarget = "") {
       const segment = segments[index];
       if (!segment) continue;
 
+      // “主持说：凯哥，你帮我补一下”是在转述主持，不是主播正对凯哥说话。
+      // 自由模式也要看称呼前的说话人，不能因为冒号后恰好是昵称就误判 direct address。
+      const precedingSpeaker = segments.slice(0, index).join("").replace(/\s+/g, "");
+      if (
+        /(?:(?:刚|刚才|刚刚|之前)?(?:主持|他|她|用户|别人|有人|旁人)|[\p{L}\p{N}_·-]{2,8})(?:刚|刚才)?(?:说|讲|问|提到|表示|告诉(?:我)?)(?:的)?$/u.test(
+          precedingSpeaker
+        )
+      ) {
+        continue;
+      }
+
+      // 已经先直接叫过一个人后，“主持刚说小王你……”常是在顺势转向小王；
+      // 只有这种已有对话上下文才去掉主持引语。句首“主持说凯哥……”仍是纯转述。
+      const targetSegment =
+        index > 0 && /^主持(?:刚|刚才)?说/u.test(segment)
+          ? segment.replace(/^主持(?:刚|刚才)?说[，,\s]*/u, "")
+          : segment;
       let target = "";
-      target = freeModeTargetToken(segment, index < segments.length - 1);
+      target = freeModeTargetToken(targetSegment, index < segments.length - 1);
       if (!target) continue;
 
       const targetIndex = segment.indexOf(target);
@@ -626,6 +662,8 @@ function firstSelfAbasementSignal(sourceScript) {
 
 const VIEWER_CONTENT_PATTERN =
   /(?:撒娇|撒一个|撒个娇|新舞|返场|跳完|跳舞|舞蹈|才艺|表演|整活|节目|唱歌|点歌|点舞|复活后的兑现)/u;
+const INTRODUCED_CONTENT_ADVICE_PATTERN =
+  /(?:撒个?娇|返场|跳(?:一支|一段|个)?(?:舞|舞蹈)|才艺|表演|整活|节目|唱(?:一首|首)?歌|点歌|点舞|解锁(?:舞|节目|才艺)|做什么.{0,8}(?:马上|立刻|当场)安排)/u;
 const VIEWER_SUBJECT_SOURCE =
   "(?:你(?!们)|家人们?|大家|榜(?:一|二|三|1|2|3)|@[\\p{L}\\p{N}_·-]+|[\\p{L}\\p{N}_·-]{1,8}(?:哥|姐))";
 const PURE_HOST_NEED_PATTERN =
@@ -660,6 +698,44 @@ function hasClearlyNegatedViewerValue(sentence) {
     return true;
   }
   return /(?:想看|愿意看|喜欢看).{0,16}(?:我决定不|我不(?:跳|演|唱)|不给你看)/u.test(text);
+}
+
+function hasIntroducedContentAdvice(advice, sourceScript) {
+  return (
+    !VIEWER_CONTENT_PATTERN.test(String(sourceScript || "")) &&
+    INTRODUCED_CONTENT_ADVICE_PATTERN.test(String(advice || ""))
+  );
+}
+
+function feedbackLedAdvice(ticketProgressSummary) {
+  if (/暂未看到新的票差变化/u.test(String(ticketProgressSummary || ""))) {
+    return {
+      nextMove:
+        "这一拍的票差暂时没再动；下一拍换一个人性支点，把带头、选择或共同闯关的位置递给仍在观望的人，再看有没有新反馈。",
+      examples: [
+        "刚才有人带头了，剩下还在看的家人，谁愿意接下一脚？",
+        "这一拍先不重复喊，你们想换个人带头，还是一起把这一关收掉？",
+      ],
+    };
+  }
+  if (ticketProgressSummary) {
+    return {
+      nextMove:
+        "票差已经在动；下一拍先具体接住刚才的有效反馈，再沿着已经生效的人性驱动，把参与位置递给仍在观望的人。",
+      examples: [
+        "刚才这一手我看见了，你让这轮真的往前走了。",
+        "还有谁愿意接下一脚，跟我们一起把这一关走完？",
+      ],
+    };
+  }
+  return {
+    nextMove:
+      "下一拍先观察当前对象的真实反应，再决定强化同一驱动、换对象还是换角度，不默认另造内容交换。",
+    examples: [
+      "刚才这一拍你们接到了吗？接到的家人给我一个信号。",
+      "谁愿意来带这一脚，我们一起看看这一轮怎么走？",
+    ],
+  };
 }
 
 function positiveClauseAfterNegation(sentence) {
@@ -717,8 +793,129 @@ function isAttributedViewerInterest(sentence) {
   return narratorFirst.test(text) || viewerSelfReport.test(text) || heardViewerSelfReport.test(text);
 }
 
+/**
+ * 识别“才艺/选择权”之外的用户参与理由。
+ *
+ * 这里刻意要求至少两类相互印证的上下文（真实处境或共同经历 + 用户可自主
+ * 接住的角色/明确回馈），而不是见到“保护、家人、谢谢”这类表面词就贴标签。
+ * 这样既不会把纯粹的“我好难、我不想下去”洗成保护欲，也不会让旧的
+ * PURE_HOST_NEED_PATTERN 把真正的保护、归属、互惠与共同闯关误压成 partial。
+ */
+function detectContextualHumanReason(sourceScript) {
+  const text = withoutAttributedQuotedText(String(sourceScript || "")).replace(/\s+/g, "");
+  if (!text) return { state: "unknown", evidence: "" };
+
+  const voluntaryCue =
+    /(?:你愿意|愿不愿意|如果你愿意|你要是愿意|能不能|可不可以|可以吗|好吗|要不要|你来|交给你|听你的|帮我|陪我|咱们|我们一起|一起)/u;
+
+  const realProtectionContext =
+    /(?:第一次|新人|刚上(?:麦|十连|台)|手(?:还在)?抖|紧张|最后一轮|临门一脚|守位|快掉下去|差一脚|十连)/u;
+  const protectionRole =
+    /(?:托住|接住|守住|保住|护住|带我过|陪我(?:把|将)?(?:这|最后)?(?:一轮)?(?:走完|守完)|一起(?:走完|守住|过关))/u;
+  if (realProtectionContext.test(text) && protectionRole.test(text) && voluntaryCue.test(text)) {
+    return {
+      state: "met",
+      evidence: "真实处境给了对方一个可自主接住的守护位置",
+    };
+  }
+
+  const sharedHistory =
+    /(?:陪我|跟我|和我|咱们|我们).{0,16}(?:守过|走过|闯过|过了|拿过|打过|前面|上一轮|这么久|一路)|(?:前面|上一轮|前几轮).{0,12}(?:一起|陪我|跟我|咱们|我们)/u;
+  const sharedNextStep =
+    /(?:这轮|这一轮|接下来|最后一轮).{0,16}(?:咱们|我们|一起|继续).{0,12}(?:走完|守住|过关|拿下|闯|打完)|(?:咱们|我们|一起|继续).{0,16}(?:走完|守住|过关|拿下|闯完|打完)/u;
+  if (sharedHistory.test(text) && sharedNextStep.test(text) && voluntaryCue.test(text)) {
+    return {
+      state: "met",
+      evidence: "共同经历把这一拍变成双方继续完成同一轮",
+    };
+  }
+
+  const seenConcreteSupport =
+    /(?:你|@[\p{L}\p{N}_·-]+|[\p{L}\p{N}_·-]{1,8}(?:哥|姐|总|老板|老师)).{0,16}(?:刚才|刚刚|上一手|那一手|前面).{0,12}(?:支持|补|投|组|送|守|陪)|(?:刚才|刚刚|上一手|那一手|前面).{0,16}(?:支持|补|投|组|送|守|陪).{0,12}(?:我看见|我接住|我记得|没漏掉)/u;
+  const concreteReturn =
+    /(?:我看见|我接住|我记得|没漏掉).{0,24}(?:马上|当场|现在|这一轮).{0,18}(?:点名|回应|接回来|谢|兑现|安排)|(?:马上|当场|现在).{0,18}(?:点名|回应|接回来|兑现).{0,14}(?:你|支持|这一手)/u;
+  if (seenConcreteSupport.test(text) && concreteReturn.test(text) && voluntaryCue.test(text)) {
+    return {
+      state: "met",
+      evidence: "已经看见对方的具体付出，并给出即时可兑现的回应",
+    };
+  }
+
+  const recognizedRole =
+    /(?:你来拍板|你说了算|这一轮听你的|交给你定|就差你来定|你来决定|你来带队)/u;
+  const liveSituation = /(?:这轮|这一轮|现在|接下来|榜上|守位|十连|过关|怎么打)/u;
+  if (recognizedRole.test(text) && liveSituation.test(text)) {
+    return {
+      state: "met",
+      evidence: "把现场决定权和被看见的位置交给了对方",
+    };
+  }
+
+  return { state: "unknown", evidence: "" };
+}
+
+/**
+ * 把模型已经完成的“证据 → 人性机制”判断接回 user_reason，避免报告自相矛盾：
+ * 一边说归属/互惠/共同闯关在驱动参与，一边又把理由判 missing。
+ * urgency 只能说明“为什么现在”，不能单独回答“为什么参与”。保护欲另加一层
+ * 关系/角色校验，防止纯“我好难”被一个 protection 标签洗白。
+ */
+function groundedHumanDriverReason(roundDynamics, sourceScript, scenario) {
+  const drivers = Array.isArray(roundDynamics?.human_drivers)
+    ? roundDynamics.human_drivers
+    : [];
+  const surfaceLabels = /(?:保护欲|存在感|归属感|从众|互惠|紧迫感|好奇心|掌控感)/gu;
+  const evidenceSource = [
+    String(sourceScript || ""),
+    ...Object.values(scenario && typeof scenario === "object" ? scenario : {}).map((value) =>
+      String(value ?? "")
+    ),
+  ]
+    .join("")
+    .replace(/[\s\p{P}]+/gu, "");
+
+  const isAnchoredInFacts = (evidence) => {
+    if (!evidenceSource) return false;
+    const compactEvidence = evidence.replace(/[\s\p{P}]+/gu, "");
+    for (let index = 0; index <= compactEvidence.length - 4; index += 1) {
+      if (evidenceSource.includes(compactEvidence.slice(index, index + 4))) return true;
+    }
+    return false;
+  };
+
+  for (const item of drivers) {
+    if (!item || typeof item !== "object" || item.driver === "urgency") continue;
+    const evidence = typeof item.evidence === "string" ? item.evidence.trim() : "";
+    const mechanism = typeof item.mechanism === "string" ? item.mechanism.trim() : "";
+    if (!evidence || !mechanism) continue;
+    if (!isAnchoredInFacts(evidence)) continue;
+
+    // 只把心理名词抄进 evidence 不是现场证据。
+    const factualRemainder = evidence
+      .replace(surfaceLabels, "")
+      .replace(/[\s、，,。；;：:（）()“”"'·/-]+/gu, "");
+    if (factualRemainder.length < 4) continue;
+
+    if (item.driver === "protection") {
+      const relationalContext =
+        /(?:你|哥|姐|总|老板|老朋友|家人|一起|咱们|我们|守|托|接|陪|帮|最后一轮|临门一脚|十连)/u.test(
+          `${evidence}${mechanism}`
+        );
+      const actionableRole =
+        /(?:位置|角色|守住|托住|接住|陪着|一起|共同|参与|行动|出手|自主|愿意)/u.test(
+          mechanism
+        );
+      if (!relationalContext || !actionableRole) continue;
+    }
+
+    return { driver: item.driver, evidence };
+  }
+  return null;
+}
+
 function detectViewerReason(sourceScript, scenario = null) {
   const unquotedScript = withoutAttributedQuotedText(sourceScript);
+  const contextualHumanReason = detectContextualHumanReason(unquotedScript);
   const scenarioSignal = typeof scenario?.userSignal === "string"
     ? scenario.userSignal.trim()
     : "";
@@ -834,6 +1031,9 @@ function detectViewerReason(sourceScript, scenario = null) {
     }
   }
 
+  // 强上下文的人性机制也是用户为什么愿意参与的理由。它不是用 driver 标签
+  // 反推出来的，而是直接由原话中的共同经历、可自主角色和具体回馈相互印证。
+  if (contextualHumanReason.state === "met") return contextualHumanReason;
   if (sawInvalidValue) {
     return { state: "invalid", evidence: "提到了互动内容，但还没有形成给对方的明确正向理由" };
   }
@@ -843,10 +1043,95 @@ function detectViewerReason(sourceScript, scenario = null) {
   return { state: "unknown", evidence: "" };
 }
 
-function hasExplicitVoteGap(sourceScript) {
-  return /(?:还|再|只|就)?\s*(?:差|缺)\s*(?:了|个)?\s*(?:\d{1,8}|[零〇一二两三四五六七八九十百千万]+)\s*(?:个|颗|张)?\s*(?:票|星辰|闪耀星辰)/u.test(
-    String(sourceScript || "")
-  );
+/**
+ * 只核对主播有没有递出观众当下能执行的要票动作。
+ * 当前差额是现场反馈，不再是毕业门槛：同一轮从 20 降到 8、再降到 5，
+ * 说明请求正在得到响应，而不是数字互相矛盾。
+ */
+function hasExplicitVoteInstruction(sourceScript) {
+  const source = withoutAttributedQuotedText(String(sourceScript || ""));
+  const directAction =
+    /(?:补(?:一补|一脚|一下|一点|一些|(?:一|两|几)(?:张|票|手|个)|上|齐|票)|跟(?:上一点|一下|一脚|上)|上(?:多少|一票|几票|几张|一张|一点|点票|票)|投(?:一票|几票|一下|一点|点票|票)|组(?:一组|一下|一手|一个|两个|几组|几个)|丢(?:一丢|一下|一点|几张|几票)|刷(?:一票|一下|一点|几张|几票)|送(?:一颗|一个|一张|一点)|助力(?:一下|一把)?|搭把手|帮(?:我)?一把)/u;
+  const distributedAction =
+    /(?:一人|每人|一个人)(?:来|上|投|补|组|送|刷|丢)?(?:一|两|几)?(?:个|颗|张|票|手|组)/u;
+  const requestCue =
+    /(?:帮(?:我|忙)?|给我|替我|能不能|可不可以|方便的话|麻烦|请|来|再|继续|谁来|谁能|有没有|大家|家人们?|哥哥姐姐|好哥哥|好姐姐)/u;
+  const completedPastAction =
+    /(?:刚|刚才|刚刚|已经|刚送|送出).{0,10}(?:上了|投了|补了|组了|丢了|刷了|送了|助力了)/u;
+  const negatedAction =
+    /(?:不用|不要|别|无需|无须|不必|不用再|别再).{0,8}(?:上票|投票|补|跟|组|丢|刷|送|助力|搭把手)/u;
+
+  for (const sentence of splitHardSentences(source)) {
+    const compact = sentence.replace(/\s+/g, "");
+    if (!compact || negatedAction.test(compact)) continue;
+    if (distributedAction.test(compact)) return true;
+    if (!directAction.test(compact)) continue;
+    // “谢谢你刚刚上了一票”是在读过去反馈；除非同句又明确递出“再/继续/帮我”等下一拍。
+    if (completedPastAction.test(compact) && !requestCue.test(compact)) continue;
+    return true;
+  }
+  return false;
+}
+
+function parseSpokenCount(token) {
+  const value = String(token || "").trim();
+  if (/^\d+$/u.test(value)) return Number(value);
+  const digits = { 零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+  if (Object.prototype.hasOwnProperty.call(digits, value)) return digits[value];
+
+  let total = 0;
+  let current = 0;
+  for (const character of value) {
+    if (Object.prototype.hasOwnProperty.call(digits, character)) {
+      current = digits[character];
+    } else if (character === "十") {
+      total += (current || 1) * 10;
+      current = 0;
+    } else if (character === "百") {
+      total += (current || 1) * 100;
+      current = 0;
+    } else if (character === "千") {
+      total += (current || 1) * 1000;
+      current = 0;
+    } else {
+      return null;
+    }
+  }
+  return total + current;
+}
+
+/**
+ * 票差是时间轴反馈，不是模型可以自由发挥的心理判断。
+ * 例如 20→18 只能说明期间确认收到 2 个；17→15→15 说明先收到 2 个，
+ * 随后暂时没有新变化，绝不能写成“前两拍各收到 2 个”。
+ */
+function summarizeTicketProgress(sourceScript) {
+  const observations = [];
+  const pattern =
+    /(?:还(?:需|差)|差|要(?:啦|拉|拿)?)(?:最后)?\s*(\d{1,8}|[零〇一二两三四五六七八九十百千]{1,8})\s*(?:个|颗|手|票|张|组|星辰)?/gu;
+  for (const match of String(sourceScript || "").matchAll(pattern)) {
+    const count = parseSpokenCount(match[1]);
+    if (Number.isFinite(count)) observations.push({ raw: match[1], count });
+  }
+  if (observations.length < 2) return "";
+
+  const changes = [];
+  for (let index = 1; index < observations.length; index += 1) {
+    const previous = observations[index - 1];
+    const current = observations[index];
+    if (current.count < previous.count) {
+      changes.push(
+        `从${previous.raw}降到${current.raw}，确认这期间收到${previous.count - current.count}个上票反馈`
+      );
+    } else if (current.count === previous.count) {
+      changes.push(`随后仍是${current.raw}，暂未看到新的票差变化`);
+    } else {
+      changes.push(
+        `从${previous.raw}变为${current.raw}，可能发生换轮或重置，需要结合现场确认`
+      );
+    }
+  }
+  return `票差按原稿${changes.join("；")}。`;
 }
 
 function hasSpecificScenarioGratitude(sourceScript, scenario) {
@@ -876,7 +1161,7 @@ function hasSpecificScenarioGratitude(sourceScript, scenario) {
  * 对模型报告应用后端硬规则。
  * - 红线：无论模型原判 passed/almost/off，一律 off。
  * - 人设/AI 味：不得 passed，按不合格稿降为 off。
- * - 五项结构未全 met 或逐句仍有 wrong：passed 降为 almost。
+ * - 两个核心能力、逐句/结构/动态契约任一不完整：passed 降级。
  *
  * 导出仅用于无网络单元测试；Worker 主流程仍由本文件直接调用。
  * @param {object} report - normalizeReport 后的报告
@@ -919,6 +1204,70 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
     ? context.scenario
     : null;
 
+  // 模型常把泛称“支持/出手”顺手写成“礼物”。只有原稿或现场真的出现礼物事实
+  // 才能保留这个词；否则统一退回可观察的“支持”，避免复盘给新人编现场。
+  const observableContext = `${sourceScript}${Object.values(scenario || {}).join("")}`;
+  if (
+    !/(?:礼物|送了|送来|送的|刷了|小心心|火箭|嘉年华)/u.test(observableContext) &&
+    Array.isArray(report.round_dynamics?.human_drivers)
+  ) {
+    for (const driver of report.round_dynamics.human_drivers) {
+      if (!driver || typeof driver !== "object") continue;
+      if (typeof driver.evidence === "string") {
+        driver.evidence = driver.evidence.replace(/礼物/gu, "支持");
+      }
+      if (typeof driver.mechanism === "string") {
+        driver.mechanism = driver.mechanism.replace(/礼物/gu, "支持");
+      }
+    }
+  }
+
+  const ticketProgressSummary = summarizeTicketProgress(sourceScript);
+  if (ticketProgressSummary && report.round_dynamics) {
+    const modelFlow = typeof report.round_dynamics.flow_read === "string"
+      ? report.round_dynamics.flow_read
+      : "";
+    const flowWithoutModelArithmetic = modelFlow
+      .replace(/(?:票差|数量)(?:从|由|按)[^。！？]*?(?:反馈|变化|响应)[。！？]?$/u, "")
+      .trim();
+    report.round_dynamics.flow_read = Array.from(
+      `${ticketProgressSummary}${flowWithoutModelArithmetic ? ` ${flowWithoutModelArithmetic}` : ""}`
+    ).slice(0, LIMITS.roundDynamicsTextMax).join("");
+    report.round_dynamics.response_read = Array.from(ticketProgressSummary)
+      .slice(0, LIMITS.roundDynamicsTextMax)
+      .join("");
+  }
+
+  // 新人稿里没有建立才艺/节目期待时，模型容易条件反射地把“加个才艺诱饵”
+  // 当作万能答案。只改模型后来添加的建议，不碰原稿；把下一拍重新锚定在
+  // 已发生的反馈和人性驱动上。原稿本来就有才艺时则完整保留顺势承接。
+  const feedbackAdvice = feedbackLedAdvice(ticketProgressSummary);
+  if (
+    report.round_dynamics &&
+    hasIntroducedContentAdvice(report.round_dynamics.next_move, sourceScript)
+  ) {
+    report.round_dynamics.next_move = feedbackAdvice.nextMove;
+  }
+  if (report.direction && typeof report.direction === "object") {
+    if (hasIntroducedContentAdvice(report.direction.summary, sourceScript)) {
+      report.direction.summary = `${feedbackAdvice.nextMove} 用你自己的话说。`;
+    }
+    if (Array.isArray(report.direction.examples)) {
+      report.direction.examples = report.direction.examples.map((example, index) =>
+        hasIntroducedContentAdvice(example, sourceScript)
+          ? feedbackAdvice.examples[index % feedbackAdvice.examples.length]
+          : example
+      );
+    }
+  }
+  if (Array.isArray(report.line_reviews)) {
+    for (const review of report.line_reviews) {
+      if (!review || !hasIntroducedContentAdvice(review.comment, sourceScript)) continue;
+      review.comment =
+        "这句的调整重点是先把已经发生的支持说具体，再把下一拍递给仍在观望的人，不必另造内容交换。";
+    }
+  }
+
   // 现场明确给了礼物事实时，“谢谢大家”只能算泛谢，不能让模型虚判为接住具体支持。
   // 这是只降不升的事实兜底：模型漏判具体感谢时仍由模型报告负责，不在这里擅自补 met。
   const gratitudeCheck = Array.isArray(report.structure_checks)
@@ -938,8 +1287,9 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
     gratitudeCheck.evidence = `只有泛泛感谢，还没接住${scenarioTarget}这次具体支持`;
   }
 
-  // target_user 只检查“有没有明确在对这个人说话”。感谢、用户价值和上票动作
-  // 分属其他原子能力，不再把它们藏进这一项；直接称呼式感谢可同时完成两项。
+  // target_user 只检查“有没有明确在对一个可识别对象说话”。感谢、用户价值和上票动作
+  // 分属其他原子能力，不再把它们藏进这一项。场景目标是起始观察点，不是姓名考题；
+  // 同一轮扫到其他用户、根据反馈换人递话都属于正常流动，不能因未命中特定姓名降级。
   const targetCheck = Array.isArray(report.structure_checks)
     ? report.structure_checks.find((item) => item && item.key === "target_user")
     : null;
@@ -947,16 +1297,25 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
     const scenarioTarget = typeof scenario?.targetUser === "string"
       ? scenario.targetUser.trim()
       : "";
-    if (hasConcreteTargetAddress(sourceScript, scenarioTarget)) {
+    const hasAnyConcreteTarget =
+      hasConcreteTargetAddress(sourceScript) ||
+      (scenarioTarget && hasConcreteTargetAddress(sourceScript, scenarioTarget));
+    if (hasAnyConcreteTarget) {
       targetCheck.status = "met";
-      targetCheck.evidence = scenarioTarget
-        ? `已经明确在对${scenarioTarget}说话`
-        : "已经直接称呼一个可识别的用户";
+      targetCheck.evidence = "已经直接称呼至少一个可识别的用户";
+      if (
+        typeof report.audience === "string" &&
+        /(?:点名太多|人名太多|对象太散|喊得(?:很)?散|撒网式点名|没有对准任何|没对准任何|没有明确对准|没明确对准|喊错人|逐个求熟人|逐个求人|虽然点名.{0,24}(?:没给|没有).{0,12}(?:角色|理由)|点名了.{0,24}(?:但|却).{0,16}(?:没给|没有).{0,12}(?:角色|理由)|喊了但没点着)/u.test(
+          report.audience
+        )
+      ) {
+        report.audience =
+          "她已经明确对到具体用户；同轮换人是正常扫场，重点看每一拍有没有接住现场反馈。";
+      }
     } else {
       if (targetCheck.status === "met") targetCheck.status = "partial";
-      targetCheck.evidence = scenarioTarget
-        ? `还没有明确在对${scenarioTarget}说话；这一项不检查理由、票差或上票动作`
-        : "还没有直接称呼一个可识别的用户；这一项不检查理由、票差或上票动作";
+      targetCheck.evidence =
+        "还没有直接称呼一个可识别的用户；这一项不检查理由、票差或上票动作";
     }
   }
 
@@ -966,33 +1325,56 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
   const viewerReason = sourceScript
     ? detectViewerReason(sourceScript, scenario)
     : { state: "unknown", evidence: "" };
+  const humanDriverReason = groundedHumanDriverReason(
+    report.round_dynamics,
+    sourceScript,
+    scenario
+  );
   if (userReasonCheck && viewerReason.state === "met") {
     // 观看内容、互动乐趣、选择权或兑现本身就是用户侧价值；评论/上票动作
     // 由 vote_instruction 单独检查，不能因为缺动作把这一项再卡一次。
     userReasonCheck.status = "met";
     userReasonCheck.evidence = viewerReason.evidence;
+  } else if (userReasonCheck && humanDriverReason) {
+    // 才艺、选择权不是唯一支点。模型若已用事实讲清归属、身份、保护、互惠等
+    // 参与机制，就不能再被旧的“只找内容诱饵”规则压成 partial。
+    userReasonCheck.status = "met";
+    userReasonCheck.evidence = humanDriverReason.evidence;
   } else if (userReasonCheck && viewerReason.state === "invalid") {
     if (userReasonCheck.status === "met") userReasonCheck.status = "partial";
-    userReasonCheck.evidence = `${viewerReason.evidence}；这一项只看观看、互动、选择或回应价值，不检查票差和上票动作`;
+    userReasonCheck.evidence = `${viewerReason.evidence}；还没有形成有事实支撑的人性参与支点`;
   } else if (userReasonCheck && userReasonCheck.status !== "met") {
     userReasonCheck.evidence =
-      "还没说清对方参与后能看到什么回应、得到什么乐趣或选择；这一项不检查票差和上票动作";
+      "还没形成有事实支撑的人性参与支点；才艺、保护、归属、身份、互惠等都可以成立";
+  }
+  if (
+    humanDriverReason &&
+    typeof report.card_why === "string" &&
+    /(?:(?:没有|没给|缺少|欠缺|不足|偏弱|缺一个).{0,32}(?:用户.{0,20}理由|参与理由|行动理由|参与支点|用户支点|支点|由头|诱饵|钩子)|为什么上票.{0,24}(?:停在|缺))/u.test(
+      report.card_why
+    )
+  ) {
+    report.card_why =
+      "本轮已经有事实支撑的人性参与支点；下一步重点是根据真实反馈判断继续强化、换人还是换角度，而不是机械补一个才艺交易。";
   }
   const hasSupportEvidence = userReasonCheck?.status === "met";
 
-  // “补一点/上几张”是动作，不是准确票差。模型偶发把动作数量当成当前差额时，
-  // 只做降级兜底；不根据 scenario 里的 votesNeeded 替主播补写她没说出口的数字。
+  // 数字只用于读取本轮反馈，不再是毕业门槛。这里只核对是否有明确、可立即执行的要票动作；
+  // “还差很多/冲一冲”若没有补、投、组、上等动作，仍不能被模型虚判为 met。
   const voteInstructionCheck = Array.isArray(report.structure_checks)
     ? report.structure_checks.find((item) => item && item.key === "vote_instruction")
     : null;
-  if (
-    sourceScript &&
-    voteInstructionCheck?.status === "met" &&
-    !hasExplicitVoteGap(sourceScript)
-  ) {
-    voteInstructionCheck.status = "partial";
-    voteInstructionCheck.evidence = "有上票动作，但主播原话没说准确还差多少票";
+  if (sourceScript && voteInstructionCheck) {
+    if (hasExplicitVoteInstruction(sourceScript)) {
+      // 可执行动作是可以从原话确定性核验的事实：模型漏判时向上纠正，避免数字门槛借尸还魂。
+      voteInstructionCheck.status = "met";
+      voteInstructionCheck.evidence = "原话已经递出观众能立即执行的要票动作";
+    } else if (voteInstructionCheck.status === "met") {
+      voteInstructionCheck.status = "partial";
+      voteInstructionCheck.evidence = "提到了票况，但还没有递出观众能立即执行的要票动作";
+    }
   }
+  const hasVoteInstruction = voteInstructionCheck?.status === "met";
 
   // 委婉请求与放低姿态是两条不同语义：普通“帮我+具体动作”不命中；
   // 显性乞求至少不能毕业，乞求叠加乞怜/依赖或明确自贬时再判整体方向错误。
@@ -1047,66 +1429,118 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
     }
   }
 
-  const allStructureMet =
-    Array.isArray(report.structure_checks) &&
-    report.structure_checks.length === STRUCTURE_CHECK_KEYS.length &&
-    report.structure_checks.every(
-      (item, index) =>
-        item && item.key === STRUCTURE_CHECK_KEYS[index] && item.status === "met"
-    );
+  // “新人难/不想早下去”是可能触发保护欲的脆弱线索，不等于求施舍。
+  // 模型若仍沿用旧口径道德化，按原话中的显性乞求证据纠偏；效果好坏交给票差反馈判断。
+  if (sourceScript && !hasLowPosture) {
+    const vulnerabilityCue =
+      /(?:平时(?:我)?(?:连)?(?:一个|一票|一颗).{0,6}(?:拿不到|拉不出)|新人.{0,8}(?:难|不容易)|(?:这|这些|\d+个?).{0,8}(?:对我)?(?:真的)?好难|我不想.{0,8}(?:下去|走|被淘汰))/u;
+    if (vulnerabilityCue.test(sourceScript)) {
+      if (
+        typeof report.card_why === "string" &&
+        /(?:低姿态|自贬|卖惨|等施舍|求人帮忙|求施舍)/u.test(report.card_why)
+      ) {
+        report.card_why =
+          "这轮要看人性支点、明确动作和真实反馈是否衔接；脆弱线索本身不是自贬，只有显性乞求或求施舍才是姿态问题。";
+      }
+      if (Array.isArray(report.line_reviews)) {
+        for (const review of report.line_reviews) {
+          if (
+            !review ||
+            typeof review.original !== "string" ||
+            !vulnerabilityCue.test(review.original) ||
+            typeof review.comment !== "string" ||
+            !/(?:低姿态|自贬|卖惨|等施舍|求施舍|求人的一方)/u.test(review.comment)
+          ) {
+            continue;
+          }
+          if (review.mark === "wrong") review.mark = "partial";
+          review.comment =
+            "这句是在递保护欲线索，不等于自贬；看后续票差是否继续下降，停住后再换角度。";
+        }
+      }
+    }
+  }
+
+  // 动作按整轮检查，不要求每一句都重复。模型若只因为某个收尾气氛句没有再次
+  // 说“组/投/补”就标 wrong，降为局部 partial；真正的强迫、乞求和红线仍保留 wrong。
+  if (hasVoteInstruction && Array.isArray(report.line_reviews)) {
+    for (const review of report.line_reviews) {
+      if (
+        !review ||
+        review.mark !== "wrong" ||
+        typeof review.comment !== "string" ||
+        !/(?:不是要票动作|没有.{0,8}(?:要票|上票|明确).{0,4}动作|动作丢了|泛泛.{0,6}喊话|观众不知道.{0,6}(?:做什么|怎么接))/u.test(
+          review.comment
+        )
+      ) {
+        continue;
+      }
+      review.mark = "partial";
+      review.comment =
+        "整轮已经有明确要票动作；这句只是承接偏泛，可以结合最新反馈把下一拍递得更具体。";
+    }
+  }
+
   const wrongCount = Array.isArray(report.line_reviews)
     ? report.line_reviews.filter((item) => item && item.mark === "wrong").length
     : 0;
   const hasWrong = wrongCount > 0;
-  // user_reason=met 已经代表她给出了站在用户角度的上票理由，可作为支点硬证据。
-  const structureGapCount = Array.isArray(report.structure_checks)
-    ? report.structure_checks.filter((item) => !item || item.status !== "met").length
-    : STRUCTURE_CHECK_KEYS.length;
+  // 五项继续完整返回给旧前端做能力地图，但毕业只看两个现场核心：
+  // 用户为什么愿意参与，以及主播有没有递出可执行的要票动作。
+  const coreGapCount = [hasSupportEvidence, hasVoteInstruction].filter((met) => !met).length;
   const lineReviewsContractValid = report._lineReviewsContractValid === true;
   const structureContractValid = report._structureContractValid === true;
   const safetyFieldsContractValid = report._safetyFieldsContractValid === true;
+  const roundDynamicsContractValid = report._roundDynamicsContractValid === true;
   const qualifiesForPassed =
-    allStructureMet &&
     hasSupportEvidence &&
+    hasVoteInstruction &&
     !hasWrong &&
     lineReviewsContractValid &&
     structureContractValid &&
     safetyFieldsContractValid &&
+    roundDynamicsContractValid &&
     !hasLowPosture &&
     !hasPersonaIssue &&
     !hasDetectedRedline &&
     !hasReportedRedline;
 
   if (report.verdict === "passed") {
-    if (!allStructureMet || !hasSupportEvidence || hasWrong || !lineReviewsContractValid || !structureContractValid || !safetyFieldsContractValid) {
+    if (!qualifiesForPassed) {
       report.verdict = "almost";
       const issues = [];
-      if (!allStructureMet) issues.push("五项结构还没齐");
-      if (allStructureMet && !hasSupportEvidence) issues.push("还没有有效上票支点");
+      if (!hasSupportEvidence) issues.push("还没有站在用户侧的参与理由");
+      if (!hasVoteInstruction) issues.push("还没有明确可执行的要票动作");
       if (hasWrong) issues.push("还有站错角度的句子");
       if (!lineReviewsContractValid) issues.push("逐句判断还不完整");
       if (!structureContractValid) issues.push("五项结构证据还不完整");
       if (!safetyFieldsContractValid) issues.push("安全字段还不完整");
-      report.verdict_reason = `${issues.join("，")}，先补好再过关。${report.verdict_reason || ""}`.trim();
+      if (!roundDynamicsContractValid) issues.push("本轮动态与人性驱动判断还不完整");
+      report.verdict_reason = `${issues.join("，")}，先补好再过关。`;
     }
   }
 
-  // 没有用户支点且同时缺两项以上，说明不是一句局部修改能救回来的稿子。
-  // 一项局部缺口仍保留 almost，避免把正在形成正确思路的新人直接打回不合格。
+  // 两个现场核心都没形成，或缺用户理由且还有多句站错角度，才说明整体方向要重立。
+  // 自我介绍、感谢、点名仍进入能力地图，但不再因为这些非核心项缺失把稿子打成 off。
   if (
     report.verdict === "almost" &&
     !hasSupportEvidence &&
-    (structureGapCount >= 2 || wrongCount >= 2)
+    (coreGapCount >= 2 || wrongCount >= 2)
   ) {
     report.verdict = "off";
     report.verdict_reason = `这版还没有站到用户角度，而且不止一处需要重做，先把上票支点和整体方向重新立住。${report.verdict_reason || ""}`.trim();
   }
 
-  // 文字毕业门槛是机械规则，不是模型的审美打分。若模型只因“还能更好”给 almost，
-  // 但五项、支点、逐句证据和安全门槛均已满足，后端必须稳定晋级为 passed。
+  // 文字毕业门槛是机械规则，不是模型的审美打分。只要两个核心能力、动态闭环、
+  // 逐句与安全契约全部满足，模型若仅因非核心结构或“还能更好”给 almost，
+  // 后端稳定晋级。模型明确判 off 仍保留，避免深层逻辑问题被两个状态位洗掉。
   if (report.verdict === "almost" && qualifiesForPassed) {
     report.verdict = "passed";
-    report.verdict_reason = "五项结构齐全，上票理由落到了用户身上，逐句没有站错角度，这版达到文字稿门槛。";
+    report.verdict_reason = "上票理由落到了用户身上，也递出了明确动作；本轮反馈和人性驱动读得完整，这版达到文字稿门槛。";
+  }
+  if (report.verdict === "passed" && ticketProgressSummary && humanDriverReason) {
+    report.one_thing =
+      "先看哪种人性驱动已经让票差发生变化；票差停住时再换驱动、换对象或换角度，不要机械重复同一句。";
   }
 
   // 同一份稿在不同票况下必须给新人不同策略锚点，避免模型偶尔输出通用点评。
@@ -1429,6 +1863,13 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
  */
 export function normalizeReport(report, sourceScript) {
   const str = (v, d = "") => (typeof v === "string" ? v : d);
+  const boundedText = (value, maxLength) =>
+    Array.from(
+      str(value)
+        .trim()
+        .replace(/[\u0000-\u001F\u007F]+/g, " ")
+        .replace(/\s+/g, " ")
+    ).slice(0, maxLength).join("");
   const compactWhitespace = (value) => String(value || "").replace(/\s+/g, "");
   const splitSentences = (value) => {
     const matches = String(value || "").match(
@@ -1544,6 +1985,28 @@ export function normalizeReport(report, sourceScript) {
     }
   }
 
+  // DeepSeek 有时按主播的自然段点评：每段判断和原文都完整，却把段内问号/感叹号
+  // 留在同一个 item。至少已经给出两个独立点评时，可以机械按硬标点拆开并沿用同一
+  // mark/comment；单条点评吞整篇仍保持 fail-closed，不能靠这一修复绕过逐句检查。
+  if (
+    lineReviewsShapeValid &&
+    typeof sourceScript === "string" &&
+    effectiveLineReviews.length >= 2
+  ) {
+    const splitReviews = effectiveLineReviews.flatMap((item) => {
+      const parts = splitSentences(item.original);
+      return parts.length > 1
+        ? parts.map((original) => ({ ...item, original }))
+        : [item];
+    });
+    if (
+      compactWhitespace(splitReviews.map((item) => item.original).join("")) ===
+      expectedScript
+    ) {
+      effectiveLineReviews = splitReviews;
+    }
+  }
+
   const reviewedScript = effectiveLineReviews
     .map((item) => (item && typeof item.original === "string" ? item.original : ""))
     .join("")
@@ -1594,6 +2057,52 @@ export function normalizeReport(report, sourceScript) {
   // 模型只有显式返回字符串（无问题时为空串），报告才有资格通过或被晋级。
   const safetyFieldsContractValid =
     typeof report.ai_flavor === "string" && typeof report.redline_note === "string";
+
+  // round_dynamics 是新增兼容字段：旧前端会自然忽略，更新后的前端可以直接渲染。
+  // 原始契约必须真实完整才有资格 passed；归一化只负责安全输出，不能替模型补证据。
+  const rawRoundDynamics =
+    report.round_dynamics &&
+    typeof report.round_dynamics === "object" &&
+    !Array.isArray(report.round_dynamics)
+      ? report.round_dynamics
+      : {};
+  const rawHumanDrivers = Array.isArray(rawRoundDynamics.human_drivers)
+    ? rawRoundDynamics.human_drivers
+    : [];
+  const roundDynamicsContractValid =
+    typeof rawRoundDynamics.flow_read === "string" &&
+    rawRoundDynamics.flow_read.trim().length > 0 &&
+    rawHumanDrivers.length >= 1 &&
+    rawHumanDrivers.length <= 3 &&
+    rawHumanDrivers.every(
+      (item) =>
+        item &&
+        typeof item === "object" &&
+        !Array.isArray(item) &&
+        HUMAN_DRIVER_ENUM.includes(item.driver) &&
+        typeof item.evidence === "string" &&
+        item.evidence.trim().length > 0 &&
+        typeof item.mechanism === "string" &&
+        item.mechanism.trim().length > 0
+    ) &&
+    typeof rawRoundDynamics.response_read === "string" &&
+    rawRoundDynamics.response_read.trim().length > 0 &&
+    typeof rawRoundDynamics.next_move === "string" &&
+    rawRoundDynamics.next_move.trim().length > 0;
+
+  const roundDynamics = {
+    flow_read: boundedText(rawRoundDynamics.flow_read, LIMITS.roundDynamicsTextMax),
+    human_drivers: rawHumanDrivers
+      .filter((item) => item && typeof item === "object" && !Array.isArray(item))
+      .slice(0, 3)
+      .map((item) => ({
+        driver: HUMAN_DRIVER_ENUM.includes(item.driver) ? item.driver : "other",
+        evidence: boundedText(item.evidence, LIMITS.driverEvidenceMax),
+        mechanism: boundedText(item.mechanism, LIMITS.driverMechanismMax),
+      })),
+    response_read: boundedText(rawRoundDynamics.response_read, LIMITS.roundDynamicsTextMax),
+    next_move: boundedText(rawRoundDynamics.next_move, LIMITS.roundDynamicsTextMax),
+  };
 
   if (!VERDICT_ENUM.includes(report.verdict)) {
     throw new HttpError(502, "报告格式出错，请重试", `verdict 非法: ${report.verdict}`);
@@ -1658,6 +2167,7 @@ export function normalizeReport(report, sourceScript) {
     card_type: report.card_type,
     card_why: str(report.card_why),
     audience: str(report.audience),
+    round_dynamics: roundDynamics,
     structure_checks: structureChecks,
     verdict: report.verdict,
     verdict_reason: str(report.verdict_reason),
@@ -1684,6 +2194,10 @@ export function normalizeReport(report, sourceScript) {
   });
   Object.defineProperty(normalized, "_safetyFieldsContractValid", {
     value: safetyFieldsContractValid,
+    enumerable: false,
+  });
+  Object.defineProperty(normalized, "_roundDynamicsContractValid", {
+    value: roundDynamicsContractValid,
     enumerable: false,
   });
   return normalized;
