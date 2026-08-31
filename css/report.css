@@ -261,6 +261,104 @@
   font-weight: 650;
 }
 
+.presenter-page .round-dynamics {
+  margin-top: 14px;
+  overflow: hidden;
+  border: 1px solid var(--stage-line);
+  border-top: 3px solid #9d7854;
+  background: rgba(255, 249, 238, 0.76);
+  box-shadow: 0 5px 16px rgba(76, 52, 45, 0.07);
+}
+.presenter-page .round-dynamics--passed { border-top-color: var(--stage-mint); }
+.presenter-page .round-dynamics__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 12px;
+  color: #704b2b;
+  background: #f4ece3;
+}
+.presenter-page .round-dynamics--passed .round-dynamics__head {
+  color: #146545;
+  background: var(--stage-mint-soft);
+}
+.presenter-page .round-dynamics__head strong {
+  font-size: var(--font-size-sm);
+  letter-spacing: 0.04em;
+}
+.presenter-page .round-dynamics__head span {
+  color: var(--stage-muted);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+}
+.presenter-page .round-dynamics__item {
+  display: grid;
+  grid-template-columns: 108px minmax(0, 1fr);
+  gap: 12px;
+  padding: 11px 12px;
+  border-top: 1px solid #eadfd2;
+}
+.presenter-page .round-dynamics__label {
+  margin: 0;
+  color: var(--stage-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 800;
+  line-height: 1.5;
+  letter-spacing: 0.03em;
+}
+.presenter-page .round-dynamics__copy {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--stage-text);
+  font-size: var(--font-size-sm);
+  line-height: 1.6;
+}
+.presenter-page .round-dynamics__driver-list {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.presenter-page .round-dynamics__driver {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+.presenter-page .round-dynamics__driver + .round-dynamics__driver {
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px dashed #ddcdbd;
+}
+.presenter-page .round-dynamics__driver-name {
+  display: inline-block;
+  padding: 2px 6px;
+  color: #fff8e9;
+  background: var(--stage-panel-soft);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.presenter-page .round-dynamics--passed .round-dynamics__driver-name {
+  color: #173a2e;
+  background: var(--stage-mint);
+}
+.presenter-page .round-dynamics__driver-detail { min-width: 0; }
+.presenter-page .round-dynamics__driver-detail p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--font-size-sm);
+  line-height: 1.55;
+}
+.presenter-page .round-dynamics__driver-mechanism {
+  margin-top: 3px !important;
+  color: var(--stage-muted);
+  font-size: var(--font-size-xs) !important;
+}
+
 .presenter-page .challenge-help {
   margin-top: 13px;
   padding: 0 14px;
@@ -381,6 +479,34 @@
 
 .presenter-page .training-goal--passed { border-left-color: var(--stage-mint); }
 .presenter-page .training-goal--passed > span { color: #147651; }
+.presenter-page .passed-structure-summary {
+  margin: 4px 0 18px;
+  padding: 11px 12px 12px;
+  border: 1px solid var(--stage-line);
+  background: rgba(255, 249, 238, 0.62);
+}
+.presenter-page .passed-structure-summary__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.presenter-page .passed-structure-summary__head strong { font-size: var(--font-size-sm); }
+.presenter-page .passed-structure-summary__head span {
+  color: var(--stage-muted);
+  font-size: var(--font-size-xs);
+}
+.presenter-page .passed-structure-summary .structure-track { margin: 10px 0 0; }
+.presenter-page .passed-structure-summary .structure-check--met {
+  color: #147651;
+  font-weight: 700;
+}
+.presenter-page .passed-structure-summary .structure-check--partial { color: #815b13; }
+.presenter-page .passed-structure-summary .structure-check--partial::before {
+  border-color: var(--stage-amber);
+  color: #6e4b1d;
+  background: var(--stage-warn-soft);
+}
 .presenter-page .passed-paper { border-top: 4px solid var(--stage-mint); }
 .presenter-page .passed-paper__head { color: #147651; }
 .presenter-page .passed-paper__head span:last-child { background: var(--stage-mint-soft); }
@@ -438,4 +564,6 @@
   .presenter-page .structure-track { gap: 2px; }
   .presenter-page .challenge-map { padding-inline: 10px; }
   .presenter-page .challenge-map__head { align-items: flex-start; flex-direction: column; gap: 2px; }
+  .presenter-page .round-dynamics__head { align-items: flex-start; flex-direction: column; gap: 1px; }
+  .presenter-page .round-dynamics__item { grid-template-columns: 1fr; gap: 5px; }
 }

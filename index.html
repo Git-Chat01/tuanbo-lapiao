@@ -71,8 +71,8 @@
 
         <section class="writing-desk" aria-labelledby="script-label">
           <label id="script-label" for="input-script">你会怎么接这颗球？</label>
-          <div class="structure-prompt" aria-label="新人话术结构提示">
-            <span>认识我</span><span>接礼物</span><span>点到人</span><span>给理由</span><span>票数指令</span>
+          <div class="structure-prompt" aria-label="现场话术动态链路">
+            <span>看现场</span><span>抓人性</span><span>递动作</span><span>看反馈</span><span>接下一拍</span>
           </div>
           <textarea id="input-script" class="script-input" maxlength="500" rows="8"
                     placeholder="把你现场真的会说的话写下来。不用先写对，教练会陪你只改一处。"></textarea>
@@ -103,16 +103,16 @@
 
       <section id="view-passed" class="training-view" aria-labelledby="passed-title">
         <div class="training-goal training-goal--passed">
-          <span>话术闯关 · 5/5</span>
-          <h1 id="passed-title">五关拿下，带着自己的话开口练</h1>
+          <span>核心逻辑已过关</span>
+          <h1 id="passed-title">这一轮可以开口练</h1>
         </div>
 
-        <div class="structure-track structure-track--passed" aria-label="五项话术结构均已达标">
-          <span>认识我</span><span>接礼物</span><span>点到人</span><span>给理由</span><span>票数指令</span>
-        </div>
+        <div id="passed-round-dynamics" hidden></div>
+
+        <div id="passed-structure-track" class="passed-structure-summary"></div>
 
         <section class="passed-paper">
-          <div class="passed-paper__head"><span>这一轮真正学会了</span><span>通关</span></div>
+          <div class="passed-paper__head"><span>这一轮真正学会了</span><span>逻辑过关</span></div>
           <div id="passed-learn"></div>
         </section>
 

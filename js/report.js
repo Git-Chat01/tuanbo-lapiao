@@ -6,9 +6,23 @@ var Report = {
     { key: "self_intro", label: "认识我" },
     { key: "gratitude", label: "接礼物" },
     { key: "target_user", label: "点到人" },
-    { key: "user_reason", label: "给理由" },
+    { key: "user_reason", label: "给参与理由" },
     { key: "vote_instruction", label: "票数指令" },
   ],
+
+  DRIVER_LABELS: {
+    visibility: "被看见",
+    status: "身份与排面",
+    protection: "守护欲",
+    belonging: "归属感",
+    control: "掌控感",
+    curiosity: "好奇心",
+    competition: "胜负欲",
+    social_proof: "跟随与从众",
+    reciprocity: "互惠感",
+    urgency: "紧迫感",
+    other: "其他驱动",
+  },
 
   CHALLENGES: {
     self_intro: {
@@ -698,7 +712,7 @@ var Report = {
     if (!text || !focus) return text;
     if (
       focus.key === "target_user" &&
-      (Report._hasHiddenActionRequirement(text, focus.key) || /(给理由|参与后|乐趣|选择权|票差|还差\s*\d)/.test(text))
+      (Report._hasHiddenActionRequirement(text, focus.key) || /(给(?:参与)?理由|参与后|乐趣|选择权|票差|还差\s*\d)/.test(text))
     ) {
       return "这句还没有明确说给当前目标用户；本关只核对称呼，不检查理由、票差或动作。";
     }
@@ -756,6 +770,123 @@ var Report = {
     return list;
   },
 
+  _roundDynamicsText: function (value) {
+    return typeof value === "string" ? value.trim() : "";
+  },
+
+  _roundDynamicsDriverLabel: function (driver) {
+    var key = Report._roundDynamicsText(driver);
+    return Object.prototype.hasOwnProperty.call(Report.DRIVER_LABELS, key)
+      ? Report.DRIVER_LABELS[key]
+      : Report.DRIVER_LABELS.other;
+  },
+
+  _roundDynamicsTextItem: function (label, text, className) {
+    if (!text) return null;
+    var item = Report._el("article", "round-dynamics__item" + (className ? " " + className : ""));
+    item.appendChild(Report._el("h3", "round-dynamics__label", label));
+    item.appendChild(Report._el("p", "round-dynamics__copy", text));
+    return item;
+  },
+
+  _roundDynamics: function (report) {
+    var dynamics = report && report.round_dynamics;
+    if (!dynamics || typeof dynamics !== "object" || Array.isArray(dynamics)) return null;
+
+    var flowRead = Report._roundDynamicsText(dynamics.flow_read);
+    var responseRead = Report._roundDynamicsText(dynamics.response_read);
+    var nextMove = Report._roundDynamicsText(dynamics.next_move);
+    var drivers = [];
+    var incomingDrivers = Array.isArray(dynamics.human_drivers) ? dynamics.human_drivers : [];
+
+    incomingDrivers.forEach(function (item) {
+      if (drivers.length >= 3) return;
+      if (!item || typeof item !== "object" || Array.isArray(item)) return;
+      var driver = Report._roundDynamicsText(item.driver);
+      var evidence = Report._roundDynamicsText(item.evidence);
+      var mechanism = Report._roundDynamicsText(item.mechanism);
+      if (!driver || (!evidence && !mechanism)) return;
+      drivers.push({
+        label: Report._roundDynamicsDriverLabel(driver),
+        evidence: evidence,
+        mechanism: mechanism,
+      });
+    });
+
+    if (!flowRead && !drivers.length && !responseRead && !nextMove) return null;
+
+    var sectionClass = "round-dynamics" + (report.verdict === "passed" ? " round-dynamics--passed" : "");
+    var section = Report._el("section", sectionClass);
+    section.setAttribute("aria-label", "这一轮的现场拆解");
+
+    var head = Report._el("div", "round-dynamics__head");
+    head.appendChild(Report._el("strong", null, "现场拆解"));
+    head.appendChild(Report._el("span", null, "读场 → 读人 → 下一拍"));
+    section.appendChild(head);
+
+    var flowItem = Report._roundDynamicsTextItem("这一轮发生了什么", flowRead, "round-dynamics__item--flow");
+    if (flowItem) section.appendChild(flowItem);
+
+    if (drivers.length) {
+      var driverItem = Report._el("article", "round-dynamics__item round-dynamics__item--drivers");
+      driverItem.appendChild(Report._el("h3", "round-dynamics__label", "调动了什么人性"));
+      var driverList = Report._el("ul", "round-dynamics__driver-list");
+      drivers.forEach(function (driver) {
+        var row = Report._el("li", "round-dynamics__driver");
+        row.appendChild(Report._el("span", "round-dynamics__driver-name", driver.label));
+        var detail = Report._el("div", "round-dynamics__driver-detail");
+        if (driver.evidence) {
+          detail.appendChild(Report._el("p", "round-dynamics__driver-evidence", driver.evidence));
+        }
+        if (driver.mechanism) {
+          detail.appendChild(Report._el("p", "round-dynamics__driver-mechanism", "作用：" + driver.mechanism));
+        }
+        row.appendChild(detail);
+        driverList.appendChild(row);
+      });
+      driverItem.appendChild(driverList);
+      section.appendChild(driverItem);
+    }
+
+    var responseItem = Report._roundDynamicsTextItem("用户反馈怎么读", responseRead, "round-dynamics__item--response");
+    if (responseItem) section.appendChild(responseItem);
+    var nextItem = Report._roundDynamicsTextItem("下一拍", nextMove, "round-dynamics__item--next");
+    if (nextItem) section.appendChild(nextItem);
+
+    return section;
+  },
+
+  _renderPassedRoundDynamics: function (report) {
+    var root = document.getElementById("passed-round-dynamics");
+    if (!root) return;
+    Report._clear(root);
+    var section = Report._roundDynamics(report);
+    if (!section) {
+      root.hidden = true;
+      return;
+    }
+    root.appendChild(section);
+    root.hidden = false;
+  },
+
+  _renderPassedStructure: function (progress) {
+    var root = document.getElementById("passed-structure-track");
+    if (!root) return;
+    Report._clear(root);
+    var checks = progress && Array.isArray(progress.checks) ? progress.checks : [];
+    if (!checks.length) {
+      root.hidden = true;
+      return;
+    }
+
+    var head = Report._el("div", "passed-structure-summary__head");
+    head.appendChild(Report._el("strong", null, "本轮能力状态"));
+    head.appendChild(Report._el("span", null, progress.metCount + "/5 已做到"));
+    root.appendChild(head);
+    root.appendChild(Report._structureTrack(checks, null));
+    root.hidden = false;
+  },
+
   _showRedlineBanner: function (note) {
     var banner = document.getElementById("redline-banner");
     banner.textContent = note ? "不能带进直播间：" + note : "";
@@ -780,6 +911,8 @@ var Report = {
     content.appendChild(Report._heading(report, focus, progress));
     content.appendChild(Report._challengeMap(checks, focus, progress));
     content.appendChild(Report._focusPaper(report, focus, progress));
+    var roundDynamics = Report._roundDynamics(report);
+    if (roundDynamics) content.appendChild(roundDynamics);
     var help = Report._helpPanel(report, focus, progress);
     if (help) content.appendChild(help);
     content.appendChild(Report._revisionDesk(focus, progress));
@@ -798,13 +931,14 @@ var Report = {
     if (passedGoal) {
       var passedEyebrow = passedGoal.querySelector("span");
       var passedTitle = passedGoal.querySelector("h1");
-      if (passedEyebrow) passedEyebrow.textContent = "话术闯关 · 5/5";
-      if (passedTitle) passedTitle.textContent = "第 " + progress.totalAttempts + " 次挑战，五关全部拿下";
+      if (passedEyebrow) passedEyebrow.textContent = "核心逻辑已过关";
+      if (passedTitle) passedTitle.textContent = "第 " + progress.totalAttempts + " 次挑战，这一轮可以开口练";
     }
+    Report._renderPassedStructure(progress);
 
     var learn = document.getElementById("passed-learn");
     Report._clear(learn);
-    var main = report.verdict_reason || "五项结构都接住了，这版可以拿去练开口。";
+    var main = report.verdict_reason || "参与理由和上票动作已经站稳，这一轮可以拿去练开口。";
     learn.appendChild(Report._el("p", null, main));
     var achievement = Report._passAchievement(progress);
     if (achievement) learn.appendChild(Report._el("p", "passed-new-skill", achievement));
@@ -812,8 +946,9 @@ var Report = {
     learn.appendChild(Report._el(
       "p",
       "passed-self-check",
-      "以后自己检查五件事：我是谁、接住谁、话给谁、为什么上、怎么上。"
+      "以后自己走这条链路：看现场、抓人性、递动作、看反馈、接下一拍。"
     ));
+    Report._renderPassedRoundDynamics(report);
 
     App.showView("passed");
   },
