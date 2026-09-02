@@ -74,10 +74,23 @@ assert.match(prompt.SYSTEM_PROMPT, /单次出现"既然\/每一\/到底".{0,40}�
 assert.match(prompt.SYSTEM_PROMPT, /ai_flavor 至少逐字引用两处原句/u);
 assert.match(prompt.SYSTEM_PROMPT, /原稿是“A；B。”.{0,80}“A；”和“B。”/u);
 assert.match(prompt.SYSTEM_PROMPT, /(?:组一个|帮一把|投一票).{0,120}vote_instruction.{0,80}met/u);
-assert.match(prompt.SYSTEM_PROMPT, /recentGift 只证明这个用户刚才支持过.{0,120}不能把过去送礼直接当 user_reason/u);
+assert.match(prompt.SYSTEM_PROMPT, /recentGift 或 timeline 里的 gift 只证明可观察到的送礼\/付费参与/u);
+assert.match(prompt.SYSTEM_PROMPT, /不能自动推成支持、喜欢或关系态度/u);
+assert.match(prompt.SYSTEM_PROMPT, /不能把过去动作直接当 user_reason/u);
 assert.match(prompt.SYSTEM_PROMPT, /20.{0,80}18.{0,80}8.{0,160}(?:整轮|递减|进展|反馈)/u);
 assert.match(prompt.SYSTEM_PROMPT, /target_user \/ user_reason \/ vote_instruction 是三项彼此独立的原子能力/u);
-assert.match(prompt.SYSTEM_PROMPT, /第 3 项只看有没有明确对到人.{0,80}第 4 项只看有没有给用户侧价值.{0,80}第 5 项只看有没有明确上票动作/u);
+assert.match(prompt.SYSTEM_PROMPT, /第 3 项只看有没有明确对到人.{0,80}第 4 项只看有没有给用户侧价值.{0,100}第 5 项看有没有递出“当前阶段能执行的动作”/u);
+assert.match(prompt.SYSTEM_PROMPT, /“刀 \/ 刺 \/ 刺客 \/ 刀门”是本轮给主播上“下去票”的玩法动作/u);
+assert.match(prompt.SYSTEM_PROMPT, /已经确认占位的数量.{0,120}未报数但直接送出/u);
+assert.match(prompt.SYSTEM_PROMPT, /“加一个”.{0,80}累计追加 1/u);
+assert.match(prompt.SYSTEM_PROMPT, /“28活”表示本轮需要 28 个约定的复活礼物单位/u);
+assert.match(prompt.SYSTEM_PROMPT, /“抹零”.{0,120}差 15 时认领 5 个、差 14 时认领 4 个/u);
+assert.match(prompt.SYSTEM_PROMPT, /现场拉票自然口径说“多少个 \/ 多少手”.{0,40}不要教新人说“多少份”/u);
+assert.match(prompt.SYSTEM_PROMPT, /“医药费”.{0,120}不是真实债务/u);
+assert.match(prompt.SYSTEM_PROMPT, /phase=awaiting_drop.{0,180}等主持统一口令/u);
+assert.match(prompt.SYSTEM_PROMPT, /phase=delivery.{0,180}实际到账.{0,80}不再继续等/u);
+assert.match(prompt.SYSTEM_PROMPT, /复活倒计时由主持.{0,100}动态把控/u);
+assert.match(prompt.SYSTEM_PROMPT, /rank\/TOP 公告只是榜单结果播报/u);
 assert.match(prompt.SYSTEM_PROMPT, /(?:多个用户|切换用户|人名切换|轮流点名).{0,160}(?:不能|不得).{0,80}(?:错人|不匹配|降级)/u);
 assert.match(prompt.SYSTEM_PROMPT, /"凯哥，谢谢你刚才的小心心".{0,60}两项都可判 met/u);
 assert.match(prompt.SYSTEM_PROMPT, /不要求再加"扣1"或"补一票"/u);
@@ -1705,6 +1718,226 @@ assert.throws(
   () => index.sanitizeScenario({ hostCue: "话".repeat(161) }),
   (err) => err.status === 400
 );
+
+const structuredScenario = index.sanitizeScenario({
+  id: " revival-last-one ",
+  roleContext: " 你是台上复活主播 ",
+  phase: "awaiting_drop",
+  goalUnit: "个（1个=99票复活礼物）",
+  targetUnits: 28,
+  pledgedUnits: 28,
+  openRemaining: 0,
+  deliveredUnits: 0.5,
+  timeline: [
+    {
+      at: 1,
+      role: "viewer",
+      kind: "direct_gift",
+      speaker: " 神秘人A ",
+      text: " 直接送出最后半个 ",
+      effect: "revive",
+      progress: { injected: true },
+    },
+  ],
+});
+assert.deepEqual(structuredScenario, {
+  id: "revival-last-one",
+  roleContext: "你是台上复活主播",
+  phase: "awaiting_drop",
+  goalUnit: "个（1个=99票复活礼物）",
+  targetUnits: 28,
+  pledgedUnits: 28,
+  openRemaining: 0,
+  deliveredUnits: 0.5,
+  timeline: [
+    {
+      at: 1,
+      role: "viewer",
+      kind: "direct_gift",
+      speaker: "神秘人A",
+      text: "直接送出最后半个",
+      effect: "revive",
+    },
+  ],
+});
+assert.doesNotMatch(index.scenarioEvidenceText(structuredScenario), /\[object Object\]/u);
+assert.match(index.scenarioEvidenceText(structuredScenario), /神秘人A/u);
+assert.throws(
+  () => index.sanitizeScenario({ phase: "invented" }),
+  (err) => err.status === 400
+);
+assert.throws(
+  () => index.sanitizeScenario({ targetUnits: 28, pledgedUnits: 20, openRemaining: 9 }),
+  (err) => err.status === 400
+);
+assert.throws(
+  () => index.sanitizeScenario({ targetUnits: 28, pledgedUnits: 10, deliveredUnits: 11 }),
+  (err) => err.status === 400
+);
+assert.throws(
+  () => index.sanitizeScenario({
+    timeline: Array.from({ length: 25 }, (_, i) => ({
+      at: i,
+      role: "viewer",
+      kind: "chat",
+      speaker: "用户",
+      text: "现场",
+    })),
+  }),
+  (err) => err.status === 400
+);
+
+const structuredPrompt = prompt.buildUserPrompt(
+  "close",
+  "队已经组齐，大家先别提前丢，等主持口令统一丢。",
+  [],
+  [],
+  structuredScenario
+);
+assert.match(structuredPrompt, /当前阶段：组满等待发令/u);
+assert.match(structuredPrompt, /已确认占位：28/u);
+assert.match(structuredPrompt, /实际已到账：0.5/u);
+assert.match(structuredPrompt, /\[1\]\[观众｜直接送出｜复活方向\] 神秘人A/u);
+assert.match(structuredPrompt, /公开认领和未报数直接送出都可占位/u);
+
+const deliveryGood = makeRawReport();
+index.applyReportSafetyGates(deliveryGood, [], {
+  sourceScript: "队伍组齐了，大家先别提前丢，按刚才认领等主持口令统一丢。",
+  scenario: { phase: "awaiting_drop" },
+});
+assert.equal(
+  deliveryGood.structure_checks.find((item) => item.key === "vote_instruction").status,
+  "met",
+  "组满后明确等待主持统一发令，才是当前阶段正确动作"
+);
+
+const deliveryWaitOnly = makeRawReport();
+index.applyReportSafetyGates(deliveryWaitOnly, [], {
+  sourceScript: "队伍组满了，大家等主持统一口令。",
+  scenario: { phase: "awaiting_drop" },
+});
+assert.equal(
+  deliveryWaitOnly.structure_checks.find((item) => item.key === "vote_instruction").status,
+  "met",
+  "组满后明确等主持统一口令本身就是当前可执行动作"
+);
+
+for (const closingAction of [
+  "现在还差最后一个，愿意的帮我认一个。",
+  "最后一手了，谁愿意帮我抓一下最后位置。",
+  "现在差十五个，哥帮我抹个零。",
+  "还有一半，谁愿意把这一半接一下。",
+]) {
+  const closingActionReport = makeRawReport();
+  index.applyReportSafetyGates(closingActionReport, [], {
+    sourceScript: closingAction,
+    scenario: { phase: "closing" },
+  });
+  assert.equal(
+    closingActionReport.structure_checks.find((item) => item.key === "vote_instruction").status,
+    "met",
+    `“${closingAction}”已经递出了收口阶段可执行的认领动作`
+  );
+}
+
+const deliveryContradictoryAdvice = makeRawReport({
+  one_thing: "再问一个人能不能补位。",
+  direction: {
+    summary: "先等主持口令，同时看看还有谁愿意再补位。",
+    examples: [
+      "大家按刚才认领等主持口令统一丢。",
+      "观众丙要不要再补一个？",
+    ],
+  },
+  round_dynamics: validRoundDynamics({
+    next_move: "确认观众甲已到账一个，并再次强调其余人等主持口令，同时试探观众丙是否愿意补位。",
+  }),
+});
+index.applyReportSafetyGates(deliveryContradictoryAdvice, [], {
+  sourceScript: "队伍已经组齐，大家按刚才认领等主持口令统一丢。",
+  voteGap: "secured",
+  scenario: { phase: "awaiting_drop" },
+});
+assert.match(deliveryContradictoryAdvice.round_dynamics.next_move, /组满.{0,40}主持统一口令/u);
+assert.doesNotMatch(deliveryContradictoryAdvice.round_dynamics.next_move, /试探|谁愿意|继续.{0,6}补位/u);
+assert.match(deliveryContradictoryAdvice.direction.summary, /组满.{0,40}主持统一口令/u);
+assert.doesNotMatch(deliveryContradictoryAdvice.direction.summary, /稳票保位|谁愿意|继续.{0,6}补位/u);
+assert.deepEqual(deliveryContradictoryAdvice.direction.examples, [
+  "大家按刚才认领等主持口令统一丢。",
+]);
+assert.match(deliveryContradictoryAdvice.one_thing, /停止拉新认领.{0,30}主持统一发令/u);
+
+for (const wrongDeliveryAction of [
+  "先等主持统一口令，谁来抓一下最后一个。",
+  "组满了，我再认一手。",
+  "不用等主持了，大家现在直接丢。",
+  "队组齐了，大家按刚才认领一起丢。",
+  "最后一个抓到了，那就丢。",
+  "组满了，大家一起丢。",
+]) {
+  const wrongDeliveryReport = makeRawReport();
+  index.applyReportSafetyGates(wrongDeliveryReport, [], {
+    sourceScript: wrongDeliveryAction,
+    scenario: { phase: "awaiting_drop" },
+  });
+  assert.equal(
+    wrongDeliveryReport.structure_checks.find((item) => item.key === "vote_instruction").status,
+    "partial",
+    `“${wrongDeliveryAction}”与组满待主持发令的阶段冲突`
+  );
+  assert.match(wrongDeliveryReport.card_why, /组满待发令/u);
+}
+
+const deliveryConflict = makeRawReport();
+index.applyReportSafetyGates(deliveryConflict, [], {
+  sourceScript: "现在已经组满了，看看还有谁来再补一个。",
+  scenario: { phase: "awaiting_drop" },
+});
+assert.equal(
+  deliveryConflict.structure_checks.find((item) => item.key === "vote_instruction").status,
+  "partial"
+);
+assert.match(deliveryConflict.card_why, /组满待发令/u);
+
+const activeDeliveryGood = makeRawReport({
+  round_dynamics: validRoundDynamics({ next_move: "主持已经发令，继续接住实际到账并感谢。" }),
+  direction: { summary: "按实际到账接住原占位兑现并感谢。", examples: [] },
+  one_thing: "只认真实到账，接住原占位兑现。",
+});
+index.applyReportSafetyGates(activeDeliveryGood, [], {
+  sourceScript: "主持口令已经到了，刚才认好的现在按约定丢；谢谢大家，我按实际到账一个个接住。",
+  scenario: { phase: "delivery" },
+});
+assert.equal(
+  activeDeliveryGood.structure_checks.find((item) => item.key === "vote_instruction").status,
+  "met",
+  "主持发令后应接住原占位的实际兑现"
+);
+assert.doesNotMatch(activeDeliveryGood.round_dynamics.next_move, /继续等.{0,8}主持/u);
+
+const activeDeliveryStillWaiting = makeRawReport({
+  round_dynamics: validRoundDynamics({ next_move: "继续等主持口令。" }),
+  direction: { summary: "大家继续等主持口令。", examples: [] },
+});
+index.applyReportSafetyGates(activeDeliveryStillWaiting, [], {
+  sourceScript: "主持已经喊了那就丢，刚才占位的按约定兑现，我接住大家的到账。",
+  scenario: { phase: "delivery" },
+});
+assert.match(activeDeliveryStillWaiting.round_dynamics.next_move, /主持已经发令.{0,60}实际到账/u);
+assert.doesNotMatch(activeDeliveryStillWaiting.round_dynamics.next_move, /继续等/u);
+
+for (const completedPhase of ["result", "post_round"]) {
+  const completedReport = makeRawReport();
+  index.applyReportSafetyGates(completedReport, [], {
+    sourceScript: "谢谢大家刚才一起把这一关拿下了，你们的出手我都记住了。",
+    scenario: { phase: completedPhase },
+  });
+  assert.equal(
+    completedReport.structure_checks.find((item) => item.key === "vote_instruction").status,
+    "met",
+    `${completedPhase} 阶段的当前动作是结果与关系承接，不是继续拉票`
+  );
+}
 
 const referencePrompt = prompt.buildUserPrompt(
   "close",

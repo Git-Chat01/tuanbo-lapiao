@@ -762,6 +762,119 @@ function testCoachCodeIsSessionScoped() {
   assert.equal(localStorageTouched, false, "管理码不应写入跨会话 localStorage");
 }
 
+function testRevivalScenariosKeepFactsAndStagesSeparate() {
+  const context = createBrowserContext({
+    URL,
+    URLSearchParams,
+    location: { hostname: "git-chat01.github.io", search: "" },
+    App: { state: { freeMode: false } },
+  });
+  loadScript(context, "site/js/config.js");
+  loadScript(context, "site/js/form.js");
+
+  const scenarios = Array.from(context.TRAINING_SCENARIOS);
+  const condition = scenarios.find((item) => item.id === "revival-medical-condition-01");
+  const closing = scenarios.find((item) => item.id === "revival-closing-last-two");
+  const delivery = scenarios.find((item) => item.id === "revival-awaiting-drop-01");
+  assert.ok(condition && closing && delivery, "真实复活链应拆成三个可独立练习的现场切片");
+  assert.equal(context.DEFAULT_TRAINING_SCENARIO_ID, "revival-closing-last-two");
+
+  assert.deepEqual(
+    [condition.targetUnits, condition.initialProgress.pledgedUnits, condition.initialProgress.openRemaining],
+    [28, 18, 10],
+    "医药费条件切片应从还差10个开始"
+  );
+  assert.equal(condition.timeline.find((item) => item.kind === "pledge").text, "5");
+  assert.equal(condition.deliveredUnits, 0, "口头认领不能伪装成礼物到账");
+
+  const increment = closing.timeline.find((item) => item.kind === "pledge_increment");
+  assert.equal(increment.text, "加一个。");
+  assert.deepEqual(
+    [increment.progress.pledgedUnits, increment.progress.openRemaining],
+    [27, 1],
+    "追加1个后应从差2更新为差1"
+  );
+
+  assert.equal(delivery.phase, "awaiting_drop");
+  assert.deepEqual(
+    [delivery.pledgedUnits, delivery.openRemaining, delivery.deliveredUnits],
+    [28, 0, 1],
+    "组满切片必须同时展示占位满额、待占位为0、实际到账仅1个"
+  );
+  assert.match(delivery.hostCue, /主持.*那就丢/u);
+
+  context.Form._scenario = delivery;
+  const payload = context.Form._scenarioPayload();
+  assert.equal(payload.phase, "awaiting_drop");
+  assert.equal(payload.targetUnits, 28);
+  assert.equal(payload.timeline[1].kind, "direct_gift");
+  assert.equal(Object.prototype.hasOwnProperty.call(payload.timeline[1], "progress"), false, "UI进度动画不能混入Worker事实契约");
+  assert.equal(Object.prototype.hasOwnProperty.call(payload, "selectorLabel"), false, "纯展示字段不能发给模型");
+  assert.doesNotMatch(JSON.stringify([condition, closing, delivery]), /份/u, "模拟现场的数量口径必须使用个/手，不能出现份");
+
+  const formSource = readFileSync(resolve(projectRoot, "site/js/form.js"), "utf8");
+  assert.match(formSource, /scenarioDrafts/u, "不同现场应分别保存草稿");
+  assert.match(formSource, /_requestScenarioId/u, "相同文案换了场景后应允许重新批改");
+
+  const reportContext = createBrowserContext({ App: { state: { lastRequest: { scenario: { phase: "awaiting_drop" } } } } });
+  loadScript(reportContext, "site/js/report.js");
+  assert.doesNotMatch(reportContext.Report.CHALLENGES.vote_instruction.standard, /准确票差/u);
+  assert.match(reportContext.Report._solutionFor({}, { key: "vote_instruction" }), /等主持统一口令/u);
+  assert.match(
+    reportContext.Report._guidanceFor({}, { key: "vote_instruction", label: "当下动作" }, { checks: [] }).gap,
+    /不能继续找人补位/u
+  );
+
+  reportContext.App.state.lastRequest.scenario.phase = "delivery";
+  assert.match(reportContext.Report._solutionFor({}, { key: "vote_instruction" }), /主持已经发令/u);
+  assert.doesNotMatch(reportContext.Report._solutionFor({}, { key: "vote_instruction" }), /等主持统一口令/u);
+
+  reportContext.App.state.lastRequest.scenario.phase = "closing";
+  const phaseChecks = reportContext.Report._checks({
+    verdict: "almost",
+    structure_checks: [
+      { key: "self_intro", status: "missing", evidence: "没自我介绍" },
+      { key: "gratitude", status: "met", evidence: "接住追加" },
+      { key: "target_user", status: "missing", evidence: "没有点名" },
+      { key: "user_reason", status: "met", evidence: "共同闯关" },
+      { key: "vote_instruction", status: "partial", evidence: "动作还差一点" },
+    ],
+  });
+  assert.equal(phaseChecks.find((item) => item.key === "self_intro").status, "na", "中途收口不应教新人重做自我介绍");
+  assert.equal(phaseChecks.find((item) => item.key === "target_user").status, "na", "对全场收口时不应强迫点一个具体人");
+  assert.equal(reportContext.Report._focusCheck(phaseChecks, { verdict: "almost", line_reviews: [] }).key, "vote_instruction");
+}
+
+function testReplayMustFinishBeforeGuidedSubmission() {
+  const submitLabel = { textContent: "" };
+  const submitButton = { disabled: false, querySelector() { return submitLabel; } };
+  const scriptCount = { textContent: "" };
+  const context = createBrowserContext({
+    LIMITS: { scriptMax: 500 },
+    App: { state: { freeMode: false, lastReport: null, lastRequest: null } },
+    document: {
+      getElementById(id) {
+        if (id === "btn-submit") return submitButton;
+        if (id === "script-count") return scriptCount;
+        return null;
+      },
+    },
+  });
+  loadScript(context, "site/js/form.js");
+  context.Form._scenario = { id: "scene-a", timeline: [{ at: 0 }] };
+  context.Form.collect = () => ({ script: "这是一段已经足够长的现场话术", scenario: { id: "scene-a" }, mode: "guided" });
+  context.Form.validate = () => null;
+  context.Form._replayCompleted = false;
+  context.Form._updateInputState();
+  assert.equal(submitButton.disabled, true, "回放未完成时不能让AI按终局批改");
+  assert.equal(submitLabel.textContent, "先播放现场");
+
+  context.Form._replayCompleted = true;
+  context.Form._updateInputState();
+  assert.equal(submitButton.disabled, false, "回放完成后应允许提交");
+  assert.equal(submitLabel.textContent, "帮我看这版");
+}
+
 try {
   testApiOverrideCannotExfiltrateCodes();
   testAccessCodeSurvivesStorageFailure();
@@ -778,6 +891,8 @@ try {
   testDefaultScenarioGuidanceIsConcreteAndHuman();
   await testCoachTabResponsesStayInTheirOwnTab();
   testCoachCodeIsSessionScoped();
+  testRevivalScenariosKeepFactsAndStagesSeparate();
+  testReplayMustFinishBeforeGuidedSubmission();
   console.log("PASS");
 } catch (error) {
   console.error(error && error.stack ? error.stack : error);

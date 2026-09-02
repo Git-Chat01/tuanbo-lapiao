@@ -29,7 +29,7 @@ const candidate = {
   deleted: false,
 };
 
-const structure = ({ targetMet, reasonMet, voteMet }) => [
+const structure = ({ targetMet, reasonMet, voteMet, waitingForHost }) => [
   { key: "self_intro", status: "met", evidence: "“我是首播的小满，今天想把新舞留给你们看”" },
   { key: "gratitude", status: "met", evidence: "“谢谢凯哥刚才的小心心”" },
   {
@@ -45,19 +45,30 @@ const structure = ({ targetMet, reasonMet, voteMet }) => [
   {
     key: "vote_instruction",
     status: voteMet ? "met" : "partial",
-    evidence: voteMet ? "明确说还差 320 票并给出补票动作" : "还缺准确票差或可执行的上票动作",
+    evidence: voteMet
+      ? (waitingForHost ? "组满后明确等待主持统一口令" : "已经给出当前可执行的上票动作")
+      : (waitingForHost ? "组满后还没把统一发令交还主持" : "还缺当前可执行的上票动作"),
   },
 ];
 
-const reportFor = (script) => {
+const reportFor = (script, scenario = {}) => {
   // 本地假接口也按三个原子能力判断，避免浏览器回归掩盖生产上的交叉门槛。
   const targetMet = /(?:^|[，。！？!?；;])(?:那|我问下)?凯哥(?:啊|呀|嘛|呢)?(?=[，。！？!?：:你])/u.test(script);
   const reasonMet =
     !/(?:不|别|没|不想|不愿).{0,4}(?:撒娇|返场|新舞|表演|回应)/u.test(script) &&
     /(?:撒娇|返场|新舞|跳完|才艺|表演|整活|好玩|有意思|你来选|你决定|你说了算|当导演|复活后|点的节目)/u.test(script);
-  const voteMet = /还差\s*320\s*票/u.test(script) && /(?:补|上票|投票|跟上|跟一点)/u.test(script);
+  const waitingForHost = scenario.phase === "awaiting_drop";
+  const delivering = scenario.phase === "delivery";
+  const completedRound = scenario.phase === "result" || scenario.phase === "post_round";
+  const voteMet = waitingForHost
+    ? /(?:等|听|按).{0,8}主持.{0,10}(?:口令|喊|发令)|(?:别|不要).{0,8}(?:提前)?丢/u.test(script)
+    : delivering
+      ? /(?:按.{0,8}(?:约定|认领).{0,10}(?:丢|送|上|兑现)|谢谢|感谢|到账|接住)/u.test(script)
+      : completedRound
+        ? /(?:谢谢|感谢|一起.{0,8}(?:拿下|完成)|我记住)/u.test(script)
+        : /(?:补|上票|投票|跟上|跟一点|认一(?:个|手)|组一组|抹(?:个)?零|接一半|助力)/u.test(script);
   const passed = targetMet && reasonMet && voteMet;
-  const checks = structure({ targetMet, reasonMet, voteMet });
+  const checks = structure({ targetMet, reasonMet, voteMet, waitingForHost });
   const focus = !targetMet ? "target" : (!reasonMet ? "reason" : "vote");
   return {
     card_type: "logic",
@@ -67,7 +78,7 @@ const reportFor = (script) => {
           ? "你已经写出人物，只差让凯哥听出这句话是在对他说。"
           : (focus === "reason"
               ? "你已经对准凯哥，只差接住他想看撒娇的现场信号。"
-              : "前四项已经齐了，只差准确票差和上票动作。")),
+              : (waitingForHost ? "前四项已经齐了，只差把统一发令交还主持。" : "前四项已经齐了，只差当前上票动作。"))),
     audience: "在对刚刚送礼并接梗的凯哥说，也给看戏的人留了参与入口。",
     structure_checks: checks,
     verdict: passed ? "passed" : "almost",
@@ -77,7 +88,7 @@ const reportFor = (script) => {
           ? "感谢已经接住了，这次只把一句话明确说给凯哥。"
           : (focus === "reason"
               ? "点到凯哥已经过关，这次只说他参与后能看到什么回应。"
-              : "前四项不用再改，只补准确票差和上票动作。")),
+              : (waitingForHost ? "前四项不用再改，只补等待主持统一口令。" : "前四项不用再改，只补当前上票动作。"))),
     echo: "你想接住刚才送礼物的凯哥，再请大家帮你补最后一段票。",
     line_reviews: [
       { original: script, mark: passed ? "good" : "partial", comment: passed ? "这次把互动和补票动作接到了一起。" : "感谢接住了，但观众还没听到参与后能得到什么。" },
@@ -88,13 +99,15 @@ const reportFor = (script) => {
           ? "点到人只看话是不是明确说给这个人。"
           : (focus === "reason"
               ? "给理由只看用户参与后能得到什么。"
-              : "票数指令只看准确票差和可执行动作。")),
+              : "当下动作只看当前阶段能不能执行，不考准确票差。")),
     direction: {
       summary: focus === "target"
         ? "让凯哥一听就知道这句话是在对他说，不用重写整段。用你自己的话说。"
         : (focus === "reason"
             ? "接住凯哥想看撒娇的信号，只补他参与后能看到的回应或乐趣。用你自己的话说。"
-            : "保留原话，只补准确票差和一个马上能做的上票动作。用你自己的话说。"),
+            : (waitingForHost
+                ? "确认组满，让大家按认领等待主持统一口令。用你自己的话说。"
+                : "保留原话，只补一个马上能做的上票动作，不用硬报数字。用你自己的话说。")),
       examples: ["凯哥，你这五颗心把我胆子送上来了", "还差320票，想看我撒娇的补一脚"],
     },
     ai_flavor: "",
@@ -175,7 +188,7 @@ const server = http.createServer((request, response) => {
     }
     const send = () => {
       response.writeHead(200, headers);
-      response.end(JSON.stringify({ ok: true, report: reportFor(String(body.script || "")) }));
+      response.end(JSON.stringify({ ok: true, report: reportFor(String(body.script || ""), body.scenario || {}) }));
     };
     // 为浏览器回归保留足够的 loading 窗口，用来验证请求中不能返回改旧稿。
     if (String(body.script || "").includes("慢一点")) setTimeout(send, 2500);

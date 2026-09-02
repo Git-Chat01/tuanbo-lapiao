@@ -40,6 +40,15 @@
           <h1 id="training-goal-title">把上票理由说到具体用户身上</h1>
         </div>
 
+        <section id="scenario-picker" class="scenario-picker" aria-labelledby="scenario-picker-title">
+          <div class="scenario-picker__head">
+            <h2 id="scenario-picker-title">选择练习现场</h2>
+            <span id="scenario-picker-status">当前 1 / 4</span>
+          </div>
+          <p class="scenario-picker__note">来自真实团播逻辑，昵称已匿名；每一关都停在需要你接话的那一拍。</p>
+          <div id="scenario-tabs" class="scenario-tabs" role="tablist" aria-label="模拟现场训练切片"></div>
+        </section>
+
         <p id="free-mode-note" class="free-mode-note" hidden>
           没有现场信息时，教练只判断话术结构，不会替你猜观众为什么上票。
         </p>
@@ -47,11 +56,30 @@
         <section id="scene-window" class="scene-window" aria-labelledby="scene-title">
           <div class="scene-window__head">
             <h2 id="scene-title"><span class="live-dot" aria-hidden="true"></span>模拟现场</h2>
-            <p><strong id="scene-time">00:38</strong><span aria-hidden="true"> · </span>还差 <strong id="scene-votes">320</strong> 票</p>
+            <p><span id="scene-phase">复活拉票</span><span aria-hidden="true"> · </span><strong id="scene-time">00:38</strong></p>
           </div>
-          <ol id="scene-feed" class="scene-feed" aria-label="现场发生的信息"></ol>
+          <div class="scene-role" aria-label="你在本场的位置">
+            <span>你的位置</span>
+            <strong id="scene-role-context">台上复活主播</strong>
+          </div>
+          <div class="scene-unit">
+            <span>本场目标单位</span>
+            <strong id="scene-goal-unit">票（按直播间实时票数）</strong>
+          </div>
+          <div class="scene-host-state" aria-label="主持当前状态">
+            <span>主持状态</span>
+            <strong id="scene-host-state">按当前进度控场</strong>
+          </div>
+          <dl id="scene-progress" class="scene-progress" aria-label="当前复活进度">
+            <div><dt>目标</dt><dd id="scene-target-units">320 票</dd></div>
+            <div><dt>已占位</dt><dd id="scene-pledged-units">不组队</dd></div>
+            <div><dt>待占位</dt><dd id="scene-open-remaining">不组队</dd></div>
+            <div><dt>已到账</dt><dd id="scene-delivered-units">待换算</dd></div>
+          </dl>
+          <p id="scene-feed-status" class="scene-feed-status" role="status">点击下方按钮，弹幕会按现场顺序出现。</p>
+          <ol id="scene-feed" class="scene-feed" role="log" aria-live="polite" aria-relevant="additions" aria-label="按时间出现的现场信息"></ol>
           <button type="button" id="btn-play-scene" class="scene-replay">
-            <span class="scene-replay__icon" aria-hidden="true">▶</span><span>看 8 秒现场回放</span>
+            <span class="scene-replay__icon" aria-hidden="true">▶</span><span>看现场回放</span>
           </button>
         </section>
 

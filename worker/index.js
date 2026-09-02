@@ -39,6 +39,8 @@ const LIMITS = {
   roundDynamicsTextMax: 180, // 本轮流动判断/反馈判断/下一拍都只保留短复盘
   driverEvidenceMax: 80, // 人性驱动证据必须落到原稿或现场里的短证据
   driverMechanismMax: 160, // 机制允许比证据多解释一层，但禁止写成长篇心理分析
+  timelineMax: 24, // 一轮只保留足够还原因果链的关键事件，避免弹幕噪音撑爆 prompt
+  timelineCharsMax: 3600, // 时间线所有可见文字的总预算，防止多条合法短文本叠加膨胀
   bodyMaxBytes: 10 * 1024, // 请求体上限 10KB，防超大 payload（800 字话术 + 320 字理由 < 4KB，安全）
 };
 
@@ -69,20 +71,69 @@ const HUMAN_DRIVER_ENUM = [
 ];
 
 // 可选现场情境只接受这些字段。未知字段直接丢弃；已知字段类型/范围非法则 400。
-const SCENARIO_NUMBER_LIMITS = {
-  secondsLeft: 3600, // 团播倒计时按最多 1 小时兜底
-  votesNeeded: 10000000,
+const SCENARIO_NUMBER_RULES = {
+  secondsLeft: { max: 3600, decimals: 0 }, // 团播倒计时按最多 1 小时兜底
+  votesNeeded: { max: 10000000, decimals: 0 },
+  // 组队单位允许 0.5 这类半手认领，但拒绝无限小数和非有限数。
+  targetUnits: { max: 10000000, decimals: 2 },
+  pledgedUnits: { max: 10000000, decimals: 2 },
+  openRemaining: { max: 10000000, decimals: 2 },
+  deliveredUnits: { max: 10000000, decimals: 2 },
 };
 const SCENARIO_TEXT_LIMITS = {
   id: 64,
+  roleContext: 160,
+  goalUnit: 48,
   hostCue: 160,
   targetUser: 80,
   userSignal: 160,
   recentGift: 120,
   trainingGoal: 120,
 };
+const SCENARIO_PHASE_ENUM = [
+  "elimination",
+  "revival_offer",
+  "pledging",
+  "closing",
+  "awaiting_drop",
+  "delivery",
+  "result",
+  "post_round",
+];
+const TIMELINE_ROLE_ENUM = [
+  "host",
+  "active_streamer",
+  "offstage_streamer",
+  "viewer",
+  "system",
+];
+const TIMELINE_KIND_ENUM = [
+  "chat",
+  "host_cue",
+  "pledge",
+  "condition",
+  "pledge_increment",
+  "direct_gift",
+  "drop_cue",
+  "gift",
+  "rank",
+  "status",
+];
+const TIMELINE_EFFECT_ENUM = ["down", "revive", "neutral", "unknown"];
+const TIMELINE_TEXT_LIMITS = {
+  at: 32,
+  speaker: 80,
+  text: 200,
+};
 const SCENARIO_FIELD_ORDER = [
   "id",
+  "roleContext",
+  "phase",
+  "goalUnit",
+  "targetUnits",
+  "pledgedUnits",
+  "openRemaining",
+  "deliveredUnits",
   "secondsLeft",
   "votesNeeded",
   "hostCue",
@@ -90,6 +141,7 @@ const SCENARIO_FIELD_ORDER = [
   "userSignal",
   "recentGift",
   "trainingGoal",
+  "timeline",
 ];
 
 // DeepSeek 调用参数
@@ -865,12 +917,7 @@ function groundedHumanDriverReason(roundDynamics, sourceScript, scenario) {
     ? roundDynamics.human_drivers
     : [];
   const surfaceLabels = /(?:保护欲|存在感|归属感|从众|互惠|紧迫感|好奇心|掌控感)/gu;
-  const evidenceSource = [
-    String(sourceScript || ""),
-    ...Object.values(scenario && typeof scenario === "object" ? scenario : {}).map((value) =>
-      String(value ?? "")
-    ),
-  ]
+  const evidenceSource = [String(sourceScript || ""), scenarioEvidenceText(scenario)]
     .join("")
     .replace(/[\s\p{P}]+/gu, "");
 
@@ -1051,19 +1098,17 @@ function detectViewerReason(sourceScript, scenario = null) {
 function hasExplicitVoteInstruction(sourceScript) {
   const source = withoutAttributedQuotedText(String(sourceScript || ""));
   const directAction =
-    /(?:补(?:一补|一脚|一下|一点|一些|(?:一|两|几)(?:张|票|手|个)|上|齐|票)|跟(?:上一点|一下|一脚|上)|上(?:多少|一票|几票|几张|一张|一点|点票|票)|投(?:一票|几票|一下|一点|点票|票)|组(?:一组|一下|一手|一个|两个|几组|几个)|丢(?:一丢|一下|一点|几张|几票)|刷(?:一票|一下|一点|几张|几票)|送(?:一颗|一个|一张|一点)|助力(?:一下|一把)?|搭把手|帮(?:我)?一把)/u;
+    /(?:补(?:一补|一脚|一下|一点|一些|(?:一|两|几)(?:张|票|手|个|份)|上|齐|票)|跟(?:上一点|一下|一脚|上)|上(?:多少|一票|几票|几张|一张|一点|点票|票)|投(?:一票|几票|一下|一点|点票|票)|组(?:一组|一下|一手|一个|两个|几组|几个)|认(?:一手|一份|一下|一个|几个|领(?:一手|一份|一下|一个|几个)?)|抓(?:一下|一手|一份|一个|最后一(?:手|份|个))|加(?:一|两|几)(?:个|手|份)|抹(?:个|一下)?零|接(?:一下|一半|半手|半个)|丢(?:一丢|一下|一点|几张|几票)|刷(?:一票|一下|一点|几张|几票)|送(?:一颗|一个|一张|一点)|助力(?:一下|一把)?|搭把手|帮(?:我)?一把)/u;
   const distributedAction =
     /(?:一人|每人|一个人)(?:来|上|投|补|组|送|刷|丢)?(?:一|两|几)?(?:个|颗|张|票|手|组)/u;
   const requestCue =
     /(?:帮(?:我|忙)?|给我|替我|能不能|可不可以|方便的话|麻烦|请|来|再|继续|谁来|谁能|有没有|大家|家人们?|哥哥姐姐|好哥哥|好姐姐)/u;
   const completedPastAction =
-    /(?:刚|刚才|刚刚|已经|刚送|送出).{0,10}(?:上了|投了|补了|组了|丢了|刷了|送了|助力了)/u;
-  const negatedAction =
-    /(?:不用|不要|别|无需|无须|不必|不用再|别再).{0,8}(?:上票|投票|补|跟|组|丢|刷|送|助力|搭把手)/u;
+    /(?:刚|刚才|刚刚|已经|刚送|送出).{0,12}(?:上了|投了|补了|组了|认了|认一(?:个|手)|抓了|抓一下|加了|加一(?:个|手)|抹了|抹零|接了|丢了|刷了|送了|助力了)/u;
 
   for (const sentence of splitHardSentences(source)) {
-    const compact = sentence.replace(/\s+/g, "");
-    if (!compact || negatedAction.test(compact)) continue;
+    const compact = stripNegatedCurrentActions(sentence.replace(/\s+/g, ""));
+    if (!compact) continue;
     if (distributedAction.test(compact)) return true;
     if (!directAction.test(compact)) continue;
     // “谢谢你刚刚上了一票”是在读过去反馈；除非同句又明确递出“再/继续/帮我”等下一拍。
@@ -1071,6 +1116,79 @@ function hasExplicitVoteInstruction(sourceScript) {
     return true;
   }
   return false;
+}
+
+/** 去掉明确被否定的动作片段，同时保留同句后半段真实的新动作。 */
+function stripNegatedCurrentActions(value) {
+  return String(value || "")
+    .replace(
+      /(?:先)?(?:不用|不要|别|无需|无须|不必|不再|不用再|别再)(?:去|找人|让人|继续|再|马上|现在|直接|提前|急着){0,3}(?:拉票|要票|上票|投票|补(?:位|一脚|一下|一点|一个|一手)?|组(?:一个|一手|一下)?|认(?:领|一个|一手|一下)?|抓(?:一下|一个|一手)?|加(?:一个|一手|一下)?|抹(?:个|一下)?零|接(?:一半|半手|半个)?|丢|送|上)/gu,
+      " "
+    )
+    .replace(/(?:先)?(?:别|不要|不用|无需|不必|不急着|别急着)(?:马上|现在|直接|提前|急着){0,2}(?:丢|送|上)/gu, " ")
+    .replace(/\s+/g, "");
+}
+
+/** 组满未发令时的正确动作是等主持，而不是主播自己发令。 */
+function hasDeliveryCoordinationInstruction(sourceScript) {
+  const source = withoutAttributedQuotedText(String(sourceScript || ""));
+  const compact = source.replace(/\s+/g, "");
+  const waitForHost =
+    /(?:(?:先)?别|不要|不急着|别急着).{0,12}(?:提前)?(?:丢|送|上).{0,20}(?:等|听|按).{0,8}主持.{0,10}(?:口令|喊|说|发令)|(?:等|听|按).{0,8}主持.{0,10}(?:口令|喊|说|发令).{0,12}(?:再|一起|统一)?(?:丢|送|上)/u;
+  const holdForHostCue =
+    /(?:先)?(?:等|听|按).{0,8}主持.{0,10}(?:统一)?(?:口令|喊|说|发令)(?:再行动|就行|即可|为准)?/u;
+  return waitForHost.test(compact) || holdForHostCue.test(compact);
+}
+
+/** 主持已经发令后的正确动作：按原认领兑现、核对实际到账并接住参与。 */
+function hasDeliveryExecutionInstruction(sourceScript) {
+  const compact = withoutAttributedQuotedText(String(sourceScript || "")).replace(/\s+/g, "");
+  const fulfillExisting =
+    /(?:按|照).{0,8}(?:刚才|之前|各自|大家)?(?:约定|认领).{0,12}(?:丢|送|上|兑现)|(?:刚才|之前)(?:认|组).{0,12}(?:现在|一起|统一)?(?:丢|送|上|兑现)/u;
+  const acknowledgeArrival =
+    /(?:谢谢|感谢|收到|收到了|到账|接住).{0,24}(?:大家|你们|哥哥|姐姐|哥|姐|认领|礼物|出手|这(?:一|几|些|个|手))|(?:大家|你们|哥哥|姐姐|哥|姐).{0,12}(?:谢谢|感谢|收到|接住)/u;
+  return fulfillExisting.test(compact) || acknowledgeArrival.test(compact);
+}
+
+/** 结果落地后的正确动作是确认共同结果、感谢并承接关系。 */
+function hasResultConnectionInstruction(sourceScript) {
+  const compact = withoutAttributedQuotedText(String(sourceScript || "")).replace(/\s+/g, "");
+  return /(?:谢谢|感谢).{0,24}(?:大家|你们|哥哥|姐姐|哥|姐|出手|礼物|一起)|(?:这轮|这一关|复活|拿下).{0,20}(?:大家|你们|我们|咱们|一起).{0,12}(?:完成|拿下|赢|抬|救|守)|(?:我都记住|我记住了|我接住了|不会让你们白上|没让你们白上)/u.test(compact);
+}
+
+/** 组满后仍寻找新认领人，会破坏已形成的兑现阶段。 */
+function hasNewClaimPressure(sourceScript) {
+  const extraClaim =
+    /(?:还差.{0,12}(?:谁|有没有|再)|(?:谁来|谁能|有没有人|(?:还有|有)?谁(?:愿意|可以|想|能|来)?).{0,12})(?:补|组|认领|认一|抓|加|上|投|抹|接)|(?:继续|再来|还要).{0,8}(?:拉|要|组|认领|认一|抓|补|加|抹|接)|(?:愿不愿意|是否愿意|要不要|能不能).{0,12}(?:补位|再补|认领|认一|抓|加一个|加一手|再上|抹零|接一半)|(?:我|那我)(?:来|再|也)?(?:认一(?:个|手|份)|抓一下|抓最后一(?:个|手|份)|加一(?:个|手|份)|抹(?:个)?零|接一半)|(?:再|继续)(?:认一(?:个|手|份)|抓一下|抓最后一(?:个|手|份)|加一(?:个|手|份)|抹(?:个)?零|接一半)|(?:帮我|麻烦|来)(?:补|组|认|抓|加|抹|接).{0,8}|(?:加一(?:个|手|份)|认一(?:个|手|份)|抓一下|抹(?:个)?零|接一半)(?:吧|呀|啊)?$/u;
+  return splitHardSentences(withoutAttributedQuotedText(String(sourceScript || ""))).some((sentence) => {
+    const compact = stripNegatedCurrentActions(sentence.replace(/\s+/g, ""));
+    return Boolean(compact && extraClaim.test(compact));
+  });
+}
+
+/** 主持发令前催提前兑现或主播抢发口令，同样是阶段冲突。 */
+function hasPrematureDeliveryPressure(sourceScript) {
+  const prematureDelivery =
+    /(?:现在|赶紧|马上|直接|先|提前).{0,8}(?:丢|送|上)(?:出来|出去|礼物|票)?|(?:不用|不要|别).{0,8}(?:等|听|按).{0,8}主持.{0,12}(?:丢|送|上)|(?:我来|听我的|我喊|我说).{0,8}(?:那就丢|一起丢|统一丢)|(?:那就|可以|开始)(?:一起|统一)?(?:丢|送|上)|(?:大家|你们|咱们|都)(?:赶紧|马上|现在|直接|就|一起|统一){1,3}(?:丢|送|上)|(?:按|照)(?:(?!主持).){0,8}(?:约定|认领)(?:(?!主持).){0,10}(?:一起|统一)?(?:丢|送|上)/u;
+  const completedPastAction =
+    /(?:刚|刚才|刚刚|已经|刚送|送出|到账).{0,12}(?:丢了|送了|上了|送出|到账)/u;
+  return splitHardSentences(withoutAttributedQuotedText(String(sourceScript || ""))).some((sentence) => {
+    let compact = stripNegatedCurrentActions(sentence.replace(/\s+/g, ""));
+    if (!compact) return false;
+    compact = compact.replace(completedPastAction, "");
+    return prematureDelivery.test(compact);
+  });
+}
+
+function hasAdditionalClaimPressure(sourceScript) {
+  return hasNewClaimPressure(sourceScript) || hasPrematureDeliveryPressure(sourceScript);
+}
+
+function hasCurrentPhaseInstruction(sourceScript, phase) {
+  if (phase === "awaiting_drop") return hasDeliveryCoordinationInstruction(sourceScript);
+  if (phase === "delivery") return hasDeliveryExecutionInstruction(sourceScript);
+  if (phase === "result" || phase === "post_round") return hasResultConnectionInstruction(sourceScript);
+  return hasExplicitVoteInstruction(sourceScript);
 }
 
 function parseSpokenCount(token) {
@@ -1206,7 +1324,7 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
 
   // 模型常把泛称“支持/出手”顺手写成“礼物”。只有原稿或现场真的出现礼物事实
   // 才能保留这个词；否则统一退回可观察的“支持”，避免复盘给新人编现场。
-  const observableContext = `${sourceScript}${Object.values(scenario || {}).join("")}`;
+  const observableContext = `${sourceScript}${scenarioEvidenceText(scenario)}`;
   if (
     !/(?:礼物|送了|送来|送的|刷了|小心心|火箭|嘉年华)/u.test(observableContext) &&
     Array.isArray(report.round_dynamics?.human_drivers)
@@ -1364,17 +1482,42 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
   const voteInstructionCheck = Array.isArray(report.structure_checks)
     ? report.structure_checks.find((item) => item && item.key === "vote_instruction")
     : null;
+  const scenarioPhase = typeof scenario?.phase === "string" ? scenario.phase : "";
   if (sourceScript && voteInstructionCheck) {
-    if (hasExplicitVoteInstruction(sourceScript)) {
+    if (hasCurrentPhaseInstruction(sourceScript, scenarioPhase)) {
       // 可执行动作是可以从原话确定性核验的事实：模型漏判时向上纠正，避免数字门槛借尸还魂。
       voteInstructionCheck.status = "met";
-      voteInstructionCheck.evidence = "原话已经递出观众能立即执行的要票动作";
+      voteInstructionCheck.evidence = scenarioPhase === "awaiting_drop"
+        ? "组满后已明确让占位用户等待主持统一口令"
+        : scenarioPhase === "delivery"
+          ? "主持已发令后，已明确接住到账或协调原占位兑现"
+          : scenarioPhase === "result" || scenarioPhase === "post_round"
+            ? "结果落地后，已明确接住共同结果并承接关系"
+            : "原话已经递出观众能立即执行的要票动作";
     } else if (voteInstructionCheck.status === "met") {
       voteInstructionCheck.status = "partial";
-      voteInstructionCheck.evidence = "提到了票况，但还没有递出观众能立即执行的要票动作";
+      voteInstructionCheck.evidence = scenarioPhase === "awaiting_drop"
+        ? "已经组满但主持尚未发令，还没有明确让大家等主持统一口令"
+        : scenarioPhase === "delivery"
+          ? "主持已经发令，当前还没有接住实际到账或协调原占位兑现"
+          : scenarioPhase === "result" || scenarioPhase === "post_round"
+            ? "结果已经落地，当前还没有确认共同结果、感谢或关系承接"
+            : "提到了票况，但还没有递出观众能立即执行的要票动作";
     }
   }
-  const hasVoteInstruction = voteInstructionCheck?.status === "met";
+  const phaseActionConflict =
+    (scenarioPhase === "awaiting_drop" && hasAdditionalClaimPressure(sourceScript)) ||
+    (scenarioPhase === "delivery" && hasNewClaimPressure(sourceScript)) ||
+    (["result", "post_round"].includes(scenarioPhase) && hasExplicitVoteInstruction(sourceScript));
+  if (phaseActionConflict && voteInstructionCheck) {
+    voteInstructionCheck.status = "partial";
+    voteInstructionCheck.evidence = ["result", "post_round"].includes(scenarioPhase)
+      ? "结果已经确认，当前应接住兑现和感谢，不该继续拉票"
+      : scenarioPhase === "delivery"
+        ? "主持已经发令，当前应核对兑现，不该重新找人占位"
+        : "组队已经满额且主持尚未发令，当前应等待统一兑现，不该追加或催提前丢";
+  }
+  const hasVoteInstruction = voteInstructionCheck?.status === "met" && !phaseActionConflict;
 
   // 委婉请求与放低姿态是两条不同语义：普通“帮我+具体动作”不命中；
   // 显性乞求至少不能毕业，乞求叠加乞怜/依赖或明确自贬时再判整体方向错误。
@@ -1481,6 +1624,38 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
     }
   }
 
+  // 阶段冲突是现场逻辑错误：即使句面存在“补/组/上”等动作，也不能借旧动作门槛毕业。
+  if (phaseActionConflict) {
+    report.card_type = "logic";
+    report.card_why = ["result", "post_round"].includes(scenarioPhase)
+      ? "现场已经宣布结果，继续拉票会越过感谢和关系回收这一拍。"
+      : scenarioPhase === "delivery"
+        ? "主持已经发令、原占位正在兑现，重新找人加量会把现场拉回上一拍。"
+        : "现场已经组满待发令，继续找人加量或催提前丢会打乱主持统一发令和用户承诺。";
+    if (Array.isArray(report.line_reviews)) {
+      const conflictMatcher = ["result", "post_round"].includes(scenarioPhase)
+        ? (line) => hasExplicitVoteInstruction(line)
+        : scenarioPhase === "delivery"
+          ? (line) => hasNewClaimPressure(line)
+          : (line) => hasAdditionalClaimPressure(line);
+      for (const review of report.line_reviews) {
+        if (!review || typeof review.original !== "string" || !conflictMatcher(review.original)) continue;
+        review.mark = "wrong";
+        review.comment = ["result", "post_round"].includes(scenarioPhase)
+          ? "结果已经确认，这一拍应接住兑现与感谢，不能再继续拉票。"
+          : scenarioPhase === "delivery"
+            ? "主持已经发令，这一拍应接住原占位兑现，不能重新找人占位。"
+            : "队伍已经组满但主持尚未发令，这一拍应让大家等统一口令，不能追加或催提前丢。";
+      }
+    }
+    if (report.verdict === "passed") report.verdict = "almost";
+    report.verdict_reason = ["result", "post_round"].includes(scenarioPhase)
+      ? "结果已经落地，先停止拉票并接住本轮兑现，再谈下一轮。"
+      : scenarioPhase === "delivery"
+        ? "主持已经发令，停止新增占位，按真实到账接住原承诺兑现后再过关。"
+        : "队伍已经组满，停止追加与提前催丢，把统一口令交还主持后再过关。";
+  }
+
   const wrongCount = Array.isArray(report.line_reviews)
     ? report.line_reviews.filter((item) => item && item.mark === "wrong").length
     : 0;
@@ -1545,7 +1720,11 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
 
   // 同一份稿在不同票况下必须给新人不同策略锚点，避免模型偶尔输出通用点评。
   // 仅在模型漏掉对应语义时补一句，不覆盖它已经给出的具体判断。
-  if (report.direction && typeof report.direction.summary === "string") {
+  if (
+    report.direction &&
+    typeof report.direction.summary === "string" &&
+    !["delivery", "awaiting_drop", "result", "post_round"].includes(scenarioPhase)
+  ) {
     const summary = report.direction.summary;
     const hasPositiveFocus = (keywordPattern) => {
       const hasKeyword = keywordPattern.test(summary);
@@ -1565,6 +1744,103 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
       !hasPositiveFocus(/临门一脚|最后一脚|补一脚|补齐|收口/u)
     ) {
       report.direction.summary = `现在是临门一脚，先把最后的动作说清楚。${report.direction.summary}`;
+    }
+  }
+
+  // 组满未发令时，建议必须停在“等主持”，不能让主播抢口令或继续找人。
+  if (scenarioPhase === "awaiting_drop") {
+    const deliveryNextMove = "确认组满与实际到账状态，提醒其余占位按约定等主持统一口令，不再找新补位。";
+    if (
+      !report.round_dynamics ||
+      !hasDeliveryCoordinationInstruction(report.round_dynamics.next_move) ||
+      hasAdditionalClaimPressure(report.round_dynamics.next_move)
+    ) {
+      if (report.round_dynamics) report.round_dynamics.next_move = deliveryNextMove;
+    }
+    if (report.direction && typeof report.direction === "object") {
+      if (
+        !hasDeliveryCoordinationInstruction(report.direction.summary) ||
+        hasAdditionalClaimPressure(report.direction.summary)
+      ) {
+        report.direction.summary = `${deliveryNextMove} 用你自己的话说。`;
+      }
+      if (Array.isArray(report.direction.examples)) {
+        report.direction.examples = report.direction.examples.filter(
+          (example) =>
+            hasDeliveryCoordinationInstruction(example) &&
+            !hasAdditionalClaimPressure(example)
+        );
+      }
+    }
+    if (
+      typeof report.one_thing !== "string" ||
+      hasAdditionalClaimPressure(report.one_thing) ||
+      !/(?:组满|认领|到账|主持|口令|统一)/u.test(report.one_thing)
+    ) {
+      report.one_thing = "组满以后动作会反转：停止拉新认领，核对到账并等主持统一发令。";
+    }
+  }
+
+  // 主持已经发令后进入实际兑现；这一拍不能还停留在“继续等口令”。
+  if (scenarioPhase === "delivery") {
+    const fulfillmentNextMove = "主持已经发令，按实际到账接住原占位兑现并感谢；不再拉新占位，也不把未到账承诺说成已到账。";
+    if (
+      !report.round_dynamics ||
+      !hasDeliveryExecutionInstruction(report.round_dynamics.next_move) ||
+      hasNewClaimPressure(report.round_dynamics.next_move)
+    ) {
+      if (report.round_dynamics) report.round_dynamics.next_move = fulfillmentNextMove;
+    }
+    if (report.direction && typeof report.direction === "object") {
+      if (
+        !hasDeliveryExecutionInstruction(report.direction.summary) ||
+        hasNewClaimPressure(report.direction.summary)
+      ) {
+        report.direction.summary = `${fulfillmentNextMove} 用你自己的话说。`;
+      }
+      if (Array.isArray(report.direction.examples)) {
+        report.direction.examples = report.direction.examples.filter(
+          (example) => hasDeliveryExecutionInstruction(example) && !hasNewClaimPressure(example)
+        );
+      }
+    }
+    if (
+      typeof report.one_thing !== "string" ||
+      hasNewClaimPressure(report.one_thing) ||
+      !/(?:到账|兑现|感谢|接住|主持.{0,6}发令)/u.test(report.one_thing)
+    ) {
+      report.one_thing = "主持发令后只核对真实到账、接住原占位兑现并感谢，不再新增占位。";
+    }
+  }
+
+  if (["result", "post_round"].includes(scenarioPhase)) {
+    const resultNextMove = "结果已经落地，感谢大家这一轮的真实参与，接住共同完成并把关系自然带到下一轮；不再继续拉票。";
+    if (
+      !report.round_dynamics ||
+      !hasResultConnectionInstruction(report.round_dynamics.next_move) ||
+      hasExplicitVoteInstruction(report.round_dynamics.next_move)
+    ) {
+      if (report.round_dynamics) report.round_dynamics.next_move = resultNextMove;
+    }
+    if (report.direction && typeof report.direction === "object") {
+      if (
+        !hasResultConnectionInstruction(report.direction.summary) ||
+        hasExplicitVoteInstruction(report.direction.summary)
+      ) {
+        report.direction.summary = `${resultNextMove} 用你自己的话说。`;
+      }
+      if (Array.isArray(report.direction.examples)) {
+        report.direction.examples = report.direction.examples.filter(
+          (example) => hasResultConnectionInstruction(example) && !hasExplicitVoteInstruction(example)
+        );
+      }
+    }
+    if (
+      typeof report.one_thing !== "string" ||
+      hasExplicitVoteInstruction(report.one_thing) ||
+      !/(?:结果|感谢|共同|关系|下一轮|记住)/u.test(report.one_thing)
+    ) {
+      report.one_thing = "结果落地后停止拉票，先感谢真实参与并接住这轮共同完成。";
     }
   }
 
@@ -1717,22 +1993,38 @@ export function sanitizeScenario(raw) {
     const value = raw[key];
     if (value === undefined || value === null || value === "") continue;
 
-    if (Object.prototype.hasOwnProperty.call(SCENARIO_NUMBER_LIMITS, key)) {
-      const max = SCENARIO_NUMBER_LIMITS[key];
-      if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > max) {
+    if (Object.prototype.hasOwnProperty.call(SCENARIO_NUMBER_RULES, key)) {
+      const { max, decimals } = SCENARIO_NUMBER_RULES[key];
+      const scale = 10 ** decimals;
+      const hasAllowedPrecision =
+        typeof value === "number" &&
+        Number.isFinite(value) &&
+        Math.abs(value * scale - Math.round(value * scale)) < 1e-9;
+      if (!hasAllowedPrecision || value < 0 || value > max) {
         throw new HttpError(400, "现场情境里的数字不合法", `scenario.${key} 超出范围`);
       }
       cleaned[key] = value;
       continue;
     }
 
+    if (key === "phase") {
+      if (typeof value !== "string" || !SCENARIO_PHASE_ENUM.includes(value)) {
+        throw new HttpError(400, "现场阶段不合法", "scenario.phase 非白名单枚举");
+      }
+      cleaned.phase = value;
+      continue;
+    }
+
+    if (key === "timeline") {
+      cleaned.timeline = sanitizeTimeline(value);
+      if (cleaned.timeline.length === 0) delete cleaned.timeline;
+      continue;
+    }
+
     if (typeof value !== "string") {
       throw new HttpError(400, "现场情境里的文字格式不对", `scenario.${key} 非字符串`);
     }
-    const compact = value
-      .trim()
-      .replace(/[\u0000-\u001F\u007F]+/g, " ")
-      .replace(/\s+/g, " ");
+    const compact = compactScenarioText(value);
     if (!compact) continue;
     if (compact.length > SCENARIO_TEXT_LIMITS[key]) {
       throw new HttpError(400, "现场情境文字太长了", `scenario.${key} 超长`);
@@ -1740,7 +2032,135 @@ export function sanitizeScenario(raw) {
     cleaned[key] = compact;
   }
 
+  const has = (key) => Object.prototype.hasOwnProperty.call(cleaned, key);
+  if (has("targetUnits")) {
+    for (const key of ["pledgedUnits", "openRemaining", "deliveredUnits"]) {
+      if (has(key) && cleaned[key] > cleaned.targetUnits) {
+        throw new HttpError(400, "现场组队数字彼此矛盾", `scenario.${key} 大于 targetUnits`);
+      }
+    }
+  }
+  if (has("pledgedUnits") && has("deliveredUnits") && cleaned.deliveredUnits > cleaned.pledgedUnits) {
+    throw new HttpError(400, "现场到账数不能大于已占位数", "scenario.deliveredUnits 大于 pledgedUnits");
+  }
+  if (has("targetUnits") && has("pledgedUnits") && has("openRemaining")) {
+    const accounted = cleaned.pledgedUnits + cleaned.openRemaining;
+    if (Math.abs(accounted - cleaned.targetUnits) > 0.001) {
+      throw new HttpError(400, "现场组队数字没有对齐", "已占位数 + 待占位数不等于目标数");
+    }
+  }
+
   return Object.keys(cleaned).length > 0 ? cleaned : null;
+}
+
+/** 单行化现场文字；长度校验由各字段自己的上限负责。 */
+function compactScenarioText(value) {
+  return value
+    .trim()
+    .replace(/[\u0000-\u001F\u007F]+/g, " ")
+    .replace(/\s+/g, " ");
+}
+
+/**
+ * 严格清洗一轮时间线。每条必须有 at/role/kind/speaker/text；未知字段丢弃，
+ * effect 是可选的玩法结果方向，避免把“送礼”自动等同成保台支持。
+ */
+function sanitizeTimeline(raw) {
+  if (!Array.isArray(raw)) {
+    throw new HttpError(400, "现场时间线格式不对", "scenario.timeline 非数组");
+  }
+  if (raw.length > LIMITS.timelineMax) {
+    throw new HttpError(
+      400,
+      `现场时间线最多保留 ${LIMITS.timelineMax} 条关键事件`,
+      "scenario.timeline 事件过多"
+    );
+  }
+
+  let totalChars = 0;
+  return raw.map((item, index) => {
+    const path = `scenario.timeline[${index}]`;
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new HttpError(400, "现场时间线事件格式不对", `${path} 非对象`);
+    }
+
+    const at = item.at;
+    let cleanedAt;
+    if (typeof at === "number") {
+      if (!Number.isInteger(at) || at < 0 || at > 1000000000) {
+        throw new HttpError(400, "现场时间点不合法", `${path}.at 超出范围`);
+      }
+      cleanedAt = at;
+    } else if (typeof at === "string") {
+      cleanedAt = compactScenarioText(at);
+      if (!cleanedAt || cleanedAt.length > TIMELINE_TEXT_LIMITS.at) {
+        throw new HttpError(400, "现场时间点不合法", `${path}.at 为空或超长`);
+      }
+    } else {
+      throw new HttpError(400, "现场时间点不合法", `${path}.at 类型错误`);
+    }
+
+    if (typeof item.role !== "string" || !TIMELINE_ROLE_ENUM.includes(item.role)) {
+      throw new HttpError(400, "现场角色不合法", `${path}.role 非白名单枚举`);
+    }
+    if (typeof item.kind !== "string" || !TIMELINE_KIND_ENUM.includes(item.kind)) {
+      throw new HttpError(400, "现场事件类型不合法", `${path}.kind 非白名单枚举`);
+    }
+
+    const speaker = typeof item.speaker === "string"
+      ? compactScenarioText(item.speaker)
+      : "";
+    const text = typeof item.text === "string" ? compactScenarioText(item.text) : "";
+    if (!speaker || speaker.length > TIMELINE_TEXT_LIMITS.speaker) {
+      throw new HttpError(400, "现场发言人格式不对", `${path}.speaker 为空或超长`);
+    }
+    if (!text || text.length > TIMELINE_TEXT_LIMITS.text) {
+      throw new HttpError(400, "现场事件文字格式不对", `${path}.text 为空或超长`);
+    }
+    totalChars += String(cleanedAt).length + speaker.length + text.length;
+    if (totalChars > LIMITS.timelineCharsMax) {
+      throw new HttpError(400, "现场时间线文字太多了", "scenario.timeline 超出总文字预算");
+    }
+
+    const event = {
+      at: cleanedAt,
+      role: item.role,
+      kind: item.kind,
+      speaker,
+      text,
+    };
+    if (item.effect !== undefined && item.effect !== null && item.effect !== "") {
+      if (typeof item.effect !== "string" || !TIMELINE_EFFECT_ENUM.includes(item.effect)) {
+        throw new HttpError(400, "现场票的作用方向不合法", `${path}.effect 非白名单枚举`);
+      }
+      event.effect = item.effect;
+    }
+    return event;
+  });
+}
+
+/**
+ * 把已经清洗的结构化现场转换成证据文本。递归读取对象数组中的原子值，
+ * 不使用 String(object)，因此不会把 timeline 降成“[object Object]”。
+ */
+export function scenarioEvidenceText(scenario) {
+  const parts = [];
+  const visit = (value, depth = 0) => {
+    if (depth > 4 || value === undefined || value === null) return;
+    if (typeof value === "string" || typeof value === "number") {
+      parts.push(String(value));
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value.slice(0, LIMITS.timelineMax)) visit(item, depth + 1);
+      return;
+    }
+    if (typeof value === "object") {
+      for (const item of Object.values(value)) visit(item, depth + 1);
+    }
+  };
+  visit(scenario);
+  return parts.join(" ");
 }
 
 /**

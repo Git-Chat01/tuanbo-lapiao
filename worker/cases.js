@@ -48,6 +48,13 @@ function normalizeScript(script) {
 
 const SCENARIO_FIELDS = [
   "id",
+  "roleContext",
+  "phase",
+  "goalUnit",
+  "targetUnits",
+  "pledgedUnits",
+  "openRemaining",
+  "deliveredUnits",
   "secondsLeft",
   "votesNeeded",
   "hostCue",
@@ -57,6 +64,8 @@ const SCENARIO_FIELDS = [
   "trainingGoal",
 ];
 
+const TIMELINE_FIELDS = ["at", "role", "kind", "speaker", "text", "effect"];
+
 /** 只保存 Worker 已清洗过的场景白名单字段，并生成独立快照。 */
 function snapshotScenario(scenario) {
   if (!scenario || typeof scenario !== "object" || Array.isArray(scenario)) return null;
@@ -65,6 +74,19 @@ function snapshotScenario(scenario) {
     const value = scenario[key];
     if (typeof value === "number" && Number.isFinite(value)) snapshot[key] = value;
     if (typeof value === "string" && value.trim()) snapshot[key] = value;
+  }
+  if (Array.isArray(scenario.timeline)) {
+    const timeline = scenario.timeline.slice(0, 24).map((event) => {
+      if (!event || typeof event !== "object" || Array.isArray(event)) return null;
+      const copy = {};
+      for (const key of TIMELINE_FIELDS) {
+        const value = event[key];
+        if (typeof value === "number" && Number.isFinite(value)) copy[key] = value;
+        if (typeof value === "string" && value.trim()) copy[key] = value;
+      }
+      return Object.keys(copy).length > 0 ? copy : null;
+    }).filter(Boolean);
+    if (timeline.length > 0) snapshot.timeline = timeline;
   }
   return Object.keys(snapshot).length > 0 ? snapshot : null;
 }
@@ -102,6 +124,8 @@ function compactReferenceScenario(scenario) {
       compact[key] = Array.from(value).slice(0, max).join("");
     }
   }
+  // 参照案例只带紧凑的阶段与数值快照；完整弹幕时间线属于旧场景，
+  // 不注入当前 prompt，避免模型把别场原话迁移为当轮事实。
   return compact;
 }
 
