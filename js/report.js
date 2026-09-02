@@ -4,10 +4,10 @@
 var Report = {
   STRUCTURE: [
     { key: "self_intro", label: "认识我" },
-    { key: "gratitude", label: "接礼物" },
+    { key: "gratitude", label: "接住参与" },
     { key: "target_user", label: "点到人" },
     { key: "user_reason", label: "给参与理由" },
-    { key: "vote_instruction", label: "票数指令" },
+    { key: "vote_instruction", label: "当下动作" },
   ],
 
   DRIVER_LABELS: {
@@ -35,11 +35,11 @@ var Report = {
     },
     gratitude: {
       number: 2,
-      title: "接住真实支持",
-      standard: "点到刚刚支持过的人或具体动作，不只泛泛地说“谢谢大家”。",
-      why: "具体接住一次支持，对方才会感觉你真的看见了这次支持，而不是对全场念固定感谢。",
-      method: "把“谢谢大家”落到一个人、一个礼物或一次具体支持上。",
-      hints: ["从原话里找：谁刚刚做了什么？", "把泛泛感谢换成这个人和这次支持。"],
+      title: "接住真实参与",
+      standard: "先辨认对方刚刚做的是下台、复活、认领还是送礼，再用符合这轮关系的方式接住。",
+      why: "具体接住一次参与，对方才会感觉你看见了这次互动；但把下台票硬谢成保台支持，也是在误读玩法关系。",
+      method: "把泛泛回应落到一个人和一次真实动作上，动作方向不清时不要替用户定性。",
+      hints: ["先从现场找：谁刚刚做了什么、作用方向是什么？", "按真实动作接关系，不把下台票说成保台支持。"],
     },
     target_user: {
       number: 3,
@@ -59,11 +59,11 @@ var Report = {
     },
     vote_instruction: {
       number: 5,
-      title: "把上票动作说清楚",
-      standard: "同时说出准确票差和一个观众马上能执行的上票动作。",
-      why: "没有准确票差和具体动作，观众就算愿意帮，也不知道现在该补多少、怎么接。",
-      method: "保留真实票差，再接一个明确动作，例如补一脚、跟一点或上几张。",
-      hints: ["把准确票差数字留在原话里。", "数字后接一个马上能做的上票动作。"],
+      title: "把当下动作说清楚",
+      standard: "说出当前阶段马上能执行的动作：未组满递占位，组满未发令等主持，发令后接真实到账，结果落地后承接关系。",
+      why: "动作与阶段错位，比数字不精确更伤现场：系统先判断这一拍发生到哪，再看你有没有顺势接住。",
+      method: "先确认现在处在哪一拍，再只递这一拍的动作；现场数量说“个/手”，不用为了过关硬报数字。",
+      hints: ["先看现场现在是还缺位置，还是已经组满。", "只说这一拍能做的动作，不为了过关硬补数字。"],
     },
     logic: {
       number: 0,
@@ -141,9 +141,10 @@ var Report = {
 
   _mapStatus: function (progress, focus) {
     var challenge = Report._challengeFor(focus);
-    return !challenge.number && progress.metCount === 5
-      ? "五项结构已齐 · 还有加练关"
-      : progress.metCount + "/5 已拿下";
+    var total = Number(progress.applicableCount) || Report.STRUCTURE.length;
+    return !challenge.number && progress.metCount === total
+      ? (progress.applicableCount ? "本拍要求已齐 · 还有加练关" : "五项结构已齐 · 还有加练关")
+      : progress.metCount + "/" + total + " 本拍已做到";
   },
 
   _shouldOpenHelp: function (progress) {
@@ -151,8 +152,8 @@ var Report = {
   },
 
   _passAchievement: function (progress) {
-    if (progress.isFirstResult && progress.newlyMastered.length === Report.STRUCTURE.length) {
-      return "第一次挑战就把五项全部说齐了。";
+    if (progress.isFirstResult && progress.newlyMastered.length === progress.applicableCount) {
+      return "第一次挑战就把这一拍该做的全部接住了。";
     }
     if (progress.newlyMastered.length) {
       return "最后拿下：“" + progress.newlyMastered.map(function (check) { return check.label; }).join("、") + "”。";
@@ -163,6 +164,13 @@ var Report = {
   _solutionFor: function (report, focus) {
     var challenge = Report._challengeFor(focus);
     var direction = report.direction || {};
+    if (focus && focus.key === "vote_instruction") {
+      var phase = Report._scenario().phase;
+      if (phase === "awaiting_drop") return "确认组队已满，提醒已占位的人先别提前丢、按约定等主持统一口令。";
+      if (phase === "delivery") return "主持已经发令，按真实到账接住原占位兑现并感谢，不再等口令或拉新占位。";
+      if (phase === "result" || phase === "post_round") return "结果已经落地，确认共同完成、感谢这轮参与，再把关系接到下一轮。";
+      return "保留你这一轮的理由，再递一个观众此刻能执行的上票或占位动作；不用为了过关硬报数字。";
+    }
     return challenge.number ? challenge.method : (direction.summary || challenge.method);
   },
 
@@ -186,7 +194,7 @@ var Report = {
   },
 
   _guidanceFor: function (report, focus, progress) {
-    if (!focus || ["target_user", "user_reason"].indexOf(focus.key) < 0) return null;
+    if (!focus || ["target_user", "user_reason", "vote_instruction"].indexOf(focus.key) < 0) return null;
     var scenario = Report._scenario();
     var target = Report._fact(scenario.targetUser, "这个用户");
     var signal = Report._fact(scenario.userSignal, "");
@@ -196,6 +204,22 @@ var Report = {
     var completed = labels.length
       ? "你已经拿下“" + labels.join("、") + "”，这些内容都先保留。"
       : "你已经把这一轮想说的话写出来了，不需要推翻整段。";
+
+    if (focus.key === "vote_instruction") {
+      var waitingForHost = scenario.phase === "awaiting_drop";
+      var fulfilling = scenario.phase === "delivery";
+      var completedRound = scenario.phase === "result" || scenario.phase === "post_round";
+      return {
+        completed: completed,
+        gap: waitingForHost
+          ? "现场已经占位满额、主持还没发令。这关只核对：有没有确认组齐、让大家先别提前丢，并按约定等主持统一口令；不能继续找人补位。"
+          : fulfilling
+            ? "主持已经发令。这关只核对：有没有按实际到账接住原占位兑现和感谢；不能重新拉人，也不能还在等已发出的口令。"
+            : completedRound
+              ? "结果已经确认。这关只核对：有没有接住共同完成、感谢本轮参与并承接关系；不能继续沿用上一拍拉票。"
+              : "这关只核对：观众听完后知不知道现在能做什么。补一脚、跟一点、上几张、认一个或认一手都算；不要求你报准数字。",
+      };
+    }
 
     if (focus.key === "target_user") {
       if (target !== "这个用户" && script.indexOf(target) >= 0) {
@@ -255,10 +279,10 @@ var Report = {
     var scenario = Report._scenario();
     var keywords = {
       self_intro: ["名字", "自我介绍", "看点", "记住你", "你是谁"],
-      gratitude: ["感谢", "谢谢", "礼物", "支持", "接住"],
+      gratitude: ["感谢", "谢谢", "礼物", "参与", "动作", "接住"],
       target_user: ["昵称", "点到", "喊到", "叫到", "直接对", "说给", "具体用户"],
       user_reason: ["理由", "想看", "乐趣", "选择", "回应", "参与", "互动", "撒娇", "愿意"],
-      vote_instruction: ["票差", "票数", "还差", "补一脚", "上票", "投票", "动作"],
+      vote_instruction: ["票差", "还差", "补一脚", "上票", "投票", "认领", "动作", "等主持", "主持口令", "统一丢"],
     };
     var terms = keywords[focus.key] ? keywords[focus.key].slice() : [];
     var target = Report._fact(scenario.targetUser, "");
@@ -326,6 +350,25 @@ var Report = {
         "用这个最小骨架自检：“" + scaffold + "”只换成你平时会说的词，不用照抄整段，也不用补票差或上票动作。",
       ];
     }
+    if (focus && focus.key === "vote_instruction") {
+      var waitingForHost = scenario.phase === "awaiting_drop";
+      if (waitingForHost) return [
+        "先把事实说准：位置已经占满，但占位不等于全部到账。",
+        "再把动作交代清楚：先别提前丢，按约定等主持统一口令；不要继续喊人补位。",
+      ];
+      if (scenario.phase === "delivery") return [
+        "主持已经发令，先看真实到账，不把口头占位全说成已经收到。",
+        "接住正在兑现的人并感谢，不再等口令，也不重新找人占位。",
+      ];
+      if (scenario.phase === "result" || scenario.phase === "post_round") return [
+        "先确认这轮已经结束，不再重复上一拍的拉票动作。",
+        "接住共同完成和真实参与，感谢后把关系自然带到下一轮。",
+      ];
+      return [
+        "先看现在还缺不缺位置，不必为了过关重新算一个漂亮数字。",
+        "用你平时的话递一个明确动作：补一脚、跟一点、上几张、认一个或认一手。",
+      ];
+    }
     if (challenge.number) return Array.isArray(challenge.hints) ? challenge.hints : [];
     var direction = report.direction || {};
     return Array.isArray(direction.examples) ? direction.examples : [];
@@ -366,6 +409,7 @@ var Report = {
     var needsReinforcement = checks.filter(function (check) {
       return previousStatus[check.key] === "met" && check.status !== "met";
     });
+    var applicableCount = checks.filter(function (check) { return check.status !== "na"; }).length;
     var metCount = checks.filter(function (check) { return check.status === "met"; }).length;
 
     state.totalAttempts += 1;
@@ -386,6 +430,7 @@ var Report = {
       checks: checks,
       focus: focus,
       metCount: metCount,
+      applicableCount: applicableCount,
       newlyMastered: newlyMastered,
       needsReinforcement: needsReinforcement,
       totalAttempts: state.totalAttempts,
@@ -398,6 +443,16 @@ var Report = {
 
   _checks: function (report) {
     var incoming = Array.isArray(report.structure_checks) ? report.structure_checks : [];
+    var phase = Report._scenario().phase || "";
+    var applicableByPhase = {
+      pledging: ["gratitude", "target_user", "user_reason", "vote_instruction"],
+      closing: ["gratitude", "user_reason", "vote_instruction"],
+      awaiting_drop: ["gratitude", "user_reason", "vote_instruction"],
+      delivery: ["gratitude", "user_reason", "vote_instruction"],
+      result: ["gratitude", "user_reason", "vote_instruction"],
+      post_round: ["gratitude", "user_reason", "vote_instruction"],
+    };
+    var applicableKeys = applicableByPhase[phase] || null;
     return Report.STRUCTURE.map(function (definition) {
       var found = null;
       for (var i = 0; i < incoming.length; i++) {
@@ -409,11 +464,14 @@ var Report = {
       var status = found && ["met", "partial", "missing"].indexOf(found.status) >= 0
         ? found.status
         : (report.verdict === "passed" ? "met" : "missing");
+      var applicable = !applicableKeys || applicableKeys.indexOf(definition.key) >= 0;
       return {
         key: definition.key,
         label: definition.label,
-        status: status,
-        evidence: found && typeof found.evidence === "string" ? found.evidence : "这一项还没说清楚",
+        status: applicable ? status : "na",
+        evidence: applicable
+          ? (found && typeof found.evidence === "string" ? found.evidence : "这一项还没说清楚")
+          : "这是中途切片，这一拍不用重复补这一项。",
       };
     });
   },
@@ -450,7 +508,7 @@ var Report = {
     }
 
     for (var i = 0; i < checks.length; i++) {
-      if (checks[i].status !== "met") return checks[i];
+      if (checks[i].status !== "met" && checks[i].status !== "na") return checks[i];
     }
 
     // 结构全齐不代表一定过关：某句站错角度仍是真正的本轮焦点。
@@ -476,11 +534,11 @@ var Report = {
   _progressMessage: function (progress, focus) {
     var challenge = Report._challengeFor(focus);
     var labels = progress.newlyMastered.map(function (check) { return check.label; });
-    if (!challenge.number && progress.metCount === 5) {
-      return "五项结构已经齐了，不用再补结构。现在只过最后一道“" + challenge.title + "”加练关。";
+    if (!challenge.number && progress.metCount === progress.applicableCount) {
+      return "这一拍该做的已经齐了，不用补中途不适用的结构。现在只过最后一道“" + challenge.title + "”加练关。";
     }
     if (progress.needsReinforcement && progress.needsReinforcement.length) {
-      return "你已经拿下 " + progress.metCount + "/5 项。这一关刚刚松了一点，先把它补稳，其他已经做到的继续保留。";
+      return "你已经拿下本拍 " + progress.metCount + "/" + progress.applicableCount + " 项。这一关刚刚松了一点，先把它补稳。";
     }
     if (labels.length && progress.isFirstResult) {
       return "第一次挑战已经拿下“" + labels.join("、") + "”。不用从头重写，现在只补一个缺口。";
@@ -489,7 +547,7 @@ var Report = {
       return "刚刚新拿下“" + labels.join("、") + "”。上一关已经结束，现在只看这一关。";
     }
     if (progress.metCount > 0) {
-      return "你已经拿下 " + progress.metCount + "/5 项。已经做到的先保留，这次只攻“" + focus.label + "”。";
+      return "你已经拿下本拍 " + progress.metCount + "/" + progress.applicableCount + " 项。已经做到的先保留，这次只攻“" + focus.label + "”。";
     }
     return "这不是整篇都不行。先只拿下“" + focus.label + "”，其他地方这一轮先不动。";
   },
@@ -520,7 +578,7 @@ var Report = {
         check.label
       );
       item.dataset.step = String(index + 1);
-      var stateText = check.status === "met" ? "已做到" : check.status === "partial" ? "还差一点" : "未出现";
+      var stateText = check.status === "met" ? "已做到" : check.status === "partial" ? "还差一点" : check.status === "na" ? "本拍不适用" : "未出现";
       item.title = check.label + "：" + stateText + "。" + check.evidence;
       item.setAttribute("aria-label", item.title);
       if (isCurrent) item.setAttribute("aria-current", "step");
@@ -539,11 +597,11 @@ var Report = {
     var bar = Report._el("div", "challenge-progress");
     bar.setAttribute("role", "progressbar");
     bar.setAttribute("aria-valuemin", "0");
-    bar.setAttribute("aria-valuemax", "5");
+    bar.setAttribute("aria-valuemax", String(progress.applicableCount));
     bar.setAttribute("aria-valuenow", String(progress.metCount));
-    bar.setAttribute("aria-label", "五项能力已完成 " + progress.metCount + " 项");
+    bar.setAttribute("aria-label", "本拍适用能力已完成 " + progress.metCount + " 项，共 " + progress.applicableCount + " 项");
     var fill = Report._el("span", "challenge-progress__fill");
-    fill.style.transform = "scaleX(" + (progress.metCount / 5) + ")";
+    fill.style.transform = "scaleX(" + (progress.applicableCount ? progress.metCount / progress.applicableCount : 0) + ")";
     bar.appendChild(fill);
     map.appendChild(bar);
     map.appendChild(Report._structureTrack(checks, focus));
@@ -661,7 +719,7 @@ var Report = {
     section.appendChild(Report._el(
       "p",
       "revision-desk__hint",
-      "下面还是你自己的原话。已经拿下的 " + progress.metCount + " 项先保留，不用重写整篇。"
+      "下面还是你自己的原话。已经拿下的本拍 " + progress.metCount + " 项先保留，不用重写整篇。"
     ));
 
     var input = Report._el("textarea", "revision-input");
@@ -739,7 +797,7 @@ var Report = {
     var structureList = Report._el("ul", "line-review-list");
     checks.forEach(function (check) {
       var item = Report._el("li", "line-review-item line-review-item--" + (check.status === "met" ? "good" : "partial"));
-      var statusText = check.status === "met" ? "做到" : check.status === "partial" ? "差一点" : "没出现";
+      var statusText = check.status === "met" ? "做到" : check.status === "partial" ? "差一点" : check.status === "na" ? "本拍不适用" : "没出现";
       item.appendChild(Report._el("strong", null, check.label + " · " + statusText));
       item.appendChild(Report._el("p", null, check.evidence));
       structureList.appendChild(item);
@@ -881,7 +939,7 @@ var Report = {
 
     var head = Report._el("div", "passed-structure-summary__head");
     head.appendChild(Report._el("strong", null, "本轮能力状态"));
-    head.appendChild(Report._el("span", null, progress.metCount + "/5 已做到"));
+    head.appendChild(Report._el("span", null, progress.metCount + "/" + progress.applicableCount + " 本拍已做到"));
     root.appendChild(head);
     root.appendChild(Report._structureTrack(checks, null));
     root.hidden = false;

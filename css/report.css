@@ -149,6 +149,13 @@
 }
 .presenter-page .challenge-map .structure-check { color: #a99a9f; }
 .presenter-page .challenge-map .structure-check--met { color: #bfe7d5; }
+.presenter-page .challenge-map .structure-check--na { color: #74686c; }
+.presenter-page .structure-check--na::before {
+  content: "—";
+  border-style: dashed;
+  color: #887a7f;
+  background: transparent;
+}
 .presenter-page .challenge-map .structure-check.is-current {
   color: #fff3d9;
   font-weight: 700;
@@ -507,6 +514,7 @@
   color: #6e4b1d;
   background: var(--stage-warn-soft);
 }
+.presenter-page .passed-structure-summary .structure-check--na { color: #9a8f91; }
 .presenter-page .passed-paper { border-top: 4px solid var(--stage-mint); }
 .presenter-page .passed-paper__head { color: #147651; }
 .presenter-page .passed-paper__head span:last-child { background: var(--stage-mint-soft); }
