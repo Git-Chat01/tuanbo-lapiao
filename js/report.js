@@ -977,11 +977,40 @@ var Report = {
       : Report.DRIVER_LABELS.other;
   },
 
-  _roundDynamicsTextItem: function (label, text, className) {
+  _roundDynamicsParagraphs: function (text, className) {
+    var body = Report._el("div", className);
+    // 只在完整句子或原有换行处分段，保留原文；引号里的话不从中间拆开。
+    var buffer = "";
+    var quotes = [];
+    var pairs = { "“": "”", "‘": "’", "「": "」", "『": "』" };
+    var flush = function () {
+      if (buffer.trim()) body.appendChild(Report._el("p", null, buffer.trim()));
+      buffer = "";
+    };
+    Array.from(text).forEach(function (character) {
+      buffer += character;
+      if (pairs[character]) quotes.push(pairs[character]);
+      else if (quotes.length && character === quotes[quotes.length - 1]) quotes.pop();
+      if (character === "\n" || (!quotes.length && buffer.length >= 56 && /[。！？；]/.test(character))) flush();
+    });
+    flush();
+    return body;
+  },
+
+  _roundDynamicsLabel: function (label, step) {
+    var heading = Report._el("h3", "round-dynamics__label");
+    var number = Report._el("span", "round-dynamics__step", step);
+    number.setAttribute("aria-hidden", "true");
+    heading.appendChild(number);
+    heading.appendChild(Report._el("span", null, label));
+    return heading;
+  },
+
+  _roundDynamicsTextItem: function (label, text, className, step) {
     if (!text) return null;
     var item = Report._el("article", "round-dynamics__item" + (className ? " " + className : ""));
-    item.appendChild(Report._el("h3", "round-dynamics__label", label));
-    item.appendChild(Report._el("p", "round-dynamics__copy", text));
+    item.appendChild(Report._roundDynamicsLabel(label, step));
+    item.appendChild(Report._roundDynamicsParagraphs(text, "round-dynamics__copy"));
     return item;
   },
 
@@ -1016,26 +1045,38 @@ var Report = {
     section.setAttribute("aria-label", "这一轮的现场拆解");
 
     var head = Report._el("div", "round-dynamics__head");
-    head.appendChild(Report._el("strong", null, "现场拆解"));
-    head.appendChild(Report._el("span", null, "读事实 → 找可能 → 下一拍"));
+    head.appendChild(Report._el("h2", null, "现场拆解"));
+    head.appendChild(Report._el("p", null, "先看事实，再想原因，最后接下一句。"));
     section.appendChild(head);
 
-    var flowItem = Report._roundDynamicsTextItem("这一轮发生了什么", flowRead, "round-dynamics__item--flow");
+    var step = 0;
+    var nextStep = function () { step += 1; return "0" + step; };
+    var flowItem = flowRead && Report._roundDynamicsTextItem("刚才发生了什么", flowRead, "round-dynamics__item--flow", nextStep());
     if (flowItem) section.appendChild(flowItem);
+
+    var responseItem = responseRead && Report._roundDynamicsTextItem("用户有什么回应", responseRead, "round-dynamics__item--response", nextStep());
+    if (responseItem) section.appendChild(responseItem);
 
     if (drivers.length) {
       var driverItem = Report._el("article", "round-dynamics__item round-dynamics__item--drivers");
-      driverItem.appendChild(Report._el("h3", "round-dynamics__label", "可能在起作用的机制"));
+      driverItem.appendChild(Report._roundDynamicsLabel("这背后可能的原因", nextStep()));
+      driverItem.appendChild(Report._el("p", "round-dynamics__note", "这些是根据现场作出的推测，还要看后续反馈。"));
       var driverList = Report._el("ul", "round-dynamics__driver-list");
       drivers.forEach(function (driver) {
         var row = Report._el("li", "round-dynamics__driver");
         row.appendChild(Report._el("span", "round-dynamics__driver-name", driver.label));
-        var detail = Report._el("div", "round-dynamics__driver-detail");
+        var detail = Report._el("dl", "round-dynamics__driver-detail");
         if (driver.evidence) {
-          detail.appendChild(Report._el("p", "round-dynamics__driver-evidence", driver.evidence));
+          detail.appendChild(Report._el("dt", null, "现场依据"));
+          var evidence = Report._el("dd", "round-dynamics__driver-evidence");
+          evidence.appendChild(Report._roundDynamicsParagraphs(driver.evidence, "round-dynamics__copy"));
+          detail.appendChild(evidence);
         }
         if (driver.mechanism) {
-          detail.appendChild(Report._el("p", "round-dynamics__driver-mechanism", "待验证解释：" + driver.mechanism));
+          detail.appendChild(Report._el("dt", null, "可能的原因 · 待验证"));
+          var mechanism = Report._el("dd", "round-dynamics__driver-mechanism");
+          mechanism.appendChild(Report._roundDynamicsParagraphs(driver.mechanism, "round-dynamics__copy"));
+          detail.appendChild(mechanism);
         }
         row.appendChild(detail);
         driverList.appendChild(row);
@@ -1044,9 +1085,7 @@ var Report = {
       section.appendChild(driverItem);
     }
 
-    var responseItem = Report._roundDynamicsTextItem("用户反馈怎么读", responseRead, "round-dynamics__item--response");
-    if (responseItem) section.appendChild(responseItem);
-    var nextItem = Report._roundDynamicsTextItem("下一拍", nextMove, "round-dynamics__item--next");
+    var nextItem = nextMove && Report._roundDynamicsTextItem("下一句怎么接", nextMove, "round-dynamics__item--next", nextStep());
     if (nextItem) section.appendChild(nextItem);
 
     return section;
