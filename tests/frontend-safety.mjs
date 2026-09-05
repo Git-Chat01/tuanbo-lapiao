@@ -718,9 +718,9 @@ function testMedicalConditionGuidanceDoesNotInventContentInterest() {
   };
   loadScript(context, "site/js/report.js");
   const reportSource = readFileSync(resolve(projectRoot, "site/js/report.js"), "utf8");
-  assert.match(reportSource, /读事实 → 找可能 → 下一拍/u);
-  assert.match(reportSource, /可能在起作用的机制/u);
-  assert.match(reportSource, /待验证解释：/u);
+  assert.match(reportSource, /先看事实，再想原因，最后接下一句/u);
+  assert.match(reportSource, /这背后可能的原因/u);
+  assert.match(reportSource, /可能的原因 · 待验证/u);
   assert.doesNotMatch(reportSource, /调动了什么人性/u, "界面不应把证据有限的心理机制展示成确定结论");
 
   const reasonFocus = { key: "user_reason", label: "给参与理由", evidence: "理由还不明确" };
@@ -961,6 +961,34 @@ function testRevivalScenariosKeepFactsAndStagesSeparate() {
   assert.equal(reportContext.Report._focusCheck(phaseChecks, { verdict: "almost", line_reviews: [] }).key, "vote_instruction");
 }
 
+function testRoundDynamicsParagraphsPreserveContent() {
+  const context = createBrowserContext({
+    document: {
+      createElement(tagName) {
+        return {
+          tagName, children: [], textContent: "",
+          appendChild(child) { this.children.push(child); },
+          setAttribute() {},
+          set innerHTML(value) { throw new Error("报告内容必须作为文本渲染"); },
+        };
+      },
+    },
+  });
+  loadScript(context, "site/js/report.js");
+  const longQuote = "观众说：“" + "这里是完整的用户原话。".repeat(9) + "”主播接住了。";
+  const unsafe = '<img src=x onerror="alert(1)"> & <script>alert(2)</script>';
+  for (const input of [longQuote, unsafe, "先看反馈。\n\n再接下一拍。", "没有标点的内容".repeat(80), "保留🙂以及「嵌套『原话』」。"]) {
+    const body = context.Report._roundDynamicsParagraphs(input, "copy");
+    assert.equal(body.children.map((child) => child.textContent).join(""), input.replace(/\n/g, ""), "排版不得删改正文或解释 HTML");
+    assert.ok(body.children.every((child) => child.tagName === "p"));
+  }
+  const quotedBody = context.Report._roundDynamicsParagraphs(longQuote, "copy");
+  assert.equal(quotedBody.children.length, 1, "长引用中的句号不能把同一段原话拆开");
+  const paragraphs = context.Report._roundDynamicsParagraphs("先看现场。".repeat(25), "copy");
+  assert.ok(paragraphs.children.length > 1, "长正文应在完整句子处分段");
+  assert.equal(context.Report._roundDynamics({ round_dynamics: {} }), null, "无内容时不出现空拆解");
+}
+
 function testReplayMustFinishBeforeGuidedSubmission() {
   const submitLabel = { textContent: "" };
   const submitButton = { disabled: false, querySelector() { return submitLabel; } };
@@ -1009,6 +1037,7 @@ try {
   await testCoachTabResponsesStayInTheirOwnTab();
   testCoachCodeIsSessionScoped();
   testRevivalScenariosKeepFactsAndStagesSeparate();
+  testRoundDynamicsParagraphsPreserveContent();
   testReplayMustFinishBeforeGuidedSubmission();
   console.log("PASS");
 } catch (error) {
