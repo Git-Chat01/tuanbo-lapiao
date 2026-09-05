@@ -52,10 +52,10 @@ var Report = {
     user_reason: {
       number: 4,
       title: "给观众一个上票理由",
-      standard: "这关只看有没有接住用户的兴趣或现场信号，让对方听见参与后能得到的乐趣、选择权或回应；不考票差和上票动作。",
-      why: "只说你需要留下，是你的理由；观众还没听见这一票为什么值得自己参与。",
-      method: "从对方刚才的信号出发，说清对方为什么会觉得这一票上得有意思。",
-      hints: ["先接对方刚才想看、想玩或想决定的事。", "再说对方参与后能看到或得到什么回应。"],
+      standard: "这关只看有没有依据现场事实，给对方一个愿意参与的位置：可以接兴趣或条件，也可以落到保护、归属、身份与选择、互惠与被看见、竞争等机制；不考票差和上票动作。",
+      why: "只说你需要留下，是你的理由；观众还没听见自己为什么值得参与这一拍。",
+      method: "先找一条可验证的用户动作、关系或局势，再说清对方能接住什么位置；没有证据就不替用户猜偏好。",
+      hints: ["先分清现场给的是兴趣、条件、已发生的参与、共同经历还是关键位置。", "只沿着有证据的机制接下一层，不替用户补动机或偏好。"],
     },
     vote_instruction: {
       number: 5,
@@ -237,14 +237,35 @@ var Report = {
     if (targetCheck && targetCheck.status === "met") {
       completed = "你已经把话递给“" + target + "”了，称呼这一项已经过关，不用再改。";
     }
-    var negativeSignal = Report._isNegativeSignal(signal);
+    var reasonSupport = Report._reasonSupportFor(report);
+    var negativeSignal = reasonSupport.kind === "negative";
+    var reasonGap;
+    if (negativeSignal) {
+      reasonGap = "现场这句“" + signal + "”是在表达不想要，先尊重它，不要照着做；这关只补一个对方愿意接的替代回应或选择权，不检查票差和上票动作。";
+    } else if (reasonSupport.kind === "content") {
+      reasonGap = "这关只差接住“" + signal + "”：让“" + target + "”听见，参与后能看到什么回应、得到什么乐趣或选择权；不检查票差和上票动作。";
+    } else if (reasonSupport.kind === "commitment") {
+      reasonGap = signal
+        ? "这关只差把“" + signal + "”里的条件变化和认领边界接准确：让“" + target + "”知道这次选择被看见、会按真实报数来接，不替他追加承诺或猜动机；不检查票差和上票动作。"
+        : "这关只差接住现场已经发生的条件或认领：把边界、选择和已确认事实说准，不替用户追加承诺或猜动机；不检查票差和上票动作。";
+    } else if (reasonSupport.kind === "protection") {
+      reasonGap = "这关只差把真实处境变成一个对方可以自主接住的守护位置，不是重复自己有多难；不检查票差和上票动作。";
+    } else if (reasonSupport.kind === "belonging") {
+      reasonGap = "这关只差接住已经发生的共同经历或共同身份，让对方知道这一拍是在一起续关系，而不是只喊“家人们”；不检查票差和上票动作。";
+    } else if (reasonSupport.kind === "status") {
+      reasonGap = "这关只差把有事实依据的关键位置或选择权交给“" + target + "”，让他能真实拍板，不替他决定；不检查票差和上票动作。";
+    } else if (reasonSupport.kind === "reciprocity") {
+      reasonGap = "这关只差具体接住已经发生的参与，让对方知道自己的动作被看见、会得到真实回应；不把过去参与说成欠票，也不检查票差和上票动作。";
+    } else if (reasonSupport.kind === "competition") {
+      reasonGap = "这关只差把真实的胜负或过关局势变成一个共同参与的位置，让对方知道为什么值得一起走这一拍；不检查票差和上票动作。";
+    } else if (signal) {
+      reasonGap = "这关只差把“" + signal + "”按原意接回来：先说准可观察事实，再给“" + target + "”一个可自主参与的位置；证据不够时不替他补偏好，不检查票差和上票动作。";
+    } else {
+      reasonGap = "这关先从现场找一条可验证的动作、关系或局势，再给“" + target + "”一个可自主参与的位置；没有具体信号时不要编“他想看”或“他喜欢”，也不检查票差和上票动作。";
+    }
     return {
       completed: completed,
-      gap: signal && negativeSignal
-        ? "现场这句“" + signal + "”是在表达不想要，先尊重它，不要照着做；这关只补一个对方愿意看的替代回应或选择权，不检查票差和上票动作。"
-        : signal
-        ? "这关只差接住“" + signal + "”：让“" + target + "”听见，参与后能看到什么回应、得到什么乐趣或选择权；不检查票差和上票动作。"
-        : "这关只差一个站在“" + target + "”这边的理由：说清对方参与后能看到什么回应、得到什么乐趣或选择权；不检查票差和上票动作。",
+      gap: reasonGap,
     };
   },
 
@@ -253,6 +274,71 @@ var Report = {
     if (!text) return false;
     if (/(?:不是说|没说过?).{0,10}(?:想看|要看|喜欢看).{0,10}(?:吗|么|呢|嘛|？|\?)/.test(text)) return false;
     return /(?:不想|不愿意?|不要|不用|不必|无需|无须|不需要|用不着|不喜欢|不想听|不想看|别|没想|没有想|没说|没有说|未说).{0,10}(?:撒娇|撒一个|撒个娇|新舞|返场|跳完|跳舞|舞蹈|才艺|表演|整活|节目|唱歌|点歌|点舞)/.test(text);
+  },
+
+  _reasonSupportFor: function (report) {
+    var scenario = Report._scenario();
+    var signal = Report._fact(scenario.userSignal, "");
+    if (signal && Report._isNegativeSignal(signal)) return { kind: "negative", signal: signal };
+
+    var request = App.state.lastRequest && typeof App.state.lastRequest === "object"
+      ? App.state.lastRequest
+      : {};
+    var factParts = [signal, Report._fact(request.script, "")];
+    ["recentGift", "trainingGoal", "hostCue"].forEach(function (key) {
+      var value = Report._fact(scenario[key], "");
+      if (value) factParts.push(value);
+    });
+    if (Array.isArray(scenario.timeline)) {
+      scenario.timeline.forEach(function (event) {
+        if (!event || typeof event !== "object") return;
+        if (typeof event.speaker === "string") factParts.push(event.speaker);
+        if (typeof event.text === "string") factParts.push(event.text);
+      });
+    }
+    var facts = factParts.join(" ").replace(/\s+/g, "");
+
+    var drivers = report && report.round_dynamics && Array.isArray(report.round_dynamics.human_drivers)
+      ? report.round_dynamics.human_drivers
+      : [];
+    var evidenceSource = factParts.join("").replace(/[\s，。！？：；、,.!?;:'"“”‘’（）()\[\]【】《》〈〉—…·/_-]+/g, "");
+    var isAnchoredInFacts = function (evidence) {
+      var compact = String(evidence || "").replace(/[\s，。！？：；、,.!?;:'"“”‘’（）()\[\]【】《》〈〉—…·/_-]+/g, "");
+      if (!evidenceSource || compact.length < 4) return false;
+      for (var index = 0; index <= compact.length - 4; index += 1) {
+        if (evidenceSource.indexOf(compact.slice(index, index + 4)) >= 0) return true;
+      }
+      return false;
+    };
+    var hasGroundedDriver = function (names) {
+      return drivers.some(function (item) {
+        return item && names.indexOf(item.driver) >= 0 &&
+          typeof item.evidence === "string" && isAnchoredInFacts(item.evidence);
+      });
+    };
+
+    var commitmentPattern = /(?:条件|认领|报数|加一个|追加|一半|抹零|搭子|共同下票|他给我就给|她给我就给|按.{0,6}(?:约定|报的|说的)|承诺一致)/;
+    var contentPattern = /(?:撒娇|撒一个|撒个娇|新舞|返场|跳舞|舞蹈|才艺|表演|整活|节目|唱歌|点歌|点舞|想看|要看|喜欢看)/;
+    if (commitmentPattern.test(facts) || (hasGroundedDriver(["other"]) && /(?:条件|认领|承诺|投入|边界|一致)/.test(facts))) {
+      return { kind: "commitment", signal: signal };
+    }
+    if (signal && contentPattern.test(signal)) return { kind: "content", signal: signal };
+    if (hasGroundedDriver(["protection"]) || /(?:守护|保护|托住|护住|新人|第一次上|手抖|紧张|快掉下去)/.test(facts)) {
+      return { kind: "protection", signal: signal };
+    }
+    if (hasGroundedDriver(["belonging"]) || /(?:老朋友|一路走过|前几轮.{0,12}一起|共同经历|共同身份|归属)/.test(facts)) {
+      return { kind: "belonging", signal: signal };
+    }
+    if (hasGroundedDriver(["status", "control"]) || /(?:关键位置|最后一手|拍板|你来定|选择权|带头|榜一|身份|排面)/.test(facts)) {
+      return { kind: "status", signal: signal };
+    }
+    if (hasGroundedDriver(["reciprocity", "visibility"]) || /(?:被看见|我看见|我接住|具体回应|真实回馈|互惠|(?:刚才|刚刚|刚).{0,12}(?:补|投|组|送|支持)|下去票|刀票)/.test(facts)) {
+      return { kind: "reciprocity", signal: signal };
+    }
+    if (hasGroundedDriver(["competition", "social_proof"]) || /(?:共同闯关|一起过关|翻盘|胜负|守位|十连|拿下这一关|跟票)/.test(facts)) {
+      return { kind: "competition", signal: signal };
+    }
+    return { kind: "neutral", signal: signal };
   },
 
   _signalTerms: function (signal) {
@@ -281,7 +367,13 @@ var Report = {
       self_intro: ["名字", "自我介绍", "看点", "记住你", "你是谁"],
       gratitude: ["感谢", "谢谢", "礼物", "参与", "动作", "接住"],
       target_user: ["昵称", "点到", "喊到", "叫到", "直接对", "说给", "具体用户"],
-      user_reason: ["理由", "想看", "乐趣", "选择", "回应", "参与", "互动", "撒娇", "愿意"],
+      user_reason: [
+        "理由", "想看", "乐趣", "选择", "回应", "参与", "互动", "撒娇", "愿意",
+        "条件", "认领", "报数", "边界", "公平", "承诺", "一致性",
+        "保护", "守护", "托住", "归属", "共同经历", "共同身份", "老朋友", "一起闯",
+        "关键位置", "身份", "带头", "拍板", "被看见", "看见", "互惠", "回馈", "兑现",
+        "竞争", "胜负", "过关", "翻盘", "守位", "跟随", "从众",
+      ],
       vote_instruction: ["票差", "还差", "补一脚", "上票", "投票", "认领", "动作", "等主持", "主持口令", "统一丢"],
     };
     var terms = keywords[focus.key] ? keywords[focus.key].slice() : [];
@@ -333,21 +425,67 @@ var Report = {
       ];
     }
     if (focus && focus.key === "user_reason") {
-      var negativeSignal = Report._isNegativeSignal(signal);
-      var scaffold = negativeSignal
-        ? target + "，我听见你不想看这个，那这次你来选想看的。"
-        : (/撒(?:个)?娇/.test(signal)
-        ? target + "，你刚说想看我撒娇，那我现在撒一个给你看。"
-        : (/返场/.test(signal)
+      var reasonSupport = Report._reasonSupportFor(report);
+      if (reasonSupport.kind === "negative") {
+        return [
+          "先把现场这句当成拒绝来听：“" + signal + "”不要反着理解，也不要照着做。",
+          "再给一个真实替代选择，保留对方拒绝和拍板的空间；不用补票差或上票动作。",
+        ];
+      }
+      if (reasonSupport.kind === "content") {
+        var contentScaffold = /撒(?:个)?娇/.test(signal)
+          ? target + "，你刚说想看我撒娇，那我现在撒一个给你看。"
+          : (/返场/.test(signal)
             ? target + "，你刚说想看返场，那我把返场留给你。"
-            : target + "，你刚说想看这个，那我现在给你一个明确回应。"));
+            : target + "，你刚才递了这个内容信号，我给你一个明确回应。");
+        return [
+          "先把现场这句接回来：“" + signal + "”",
+          "用这个最小骨架自检：“" + contentScaffold + "”只换成你平时会说的词，不用照抄整段，也不用补票差或上票动作。",
+        ];
+      }
+      if (reasonSupport.kind === "commitment") {
+        return [
+          signal
+            ? "先按事实接住这次条件变化或认领：“" + signal + "”"
+            : "先从现场找出已经发生的条件、报数或认领，不把占位说成到账。",
+          "用这个最小骨架自检：“" + target + "，你刚才这次认领我看见了，我按你真实说的接，不替你加。”换成你自己的词，不用补票差或新的上票动作。",
+        ];
+      }
+      if (reasonSupport.kind === "protection") {
+        return [
+          "先说准现场里的真实处境，再给对方一个可以自主选择的守护位置；不要只重复自己有多难。",
+          "用这个最小骨架自检：“" + target + "，这一轮你愿意就来托我一下，这个位置我会接稳。”换成你自己的词，不用补票差或上票动作。",
+        ];
+      }
+      if (reasonSupport.kind === "belonging") {
+        return [
+          "先找到现场里真实的共同经历或共同身份，只有一句“家人们”不算证据。",
+          "用这个最小骨架自检：“" + target + "，前面咱们一起走过，这一拍我想把这段关系接下去。”换成你自己的词，不用补票差或上票动作。",
+        ];
+      }
+      if (reasonSupport.kind === "status") {
+        return [
+          "先找到现场里真实的关键位置或选择，再把决定权留给“" + target + "”，不要替他拍板。",
+          "用这个最小骨架自检：“" + target + "，这一拍把决定权留给你，你想怎么接由你定。”换成你自己的词，不用补票差或上票动作。",
+        ];
+      }
+      if (reasonSupport.kind === "reciprocity") {
+        return [
+          "先说准“" + target + "”已经做过的那次参与，不把方向不明的动作硬写成喜欢或保护。",
+          "用这个最小骨架自检：“" + target + "，你刚才那次参与我看见了，这一拍我先把回应接给你。”换成你自己的词，不用补票差或上票动作。",
+        ];
+      }
+      if (reasonSupport.kind === "competition") {
+        return [
+          "先找到真实的胜负、过关或跟随局势，再说清对方能在共同目标里接什么位置。",
+          "用这个最小骨架自检：“" + target + "，这一轮咱们是在一起过这一关，你愿意就继续和我们走这一拍。”换成你自己的词，不用补票差或上票动作。",
+        ];
+      }
       return [
-        signal && negativeSignal
-          ? "先把现场这句当成拒绝来听：“" + signal + "”不要反着理解，也不要照着做。"
-          : signal
-          ? "先把现场这句接回来：“" + signal + "”"
-          : "先回想“" + target + "”刚才明确表示想看、想玩或想决定什么。",
-        "用这个最小骨架自检：“" + scaffold + "”只换成你平时会说的词，不用照抄整段，也不用补票差或上票动作。",
+        signal
+          ? "先把这句按原意拆成可观察事实：“" + signal + "”；证据不够时不要替用户补动机。"
+          : "现场没有给出具体用户信号时，先不要写“他想看”或“他喜欢”；去找一条真实动作、关系或局势。",
+        "用这个问题自检：“我依据的是他的哪句原话、哪个动作或哪段共同经历？”找到证据后再用自己的词接，不用补票差或上票动作。",
       ];
     }
     if (focus && focus.key === "vote_instruction") {
@@ -778,7 +916,7 @@ var Report = {
       focus.key === "user_reason" &&
       (Report._hasHiddenActionRequirement(text, focus.key) || /(票差|还差\s*\d)/.test(text))
     ) {
-      return "这句还没说清对方参与后能得到的回应、乐趣或选择；本关不检查评论或上票动作。";
+      return "这句还没把现场事实变成对方愿意参与的理由；可以落到回应、选择、被看见、关系角色或共同闯关，本关不检查评论或上票动作。";
     }
     return text;
   },
@@ -879,7 +1017,7 @@ var Report = {
 
     var head = Report._el("div", "round-dynamics__head");
     head.appendChild(Report._el("strong", null, "现场拆解"));
-    head.appendChild(Report._el("span", null, "读场 → 读人 → 下一拍"));
+    head.appendChild(Report._el("span", null, "读事实 → 找可能 → 下一拍"));
     section.appendChild(head);
 
     var flowItem = Report._roundDynamicsTextItem("这一轮发生了什么", flowRead, "round-dynamics__item--flow");
@@ -887,7 +1025,7 @@ var Report = {
 
     if (drivers.length) {
       var driverItem = Report._el("article", "round-dynamics__item round-dynamics__item--drivers");
-      driverItem.appendChild(Report._el("h3", "round-dynamics__label", "调动了什么人性"));
+      driverItem.appendChild(Report._el("h3", "round-dynamics__label", "可能在起作用的机制"));
       var driverList = Report._el("ul", "round-dynamics__driver-list");
       drivers.forEach(function (driver) {
         var row = Report._el("li", "round-dynamics__driver");
@@ -897,7 +1035,7 @@ var Report = {
           detail.appendChild(Report._el("p", "round-dynamics__driver-evidence", driver.evidence));
         }
         if (driver.mechanism) {
-          detail.appendChild(Report._el("p", "round-dynamics__driver-mechanism", "作用：" + driver.mechanism));
+          detail.appendChild(Report._el("p", "round-dynamics__driver-mechanism", "待验证解释：" + driver.mechanism));
         }
         row.appendChild(detail);
         driverList.appendChild(row);

@@ -106,6 +106,22 @@ const medicalScenario = {
   ],
 };
 
+const unknownRuleScenario = {
+  id: "revival-rule-not-announced-01",
+  roleContext: "你是刚被刀下、正在等待主持公布本轮变更规则的主播",
+  phase: "revival_offer",
+  goalUnit: "票（本轮倍率与礼物换算尚未公布）",
+  hostCue: "主持明确本轮复活规则要变更，暂不按基础两倍计算；已确认刀票累计1000票，新倍率、目标和取整规则尚待公布。",
+  targetUser: "刚参与刀门的观众与仍在场观众",
+  userSignal: "有人参与刀门，但没有人说明自己的动机，也没有复活认领。",
+  recentGift: "本轮出现1000票刀门票；复活方向尚无到账",
+  trainingGoal: "分清已知刀票与未知复活规则，不擅算目标、不替用户定动机。",
+  timeline: [
+    { at: 0, role: "system", kind: "status", speaker: "场况", text: "本轮刀门累计1000票。", effect: "down" },
+    { at: 1, role: "host", kind: "host_cue", speaker: "主持", text: "这轮规则有变，先不按基础两倍算，等我公布。", effect: "neutral" },
+  ],
+};
+
 const fixtures = [
   {
     id: "closing-good",
@@ -149,6 +165,20 @@ const fixtures = [
       const text = JSON.stringify(report);
       assert.doesNotMatch(text, /观众丙.{0,12}(?:已经送|已经到账|送了五个)/u);
       assert.doesNotMatch(text, /(?:讨厌|不支持).{0,8}(?:主播|你)/u);
+      assert.doesNotMatch(text, /观众丙.{0,10}(?:就是|肯定|一定).{0,10}(?:喜欢|讨厌|逗|引起注意)/u);
+    },
+  },
+  {
+    id: "unknown-rule-no-invented-math",
+    voteGap: "far",
+    scenario: unknownRuleScenario,
+    script: "刚才这一千票是已经发生的刀门票，主持还没公布这轮复活倍率和目标，我先不替大家算。等规则说清楚，我再按现场接下一拍，也不因为谁刀了我就替他定态度。",
+    check(report) {
+      const text = JSON.stringify(report);
+      assert.doesNotMatch(text, /(?:需要|目标|还差|应为|就是)\s*(?:2000|两千|3000|三千)\s*票/u);
+      assert.doesNotMatch(text, /(?:已经|确认|这就是).{0,8}偷塔/u);
+      assert.doesNotMatch(text, /(?:刀门|刀票).{0,12}(?:说明|证明|代表).{0,12}(?:讨厌|不支持)/u);
+      assert.match(text, /(?:未知|未公布|没公布|不能算|不替.{0,4}算|等.{0,6}规则)/u);
     },
   },
 ];

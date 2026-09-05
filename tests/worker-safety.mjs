@@ -81,6 +81,34 @@ assert.match(prompt.SYSTEM_PROMPT, /20.{0,80}18.{0,80}8.{0,160}(?:整轮|递减|
 assert.match(prompt.SYSTEM_PROMPT, /target_user \/ user_reason \/ vote_instruction 是三项彼此独立的原子能力/u);
 assert.match(prompt.SYSTEM_PROMPT, /第 3 项只看有没有明确对到人.{0,80}第 4 项只看有没有给用户侧价值.{0,100}第 5 项看有没有递出“当前阶段能执行的动作”/u);
 assert.match(prompt.SYSTEM_PROMPT, /“刀 \/ 刺 \/ 刺客 \/ 刀门”是本轮给主播上“下去票”的玩法动作/u);
+assert.match(prompt.SYSTEM_PROMPT, /新人、新团以保门、刀门、复活、偷塔、踢这五个基础玩法为主/u);
+assert.match(prompt.SYSTEM_PROMPT, /不因新人没有提到拓展规则而扣分/u);
+assert.match(
+  prompt.SYSTEM_PROMPT,
+  /保门方与刀门方.{0,80}被刀后可能进入复活.{0,80}复活成功后还可能被踢.{0,80}再(?:次|进入)复活/u
+);
+assert.match(prompt.SYSTEM_PROMPT, /若现场另有底分，还要同时达到该底分/u);
+assert.match(prompt.SYSTEM_PROMPT, /底分没有提供时不得擅自套 66/u);
+assert.match(prompt.SYSTEM_PROMPT, /平票如何处理没有提供时.{0,30}不得自行判胜负/u);
+assert.match(
+  prompt.SYSTEM_PROMPT,
+  /基础复活目标是“本轮被刀票数 ×2”.{0,100}未给变更规则时沿用这个基础口径/u
+);
+assert.match(prompt.SYSTEM_PROMPT, /基础复活 ×2 本身不是多倍拓展/u);
+assert.match(prompt.SYSTEM_PROMPT, /不能因进入第九轮、临近十连胜或票差大就自动升级倍率/u);
+assert.match(prompt.SYSTEM_PROMPT, /规则正在变更、尚待主持公布.{0,100}不能沿用基础倍率擅算/u);
+assert.match(prompt.SYSTEM_PROMPT, /票值换算成“个\/手”的规则、取整方式没有提供时不得臆算/u);
+assert.match(prompt.SYSTEM_PROMPT, /踢发生在复活成功以后.{0,180}再次复活、再次被踢/u);
+assert.match(
+  prompt.SYSTEM_PROMPT,
+  /只有时间线同时证明“倒计时末段突然上票”和“改变了结果”时才能确认偷塔/u
+);
+assert.match(prompt.SYSTEM_PROMPT, /秒数归零本身不替代主持\/system 的结果确认/u);
+assert.match(
+  prompt.SYSTEM_PROMPT,
+  /第一层写可确认事实.{0,120}第二层只列有证据的可能机制.{0,160}第三层明确仍未知的规则或动机/u
+);
+assert.match(prompt.SYSTEM_PROMPT, /主持撑下限、用户运维拉上限.{0,80}不能被换算/u);
 assert.match(prompt.SYSTEM_PROMPT, /已经确认占位的数量.{0,120}未报数但直接送出/u);
 assert.match(prompt.SYSTEM_PROMPT, /“加一个”.{0,80}累计追加 1/u);
 assert.match(prompt.SYSTEM_PROMPT, /“28活”表示本轮需要 28 个约定的复活礼物单位/u);
@@ -211,10 +239,35 @@ assert.equal(partialButQualifiedAlmost.verdict, "passed");
 const normalizedRoundDynamics = index.normalizeReport(makeRawReport(), "测试原句");
 assert.deepEqual(normalizedRoundDynamics.round_dynamics, validRoundDynamics());
 
+const emptyDriversWithNoReason = index.normalizeReport(makeRawReport({
+  verdict: "almost",
+  structure_checks: allMetChecks().map((item) =>
+    item.key === "user_reason" ? { ...item, status: "missing" } : item
+  ),
+  round_dynamics: validRoundDynamics({ human_drivers: [] }),
+}), "测试原句");
+assert.equal(
+  emptyDriversWithNoReason._roundDynamicsContractValid,
+  true,
+  "没有可验证人性证据时，空数组应是诚实且合法的动态契约"
+);
+index.applyReportSafetyGates(emptyDriversWithNoReason, []);
+assert.notEqual(emptyDriversWithNoReason.verdict, "passed");
+
+const emptyDriversClaimingReason = index.normalizeReport(makeRawReport({
+  round_dynamics: validRoundDynamics({ human_drivers: [] }),
+}), "测试原句");
+index.applyReportSafetyGates(emptyDriversClaimingReason, []);
+assert.notEqual(
+  emptyDriversClaimingReason.verdict,
+  "passed",
+  "user_reason=met 时不能用空 human_drivers 跳过事实机制证据"
+);
+assert.match(emptyDriversClaimingReason.verdict_reason, /人性机制/u);
+
 const invalidRoundDynamicsCases = [
   ["缺少整个字段", undefined],
   ["flow_read 为空", validRoundDynamics({ flow_read: "" })],
-  ["human_drivers 为空", validRoundDynamics({ human_drivers: [] })],
   [
     "human_drivers 超过3项",
     validRoundDynamics({
@@ -1960,6 +2013,10 @@ assert.match(referencePrompt, /绝不能迁移成当前现场事实/);
 
 const noScenarioPrompt = prompt.buildUserPrompt("close", "测试原句", [], [], null);
 assert.match(noScenarioPrompt, /没有 hostCue 时不得用“没接住主持”扣分/);
+assert.match(
+  noScenarioPrompt,
+  /基础复活 ×2、平票踢 \/ 平票救，默认不加底分.{0,80}不要求新人补讲拓展玩法/u
+);
 assert.match(noScenarioPrompt, /user_reason.{0,80}vote_instruction.{0,160}(?:两项|核心).{0,80}met/u);
 assert.match(noScenarioPrompt, /self_intro.{0,80}gratitude.{0,80}target_user.{0,160}partial/u);
 

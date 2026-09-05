@@ -674,7 +674,7 @@ function testDefaultScenarioGuidanceIsConcreteAndHuman() {
   );
   assert.equal(
     context.Report._reviewCommentFor("没有让凯哥扣1或上票反馈", reasonFocus),
-    "这句还没说清对方参与后能得到的回应、乐趣或选择；本关不检查评论或上票动作。",
+    "这句还没把现场事实变成对方愿意参与的理由；可以落到回应、选择、被看见、关系角色或共同闯关，本关不检查评论或上票动作。",
     "完整复盘的逐句评论也必须消除给理由隐藏门槛"
   );
   for (const hiddenTargetComment of [
@@ -698,6 +698,122 @@ function testDefaultScenarioGuidanceIsConcreteAndHuman() {
       `给理由完整复盘必须过滤隐藏动作同义词：${hiddenReasonComment}`
     );
   }
+}
+
+function testMedicalConditionGuidanceDoesNotInventContentInterest() {
+  const context = createBrowserContext({
+    URL,
+    URLSearchParams,
+    location: { hostname: "git-chat01.github.io", search: "" },
+    App: { state: { freeMode: false, lastRequest: null } },
+  });
+  loadScript(context, "site/js/config.js");
+  const scenario = Array.from(context.TRAINING_SCENARIOS).find(
+    (item) => item.id === "revival-medical-condition-01"
+  );
+  assert.ok(scenario, "应存在医药费条件训练场景");
+  context.App.state.lastRequest = {
+    script: "观众丙，刚才这次我看见了。",
+    scenario,
+  };
+  loadScript(context, "site/js/report.js");
+  const reportSource = readFileSync(resolve(projectRoot, "site/js/report.js"), "utf8");
+  assert.match(reportSource, /读事实 → 找可能 → 下一拍/u);
+  assert.match(reportSource, /可能在起作用的机制/u);
+  assert.match(reportSource, /待验证解释：/u);
+  assert.doesNotMatch(reportSource, /调动了什么人性/u, "界面不应把证据有限的心理机制展示成确定结论");
+
+  const reasonFocus = { key: "user_reason", label: "给参与理由", evidence: "理由还不明确" };
+  const progress = {
+    checks: [
+      { key: "gratitude", label: "接住参与", status: "met" },
+      { key: "user_reason", label: "给参与理由", status: "missing" },
+      { key: "vote_instruction", label: "当下动作", status: "missing" },
+    ],
+  };
+  const guidance = context.Report._guidanceFor({}, reasonFocus, progress);
+  const help = Array.from(context.Report._helpItemsFor({}, reasonFocus));
+  const teachingText = [
+    context.Report.CHALLENGES.user_reason.standard,
+    context.Report.CHALLENGES.user_reason.method,
+    guidance.gap,
+    ...help,
+  ].join(" ");
+
+  assert.match(teachingText, /条件|认领|报数|边界/u, "医药费切片应按条件变化和认领边界教学");
+  assert.match(teachingText, /真实|事实|证据/u, "扶助应提醒学员只沿可验证事实判断");
+  assert.doesNotMatch(
+    teachingText,
+    /你刚说想看这个|明确表示想看|想看、想玩|刚说想看/u,
+    "条件认领不能被前端虚构成内容兴趣"
+  );
+
+  const supportedDirections = [
+    "接住条件认领的边界，不替用户追加承诺。",
+    "给真实处境一个可自主接住的保护位置。",
+    "用老朋友的共同经历延续归属。",
+    "把关键位置和选择权交给观众丙拍板。",
+    "具体看见刚才的参与，再给真实回馈。",
+    "把胜负和过关局势变成共同参与。",
+  ];
+  for (const direction of supportedDirections) {
+    assert.equal(
+      context.Report._specificDirectionFor({ direction: { summary: direction } }, reasonFocus),
+      direction,
+      `有证据的人性机制方向不应被焦点过滤：${direction}`
+    );
+  }
+
+  const driverHelpCases = [
+    { driver: "protection", evidence: "新人第一次上台", expected: /真实处境|守护位置/u },
+    { driver: "belonging", evidence: "老朋友陪过前几轮", expected: /共同经历|共同身份/u },
+    { driver: "control", evidence: "最后位置交给观众丙拍板", expected: /关键位置|决定权/u },
+    { driver: "visibility", evidence: "看见观众丙刚才的参与", expected: /已经做过|参与我看见/u },
+    { driver: "competition", evidence: "一起走完这一关", expected: /胜负|过关/u },
+  ];
+  for (const fixture of driverHelpCases) {
+    context.App.state.lastRequest = {
+      script: fixture.evidence,
+      scenario: { targetUser: "观众丙", userSignal: fixture.evidence },
+    };
+    const report = {
+      round_dynamics: {
+        human_drivers: [{ driver: fixture.driver, evidence: fixture.evidence, mechanism: "有事实支撑" }],
+      },
+    };
+    const mechanismHelp = Array.from(context.Report._helpItemsFor(report, reasonFocus)).join(" ");
+    assert.match(mechanismHelp, fixture.expected, `应给 ${fixture.driver} 对应的关系机制扶助`);
+    assert.doesNotMatch(
+      mechanismHelp,
+      /你刚说想看这个|你刚说想看|明确表示想看/u,
+      `${fixture.driver} 机制不得被改写成虚构内容偏好`
+    );
+  }
+
+  context.App.state.lastRequest = {
+    script: "观众丙，我想把这一轮接好。",
+    scenario: { targetUser: "观众丙" },
+  };
+  const noSignalGuidance = context.Report._guidanceFor({}, reasonFocus, progress);
+  const noSignalHelp = Array.from(context.Report._helpItemsFor({}, reasonFocus)).join(" ");
+  assert.match(`${noSignalGuidance.gap} ${noSignalHelp}`, /没有具体用户信号|没有给出具体用户信号|可验证|真实动作/u);
+  assert.doesNotMatch(
+    `${noSignalGuidance.gap} ${noSignalHelp}`,
+    /你刚说想看|明确表示想看|你想看这个/u,
+    "没有具体 signal 时不得替用户编偏好"
+  );
+
+  const hallucinatedDriverHelp = Array.from(context.Report._helpItemsFor({
+    round_dynamics: {
+      human_drivers: [{ driver: "protection", evidence: "新人第一次上台", mechanism: "让用户守护" }],
+    },
+  }, reasonFocus)).join(" ");
+  assert.match(hallucinatedDriverHelp, /没有给出具体用户信号|真实动作|可验证/u);
+  assert.doesNotMatch(
+    hallucinatedDriverHelp,
+    /守护位置|你愿意就来托我/u,
+    "模型没有锚定输入事实的人性标签不得驱动前端扶助"
+  );
 }
 
 async function testCoachTabResponsesStayInTheirOwnTab() {
@@ -889,6 +1005,7 @@ try {
   testFiveStructureItemsDoNotMasqueradeAsFullPass();
   testChallengeSolutionCannotDriftToAnotherProblem();
   testDefaultScenarioGuidanceIsConcreteAndHuman();
+  testMedicalConditionGuidanceDoesNotInventContentInterest();
   await testCoachTabResponsesStayInTheirOwnTab();
   testCoachCodeIsSessionScoped();
   testRevivalScenariosKeepFactsAndStagesSeparate();

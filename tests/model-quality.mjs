@@ -499,9 +499,15 @@ function assertRoundDynamicsContract(report) {
   }
   requireCondition(Array.isArray(dynamics.human_drivers), "round_dynamics.human_drivers 必须是数组");
   requireCondition(
-    dynamics.human_drivers.length >= 1 && dynamics.human_drivers.length <= 3,
-    "round_dynamics.human_drivers 必须有1-3项"
+    dynamics.human_drivers.length <= 3,
+    "round_dynamics.human_drivers 最多3项"
   );
+  if (statusOf(report, "user_reason") === "met") {
+    requireCondition(
+      dynamics.human_drivers.length >= 1,
+      "user_reason=met 时 human_drivers 至少要有1项事实机制"
+    );
+  }
   dynamics.human_drivers.forEach((item, index) => {
     requireCondition(item && typeof item === "object" && !Array.isArray(item), `第${index + 1}项 driver 无效`);
     requireCondition(HUMAN_DRIVER_ENUM.has(item.driver), `第${index + 1}项 driver 枚举非法`);

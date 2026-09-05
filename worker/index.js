@@ -906,6 +906,18 @@ function detectContextualHumanReason(sourceScript) {
   return { state: "unknown", evidence: "" };
 }
 
+function isHumanDriverEvidenceGrounded(evidence, sourceScript, scenario) {
+  const evidenceSource = [String(sourceScript || ""), scenarioEvidenceText(scenario)]
+    .join("")
+    .replace(/[\s\p{P}]+/gu, "");
+  if (!evidenceSource) return false;
+  const compactEvidence = String(evidence || "").replace(/[\s\p{P}]+/gu, "");
+  for (let index = 0; index <= compactEvidence.length - 4; index += 1) {
+    if (evidenceSource.includes(compactEvidence.slice(index, index + 4))) return true;
+  }
+  return false;
+}
+
 /**
  * 把模型已经完成的“证据 → 人性机制”判断接回 user_reason，避免报告自相矛盾：
  * 一边说归属/互惠/共同闯关在驱动参与，一边又把理由判 missing。
@@ -917,25 +929,13 @@ function groundedHumanDriverReason(roundDynamics, sourceScript, scenario) {
     ? roundDynamics.human_drivers
     : [];
   const surfaceLabels = /(?:保护欲|存在感|归属感|从众|互惠|紧迫感|好奇心|掌控感)/gu;
-  const evidenceSource = [String(sourceScript || ""), scenarioEvidenceText(scenario)]
-    .join("")
-    .replace(/[\s\p{P}]+/gu, "");
-
-  const isAnchoredInFacts = (evidence) => {
-    if (!evidenceSource) return false;
-    const compactEvidence = evidence.replace(/[\s\p{P}]+/gu, "");
-    for (let index = 0; index <= compactEvidence.length - 4; index += 1) {
-      if (evidenceSource.includes(compactEvidence.slice(index, index + 4))) return true;
-    }
-    return false;
-  };
 
   for (const item of drivers) {
     if (!item || typeof item !== "object" || item.driver === "urgency") continue;
     const evidence = typeof item.evidence === "string" ? item.evidence.trim() : "";
     const mechanism = typeof item.mechanism === "string" ? item.mechanism.trim() : "";
     if (!evidence || !mechanism) continue;
-    if (!isAnchoredInFacts(evidence)) continue;
+    if (!isHumanDriverEvidenceGrounded(evidence, sourceScript, scenario)) continue;
 
     // 只把心理名词抄进 evidence 不是现场证据。
     const factualRemainder = evidence
@@ -1667,6 +1667,9 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
   const structureContractValid = report._structureContractValid === true;
   const safetyFieldsContractValid = report._safetyFieldsContractValid === true;
   const roundDynamicsContractValid = report._roundDynamicsContractValid === true;
+  const hasDriverWhenSupport =
+    !hasSupportEvidence ||
+    (Array.isArray(report.round_dynamics?.human_drivers) && report.round_dynamics.human_drivers.length > 0);
   const qualifiesForPassed =
     hasSupportEvidence &&
     hasVoteInstruction &&
@@ -1675,6 +1678,7 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
     structureContractValid &&
     safetyFieldsContractValid &&
     roundDynamicsContractValid &&
+    hasDriverWhenSupport &&
     !hasLowPosture &&
     !hasPersonaIssue &&
     !hasDetectedRedline &&
@@ -1691,6 +1695,7 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
       if (!structureContractValid) issues.push("五项结构证据还不完整");
       if (!safetyFieldsContractValid) issues.push("安全字段还不完整");
       if (!roundDynamicsContractValid) issues.push("本轮动态与人性驱动判断还不完整");
+      if (!hasDriverWhenSupport) issues.push("参与理由还没有对应到可验证的人性机制");
       report.verdict_reason = `${issues.join("，")}，先补好再过关。`;
     }
   }
@@ -2492,7 +2497,6 @@ export function normalizeReport(report, sourceScript) {
   const roundDynamicsContractValid =
     typeof rawRoundDynamics.flow_read === "string" &&
     rawRoundDynamics.flow_read.trim().length > 0 &&
-    rawHumanDrivers.length >= 1 &&
     rawHumanDrivers.length <= 3 &&
     rawHumanDrivers.every(
       (item) =>
