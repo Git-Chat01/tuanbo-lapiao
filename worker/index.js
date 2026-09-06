@@ -162,7 +162,11 @@ const SCENARIO_FIELD_ORDER = [
 // DeepSeek 调用参数
 const DEEPSEEK_CONFIG = {
   url: "https://api.deepseek.com/chat/completions",
-  model: "deepseek-chat",
+  // 显式写 deepseek-v4-flash，不依赖 deepseek-chat 旧别名：
+  // 2026-09 官方 /models 列表已不再列出 deepseek-chat（实测别名仍解析到
+  // v4-flash，但随时可能被下线，届时批改会直接 502）。批改是判定型任务，
+  // flash 档足够；若教练反馈报告质量不够再考虑 v4-pro。
+  model: "deepseek-v4-flash",
   // 温度演进：0.7 → 0.3 → 0。
   // 0.7：同一稿每次换新挑剔点，好稿永远 almost；
   // 0.3：本地 3/3 稳定，但线上空案例库时 case2 仍小概率翻车
@@ -2437,6 +2441,10 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
         model: DEEPSEEK_CONFIG.model,
         temperature: DEEPSEEK_CONFIG.temperature,
         max_tokens: DEEPSEEK_CONFIG.maxTokens,
+        // v4 系列默认开思考（effort=high），思考 token 白烧额度且挤占
+        // max_tokens 导致正文 JSON 截断（2026-09-06 生产 502 的根因）。
+        // 批改是判定型任务，报告质量靠 prompt 规则不靠思考链，显式关掉。
+        thinking: { type: "disabled" },
         response_format: { type: "json_object" }, // 结构化输出，前端逐字段 textContent 渲染
         messages: [
           { role: "system", content: SYSTEM_PROMPT },

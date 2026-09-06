@@ -198,9 +198,10 @@ async function requestRaw(fixture) {
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: "deepseek-chat",
+        model: "deepseek-v4-flash",
         temperature: 0,
         max_tokens: 3000,
+        thinking: { type: "disabled" }, // 与生产 Worker 一致：v4 默认开思考会挤占输出额度
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: prompt.SYSTEM_PROMPT },

@@ -81,7 +81,7 @@ tests/
   smoke.sh                真实 Worker 冒烟
 ```
 
-后端是 Cloudflare Worker，模型为 DeepSeek `deepseek-chat`，使用 JSON mode、`temperature: 0`、45 秒超时。前端保持原生 HTML/CSS/JS，方便在微信和手机浏览器中直接打开。
+后端是 Cloudflare Worker，模型为 DeepSeek `deepseek-v4-flash`，使用 JSON mode、`temperature: 0`、45 秒超时。前端保持原生 HTML/CSS/JS，方便在微信和手机浏览器中直接打开。
 
 ## API 契约
 
