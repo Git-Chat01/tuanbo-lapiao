@@ -20,10 +20,16 @@ function createBrowserContext(overrides = {}) {
     Object,
     setTimeout,
     clearTimeout,
+    setInterval,
+    clearInterval,
     ...overrides,
   };
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;
+  // 真实浏览器里 window.self === window、window.top 默认也指向自身；
+  // coach.js 的 frame-buster 依赖这两个属性判断“是否被嵌入 iframe”。
+  sandbox.self = sandbox;
+  if (!("top" in sandbox)) sandbox.top = sandbox;
   return vm.createContext(sandbox);
 }
 
@@ -1019,10 +1025,431 @@ function testReplayMustFinishBeforeGuidedSubmission() {
   assert.equal(submitLabel.textContent, "帮我看这版");
 }
 
+function testEntryCodeCanBeClearedByUser() {
+  const stored = new Map([["tuanbo_access_code", "saved-code"]]);
+  const context = createBrowserContext({
+    STORAGE_KEYS: { accessCode: "tuanbo_access_code" },
+    localStorage: {
+      getItem(key) { return stored.get(key) || null; },
+      setItem(key, value) { stored.set(key, String(value)); },
+      removeItem(key) { stored.delete(key); },
+    },
+    document: { addEventListener() {} },
+  });
+  loadScript(context, "site/js/app.js");
+  assert.equal(context.App.getAccessCode(), "saved-code", "已保存的入口码应能读回");
+  context.App.clearAccessCode();
+  assert.equal(context.App.getAccessCode(), "", "清除后不得继续携带入口码");
+  assert.equal(stored.has("tuanbo_access_code"), false, "清除必须同时删掉 localStorage 里的持久副本");
+}
+
+async function testRenderErrorIsNotReportedAsNetworkError() {
+  const toastMessages = [];
+  const consoleErrors = [];
+  const context = createBrowserContext({
+    API_BASE: "https://coach.example.test",
+    App: {
+      getAccessCode() { return "code-1"; },
+      toast(message) { toastMessages.push(message); },
+    },
+    fetch() {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json() {
+          return Promise.resolve({ report: { verdict: "almost" } });
+        },
+      });
+    },
+    console: {
+      log() {},
+      warn() {},
+      error(...args) { consoleErrors.push(args); },
+    },
+  });
+  loadScript(context, "site/js/api.js");
+
+  let onErrorCalled = false;
+  let finishCount = 0;
+  await new Promise((resolvePromise) => {
+    context.Api.submit(
+      { voteGap: "close", script: "这是一段足够长的测试话术", scenario: null },
+      {
+        onSuccess() {
+          throw new Error("报告渲染组件崩溃");
+        },
+        onError(status, message) {
+          onErrorCalled = { status, message };
+        },
+        onFinish() {
+          finishCount += 1;
+          resolvePromise();
+        },
+      }
+    );
+  });
+
+  assert.equal(onErrorCalled, false, "渲染异常不能被伪装成网络错误回调");
+  assert.ok(consoleErrors.length > 0, "渲染异常的真实堆栈必须打到 console");
+  assert.equal(finishCount, 1, "渲染失败后流程回调仍应复位");
+  assert.equal(context.Api._inFlight, false, "渲染失败不得把 _inFlight 永久锁住");
+  assert.ok(toastMessages.length > 0, "应给用户诚实的渲染失败提示而不是网络错误");
+  assert.match(toastMessages[0], /渲染出错/, "提示文案必须指向渲染而非网络");
+}
+
+// ---- #11 低危修复：前端网络层与教练后台防护 ----
+
+async function testGatewayFailureRetriesExactlyOnce() {
+  for (const gatewayStatus of [502, 503, 504]) {
+    let fetchCount = 0;
+    let successReport = null;
+    let errorResult = null;
+    const context = createBrowserContext({
+      API_BASE: "https://coach.example.test",
+      App: { getAccessCode() { return "code-1"; }, toast() {} },
+      fetch() {
+        fetchCount += 1;
+        if (fetchCount === 1) {
+          // 网关故障典型表现：返回 HTML 页面而不是 JSON
+          return Promise.resolve({
+            ok: false,
+            status: gatewayStatus,
+            json() { return Promise.reject(new Error("unexpected token <")); },
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json() { return Promise.resolve({ report: { verdict: "almost" } }); },
+        });
+      },
+    });
+    loadScript(context, "site/js/api.js");
+    await new Promise((resolvePromise) => {
+      context.Api.submit(
+        { voteGap: "close", script: "这是一段足够长的测试话术", scenario: null },
+        {
+          onSuccess(report) { successReport = report; },
+          onError(status, message) { errorResult = { status, message }; },
+          onFinish() { resolvePromise(); },
+        }
+      );
+    });
+    assert.equal(fetchCount, 2, `网关 ${gatewayStatus} 应自动重试一次`);
+    assert.ok(
+      successReport && successReport.verdict === "almost",
+      `重试成功后应正常交付报告（${gatewayStatus}）`
+    );
+    assert.equal(errorResult, null, "重试成功后不得再进入错误回调");
+    assert.equal(context.Api._inFlight, false, "重试流程结束后必须释放 _inFlight 锁");
+  }
+}
+
+async function testGatewayFailureDoesNotRetryBusinessErrors() {
+  // 401/429/500 都是业务语义，重试只会放大问题（尤其 429 会让限流更糟）
+  const cases = [
+    { status: 401, json: { message: "入口码无效" }, expectMessage: "入口码不对" },
+    { status: 429, json: { message: "请求太频繁，休息一分钟再试" }, expectMessage: "请求太频繁，休息一分钟再试" },
+    { status: 500, json: { message: "教练内部出错了" }, expectMessage: "教练内部出错了" },
+  ];
+  for (const fixture of cases) {
+    let fetchCount = 0;
+    let errorResult = null;
+    const context = createBrowserContext({
+      API_BASE: "https://coach.example.test",
+      App: { getAccessCode() { return "code-1"; }, toast() {} },
+      fetch() {
+        fetchCount += 1;
+        return Promise.resolve({
+          ok: false,
+          status: fixture.status,
+          json() { return Promise.resolve(fixture.json); },
+        });
+      },
+    });
+    loadScript(context, "site/js/api.js");
+    await new Promise((resolvePromise) => {
+      context.Api.submit(
+        { voteGap: "close", script: "这是一段足够长的测试话术", scenario: null },
+        {
+          onSuccess() {},
+          onError(status, message) { errorResult = { status, message }; },
+          onFinish() { resolvePromise(); },
+        }
+      );
+    });
+    assert.equal(fetchCount, 1, `${fixture.status} 是业务状态，不应自动重试`);
+    assert.deepEqual(
+      errorResult,
+      { status: fixture.status, message: fixture.expectMessage },
+      `${fixture.status} 应给出对应文案`
+    );
+  }
+}
+
+async function testRepeatedGatewayFailureReportsAfterOneRetry() {
+  let fetchCount = 0;
+  let errorResult = null;
+  const context = createBrowserContext({
+    API_BASE: "https://coach.example.test",
+    App: { getAccessCode() { return "code-1"; }, toast() {} },
+    fetch() {
+      fetchCount += 1;
+      return Promise.resolve({
+        ok: false,
+        status: 502,
+        json() { return Promise.reject(new Error("unexpected token <")); },
+      });
+    },
+  });
+  loadScript(context, "site/js/api.js");
+  await new Promise((resolvePromise) => {
+    context.Api.submit(
+      { voteGap: "close", script: "这是一段足够长的测试话术", scenario: null },
+      {
+        onSuccess() {},
+        onError(status, message) { errorResult = { status, message }; },
+        onFinish() { resolvePromise(); },
+      }
+    );
+  });
+  assert.equal(fetchCount, 2, "重试只做一次，不能无限重试");
+  assert.equal(errorResult.status, 502);
+  assert.equal(errorResult.message, "教练服务开小差了，稍后再试", "重试仍失败应如实告知网关故障");
+}
+
+async function testParseFailureWithoutErrorStatusIsParsingMessage() {
+  // 200 但 body 不是合法 JSON：是解析问题，不能混进“连不上教练”的网络错误
+  let errorResult = null;
+  const context = createBrowserContext({
+    API_BASE: "https://coach.example.test",
+    App: { getAccessCode() { return "code-1"; }, toast() {} },
+    fetch() {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json() { return Promise.reject(new Error("unexpected token <")); },
+      });
+    },
+  });
+  loadScript(context, "site/js/api.js");
+  await new Promise((resolvePromise) => {
+    context.Api.submit(
+      { voteGap: "close", script: "这是一段足够长的测试话术", scenario: null },
+      {
+        onSuccess() {},
+        onError(status, message) { errorResult = { status, message }; },
+        onFinish() { resolvePromise(); },
+      }
+    );
+  });
+  assert.equal(errorResult.status, 200);
+  assert.equal(errorResult.message, "结果解析失败，稍后再试");
+}
+
+async function testTimeoutWithoutAbortControllerInvalidatesLateResponse() {
+  // 旧 WebView 没有 AbortController：超时只是“假中断”，fetch 还在后台跑。
+  // 超时后必须把请求号前移，否则稍后到达的结果会绕过超时提示突然渲染。
+  const timers = [];
+  let fetchCount = 0;
+  let errorResult = null;
+  const context = createBrowserContext({
+    API_BASE: "https://coach.example.test",
+    App: { getAccessCode() { return "code-1"; }, toast() {} },
+    setTimeout(fn, ms) { timers.push({ fn, ms }); return timers.length; },
+    clearTimeout() {},
+    fetch() {
+      fetchCount += 1;
+      return new Promise(() => {}); // 一直不返回：模拟请求挂起
+    },
+  });
+  assert.equal(vm.runInContext("typeof AbortController", context), "undefined", "测试沙箱不应提供 AbortController");
+  loadScript(context, "site/js/api.js");
+
+  let finishCount = 0;
+  context.Api.submit(
+    { voteGap: "close", script: "这是一段足够长的测试话术", scenario: null },
+    {
+      onSuccess() {},
+      onError(status, message) { errorResult = { status, message }; },
+      onFinish() { finishCount += 1; },
+    }
+  );
+
+  const timeoutTimer = timers.find((item) => item.ms === 60000);
+  assert.ok(timeoutTimer, "应设置 60 秒总预算超时");
+  const requestIdAtSubmit = context.Api._requestId;
+  timeoutTimer.fn(); // 触发超时
+
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 0));
+  assert.equal(fetchCount, 1);
+  assert.equal(errorResult.message, "等太久了，网络可能不好，重试一次");
+  assert.equal(
+    context.Api._requestId,
+    requestIdAtSubmit + 1,
+    "无 AbortController 的超时必须前移请求号，让迟到响应在 onSuccess 处作废"
+  );
+  assert.equal(context.Api._inFlight, false, "超时后必须释放 _inFlight 锁");
+  assert.equal(finishCount, 1);
+}
+
+function testCoachFrameBusterClearsEmbeddedPage() {
+  // 正常页面：window.top 就是自己，不应启动任何清空定时器
+  const normalContext = createBrowserContext({
+    document: { addEventListener() {} },
+    setInterval() {
+      throw new Error("未被嵌入的页面不应启动清空定时器");
+    },
+  });
+  loadScript(normalContext, "site/js/coach.js");
+
+  // 被嵌入的页面：试图夺回顶层 + 持续清空内容，不给外层站点留可操作后台
+  const intervals = [];
+  const body = { textContent: "后台敏感内容" };
+  const embeddedContext = createBrowserContext({
+    document: { addEventListener() {}, body },
+    location: { href: "https://coach-page.example" },
+    top: { location: { href: "https://evil.example" } },
+    setInterval(fn, ms) {
+      intervals.push({ fn, ms });
+      return intervals.length;
+    },
+  });
+  loadScript(embeddedContext, "site/js/coach.js");
+  assert.equal(intervals.length, 1, "被嵌入时应有持续的防护动作");
+  assert.equal(intervals[0].ms, 300, "清空检查应高频执行");
+  assert.strictEqual(
+    embeddedContext.top.location,
+    embeddedContext.location,
+    "应尝试把顶层页面替换成本页地址"
+  );
+
+  intervals[0].fn();
+  assert.equal(body.textContent, "", "被嵌入后必须清空页面内容");
+}
+
+async function testCoachCodeProbeTimesOut() {
+  const timers = [];
+  const context = createBrowserContext({
+    API_BASE: "https://coach.example.test",
+    document: { addEventListener() {} },
+    setTimeout(fn, ms) { timers.push({ fn, ms }); return timers.length; },
+    clearTimeout() {},
+    fetch() {
+      return new Promise(() => {}); // 网络黑洞：永远不返回
+    },
+  });
+  loadScript(context, "site/js/coach.js");
+
+  const probePromise = context.Coach.checkCode("admin-code");
+  const probeTimer = timers.find((item) => item.ms === 8000);
+  assert.ok(probeTimer, "密码探针必须有 8 秒超时，不能让“验证中……”无限挂起");
+  probeTimer.fn();
+  await assert.rejects(
+    probePromise,
+    (err) => err && err.name === "TimeoutError",
+    "探针超时必须带 TimeoutError 名称，供密码门区分文案"
+  );
+}
+
+async function testCoachCodeProbeSuccess() {
+  const context = createBrowserContext({
+    API_BASE: "https://coach.example.test",
+    document: { addEventListener() {} },
+    setTimeout() { return 1; },
+    clearTimeout() {},
+    fetch() {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json() { return Promise.resolve({ ok: true, items: [] }); },
+      });
+    },
+  });
+  loadScript(context, "site/js/coach.js");
+  assert.equal(await context.Coach.checkCode("admin-code"), true, "最小请求返回 200 即视为密码通过");
+}
+
+async function testAuthModalGuardAndErrorMessages() {
+  const input = { value: "", focus() {}, select() {} };
+  const errorEl = { hidden: true, textContent: "" };
+  const confirmBtn = { disabled: false, textContent: "进入", onclick: null };
+  const overlay = { hidden: true };
+  const elements = {
+    "auth-modal": overlay,
+    "input-admin-code": input,
+    "auth-error": errorEl,
+    "btn-auth-confirm": confirmBtn,
+  };
+  const context = createBrowserContext({
+    document: {
+      getElementById(id) { return elements[id] || null; },
+      addEventListener() {},
+    },
+  });
+  loadScript(context, "site/js/coach.js");
+  const flush = () => new Promise((resolvePromise) => setTimeout(resolvePromise, 0));
+
+  // 验证中防连点：disabled 时点击/回车都必须被拦下
+  let confirmCalls = 0;
+  context.Coach.showAuthModal(function () {
+    confirmCalls += 1;
+    return Promise.resolve(true);
+  });
+  confirmBtn.disabled = true;
+  confirmBtn.onclick();
+  input.onkeydown({ key: "Enter" });
+  await flush();
+  assert.equal(confirmCalls, 0, "验证中重复点击/回车不得再次触发校验");
+  confirmBtn.disabled = false; // 模拟上一次校验结束后的按钮复位，再进入下一阶段
+
+  // 探针超时与网络不通必须分开提示
+  context.Coach.showAuthModal(function () {
+    const err = new Error("验证超时");
+    err.name = "TimeoutError";
+    return Promise.reject(err);
+  });
+  input.value = "admin-code";
+  confirmBtn.onclick();
+  await flush();
+  assert.equal(errorEl.textContent, "验证超时，请重试", "探针超时应提示重试而不是检查网络");
+  assert.equal(errorEl.hidden, false);
+  assert.equal(confirmBtn.disabled, false, "失败后按钮必须复位");
+  assert.equal(confirmBtn.textContent, "进入");
+
+  context.Coach.showAuthModal(function () {
+    return Promise.reject(new Error("fetch failed"));
+  });
+  input.value = "admin-code"; // showAuthModal 会用已保存的管理码（空）覆盖输入，这里模拟用户重新输入
+  confirmBtn.onclick();
+  await flush();
+  assert.equal(errorEl.textContent, "连不上后台，检查网络后再试", "网络层错误应提示检查网络");
+}
+
+function testCspAllowsOnlyProductionApiAndDevPort8787() {
+  for (const relativePath of ["site/index.html", "site/coach.html"]) {
+    const source = readFileSync(resolve(projectRoot, relativePath), "utf8");
+    const cspMatch = source.match(/connect-src([^;]*)/);
+    assert.ok(cspMatch, `${relativePath} 必须有 connect-src 指令`);
+    const value = cspMatch[1];
+    assert.match(value, /https:\/\/lapiao\.aivar\.cc/, `${relativePath} 应放行线上 Worker`);
+    assert.match(value, /http:\/\/127\.0\.0\.1:8787/, `${relativePath} 本地联调只放行 wrangler 默认端口 8787`);
+    assert.match(value, /http:\/\/localhost:8787/, `${relativePath} 应同时放行 localhost:8787`);
+    assert.doesNotMatch(
+      value,
+      /http:\/\/(?:127\.0\.0\.1|localhost):(?!8787\b)/,
+      `${relativePath} 不得放行其它 loopback 端口`
+    );
+    assert.doesNotMatch(value, /https:\/\/(?!lapiao\.aivar\.cc)/, `${relativePath} 不得放行其它外部域名`);
+  }
+}
+
 try {
   testApiOverrideCannotExfiltrateCodes();
   testAccessCodeSurvivesStorageFailure();
   await testApiWithoutAbortController();
+  testEntryCodeCanBeClearedByUser();
+  await testRenderErrorIsNotReportedAsNetworkError();
   testBusySubmissionDoesNotReplaceLastRequest();
   testUnchangedDraftCannotRestartTheSameChallenge();
   testNewSubmissionInvalidatesOldPass();
@@ -1039,6 +1466,16 @@ try {
   testRevivalScenariosKeepFactsAndStagesSeparate();
   testRoundDynamicsParagraphsPreserveContent();
   testReplayMustFinishBeforeGuidedSubmission();
+  await testGatewayFailureRetriesExactlyOnce();
+  await testGatewayFailureDoesNotRetryBusinessErrors();
+  await testRepeatedGatewayFailureReportsAfterOneRetry();
+  await testParseFailureWithoutErrorStatusIsParsingMessage();
+  await testTimeoutWithoutAbortControllerInvalidatesLateResponse();
+  testCoachFrameBusterClearsEmbeddedPage();
+  await testCoachCodeProbeTimesOut();
+  await testCoachCodeProbeSuccess();
+  await testAuthModalGuardAndErrorMessages();
+  testCspAllowsOnlyProductionApiAndDevPort8787();
   console.log("PASS");
 } catch (error) {
   console.error(error && error.stack ? error.stack : error);

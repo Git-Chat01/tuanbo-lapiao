@@ -4,7 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#181315">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self' https://lapiao.aivar.cc http://127.0.0.1:* http://localhost:*; object-src 'none'; form-action 'self'; base-uri 'self'">
+  <!-- 本地联调只放行 wrangler dev 默认端口 8787；线上页面即使被诱导填 ?api= 也连不出去 -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self' https://lapiao.aivar.cc http://127.0.0.1:8787 http://localhost:8787; object-src 'none'; form-action 'self'; base-uri 'self'">
   <title>场练 · 团播新人排练台</title>
   <link rel="stylesheet" href="css/common.css">
   <link rel="stylesheet" href="css/form.css">
@@ -168,6 +169,7 @@
       <p class="modal-desc">入口码只在提交给教练时需要，输入一次会保存在这台设备。</p>
       <input type="password" id="input-access-code" class="text-input" autocomplete="off" placeholder="入口码">
       <p id="access-error" class="modal-error" hidden>入口码不对，重新输入</p>
+      <button type="button" id="btn-access-clear" class="btn-outline btn-block" hidden>清除本机保存的入口码</button>
       <div class="modal-actions modal-actions--split">
         <button type="button" id="btn-access-cancel" class="btn-outline">先不填</button>
         <button type="button" id="btn-access-confirm" class="btn-primary">确定</button>

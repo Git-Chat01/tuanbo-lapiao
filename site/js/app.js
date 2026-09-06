@@ -165,14 +165,31 @@ var App = {
     }
   },
 
+  /**
+   * 清除本机保存的入口码（用户主动退出）。
+   * GitHub Pages 同源（*.github.io）下其他仓库页面也能读 localStorage，
+   * 所以必须给主播一个明确的清除入口，而不是让码永久驻留。
+   */
+  clearAccessCode: function () {
+    App.state.sessionAccessCode = "";
+    try {
+      localStorage.removeItem(STORAGE_KEYS.accessCode);
+    } catch (e) {
+      // 微信隐私模式可能禁用 localStorage；会话内已清空，本次提交不再携带。
+    }
+  },
+
   showAccessModal: function (onConfirm, options) {
     options = options || {};
     var overlay = document.getElementById("access-modal");
     var input = document.getElementById("input-access-code");
     var error = document.getElementById("access-error");
     var confirmButton = document.getElementById("btn-access-confirm");
+    var clearButton = document.getElementById("btn-access-clear");
 
     input.value = options.clear ? "" : App.getAccessCode();
+    // 只有本机确实存过入口码才亮出"清除"入口，避免误触空操作
+    clearButton.hidden = !App.getAccessCode();
     error.textContent = options.invalid ? "入口码不对，重新输入" : "先输入入口码";
     error.hidden = !options.invalid;
     overlay.hidden = false;
@@ -205,6 +222,11 @@ var App = {
       App.showAccessModal(function () { App.toast("入口码已保存"); });
     });
     document.getElementById("btn-access-cancel").addEventListener("click", App.hideAccessModal);
+    document.getElementById("btn-access-clear").addEventListener("click", function () {
+      App.clearAccessCode();
+      App.hideAccessModal();
+      App.toast("入口码已清除");
+    });
 
     var stageButtons = document.querySelectorAll(".training-step");
     for (var i = 0; i < stageButtons.length; i++) {
