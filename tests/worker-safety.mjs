@@ -2708,4 +2708,510 @@ const autoList = await cases.listAdminCases(env, {
 assert.ok(autoList.items.some((item) => item.status === "published"));
 assert.ok(autoList.items.some((item) => item.status === "rejected"));
 
+// ---- 第一梯队修复回归：转述引语冒号 / 否定窗口跨介词 / 裸“不”否定 ----
+// 三处文本判断修复（withoutAttributedQuotedText / hasNegatingPrefix /
+// stripNegatedCurrentActions），全部经 applyReportSafetyGates 公开行为验证。
+const gatesBase = () => ({
+  card_type: "logic",
+  card_why: "ok",
+  audience: "大哥",
+  round_dynamics: {
+    flow_read: "推进正常",
+    human_drivers: [],
+    response_read: "票差下降",
+    next_move: "继续观察",
+  },
+  structure_checks: [
+    { key: "self_intro", status: "met", evidence: "有" },
+    { key: "gratitude", status: "met", evidence: "有" },
+    { key: "target_user", status: "met", evidence: "有" },
+    { key: "user_reason", status: "met", evidence: "有" },
+    { key: "vote_instruction", status: "met", evidence: "有" },
+  ],
+  verdict: "almost",
+  verdict_reason: "初始理由",
+  echo: "",
+  line_reviews: [],
+  one_thing: "",
+  direction: { summary: "补一个动作 用你自己的话说", examples: [] },
+  ai_flavor: "",
+  redline_note: "",
+});
+
+const runGates = (script, mutate) => {
+  const report = gatesBase();
+  if (mutate) mutate(report);
+  index.applyReportSafetyGates(report, [], {
+    sourceScript: script,
+    scenario: null,
+    voteGap: "close",
+  });
+  return report;
+};
+
+// 高危修复 1：归因动词后的冒号不再阻隔引语剥离——“他说：”“比如：”里的乞求词
+// 不能当主播原话；主语词表不含“我”，主播自述“我说”仍保留。
+for (const attributedQuote of ['他说："救救我"', '他说"救救我"', '比如："救救我"']) {
+  assert.doesNotMatch(
+    runGates(attributedQuote).verdict_reason,
+    /救救我/u,
+    `归因或举例引语里的乞求词不能当主播原话：${attributedQuote}`
+  );
+}
+assert.match(
+  runGates('我说："救救我"').verdict_reason,
+  /救救我/u,
+  "主播自述“我说”不在归因主语词表，仍是本人的话"
+);
+
+// 中危修复 2：否定窗口可跨介词——否定词后隔着“跟你说”等表述时，
+// 后面的乞求词仍是转述对象而非主播原话；无否定词时照常命中。
+for (const negatedQuote of ["我不会跟你说求求你", "我不求求你"]) {
+  assert.doesNotMatch(
+    runGates(negatedQuote).verdict_reason,
+    /求求你/u,
+    `否定窗口内的乞求词不能判为主播乞求：${negatedQuote}`
+  );
+}
+assert.match(
+  runGates("我跟你说求求你").verdict_reason,
+  /求求你/u,
+  "无否定词时“跟你说求求你”仍应命中乞求"
+);
+
+// 中危修复 3：裸“不”进入否定词表，“每人一票”类分布式动作也可被否定——
+// 否定动作句不能把 vote_instruction 从 partial 虚提为 met；真实动作照常晋级。
+for (const negatedAction of ["这轮先不补票", "不能补票", "不用每人一票"]) {
+  const report = runGates(negatedAction, (rep) => {
+    rep.structure_checks.find((item) => item.key === "vote_instruction").status =
+      "partial";
+  });
+  assert.equal(
+    report.structure_checks.find((item) => item.key === "vote_instruction").status,
+    "partial",
+    `否定动作不能被虚提成真实指令：${negatedAction}`
+  );
+}
+for (const realAction of ["帮我补一票", "每人一票"]) {
+  const report = runGates(realAction, (rep) => {
+    rep.structure_checks.find((item) => item.key === "vote_instruction").status =
+      "partial";
+  });
+  assert.equal(
+    report.structure_checks.find((item) => item.key === "vote_instruction").status,
+    "met",
+    `真实动作仍应晋级 vote_instruction：${realAction}`
+  );
+}
+
+// ---- 中危修复回归：称呼判定（六处文本判断）----
+// 全部经 applyReportSafetyGates 公开行为验证：
+//   1. 连接词“所以/然后”不是人名（looksLikeAnotherAddressee）
+//   2. “主持说了/说过”仍是转述（isAttributedTargetMention 补“了/完/过/的”）
+//   3. “麻烦能不能”不再把“麻烦”当昵称（freeModeTargetToken 剥礼貌词）
+//   4. 孤立捧场词“加油”不当昵称，真实昵称仍有效（BARE_SEGMENT_NON_NAMES）
+//   5. 场景模式允许“现在/刚才凯哥”（hasConcreteTargetAddress 补前缀）
+//   6. 转述后接主播回应整句不再被吞（isAttributedViewerInterest 句尾锚定）
+const targetStatus = (report) =>
+  report.structure_checks.find((item) => item.key === "target_user").status;
+const reasonStatus = (report) =>
+  report.structure_checks.find((item) => item.key === "user_reason").status;
+const partialReasonReport = (script) =>
+  makeReportForScript(script, {
+    verdict: "almost",
+    structure_checks: allMetChecks().map((item) =>
+      item.key === "user_reason" ? { ...item, status: "partial" } : item
+    ),
+  });
+
+// 1. 连接词后继续对话仍是对准原用户，不是换人称呼。
+for (const connectiveScript of [
+  { script: "凯哥，所以你能不能帮我", scenario: { targetUser: "凯哥" } },
+  { script: "凯哥，然后你能不能帮我", scenario: null },
+  { script: "凯哥，那你帮帮我", scenario: null },
+]) {
+  const report = makeReportForScript(connectiveScript.script);
+  index.applyReportSafetyGates(report, [], {
+    sourceScript: connectiveScript.script,
+    scenario: connectiveScript.scenario,
+  });
+  assert.equal(
+    targetStatus(report),
+    "met",
+    `连接词后继续对话仍是对准原用户：${connectiveScript.script}`
+  );
+}
+
+// 2. 带“了/完/过/的”的转述不能虚过 target_user（场景模式）。
+for (const attributedScript of [
+  "主持说了，凯哥你能不能帮我",
+  "小王说了，凯哥你能不能帮我",
+  "主持说，凯哥你能不能帮我",
+]) {
+  const report = makeReportForScript(attributedScript);
+  index.applyReportSafetyGates(report, [], {
+    sourceScript: attributedScript,
+    scenario: { targetUser: "凯哥" },
+  });
+  assert.equal(
+    targetStatus(report),
+    "partial",
+    `转述引出的称呼不能虚过 target_user：${attributedScript}`
+  );
+}
+
+// 3+4. 礼貌词/捧场词不是昵称；真实昵称不受影响（自由模式）。
+for (const notANicknameScript of ["麻烦你能不能帮我", "加油，帮我补一票"]) {
+  const report = makeReportForScript(notANicknameScript);
+  index.applyReportSafetyGates(report, [], {
+    sourceScript: notANicknameScript,
+    scenario: null,
+  });
+  assert.equal(
+    targetStatus(report),
+    "partial",
+    `礼貌词/捧场词不能被当成昵称：${notANicknameScript}`
+  );
+}
+for (const realNicknameScript of ["麻烦凯哥，帮我补一票", "小满，帮我补一票"]) {
+  const report = makeReportForScript(realNicknameScript);
+  index.applyReportSafetyGates(report, [], {
+    sourceScript: realNicknameScript,
+    scenario: null,
+  });
+  assert.equal(
+    targetStatus(report),
+    "met",
+    `真实昵称仍应算具体用户：${realNicknameScript}`
+  );
+}
+
+// 5. 场景模式“现在/刚才+目标”是直接呼语；前两句自由模式会因转述跳过，
+//    只有场景路径能救回来，正好单独覆盖 hasConcreteTargetAddress 的前缀修复。
+for (const prefixedTargetScript of [
+  "主持说了，现在凯哥你能不能帮我",
+  "主持说了，刚才凯哥你能不能帮我",
+  "现在凯哥，帮我补一票",
+]) {
+  const report = makeReportForScript(prefixedTargetScript);
+  index.applyReportSafetyGates(report, [], {
+    sourceScript: prefixedTargetScript,
+    scenario: { targetUser: "凯哥" },
+  });
+  assert.equal(
+    targetStatus(report),
+    "met",
+    `场景模式下“现在/刚才+目标”是直接呼语：${prefixedTargetScript}`
+  );
+}
+
+// 6. 转述后接主播回应，整句不再被当纯转述吞掉；纯转述仍不能冒充用户理由。
+for (const quotedThenResponseScript of [
+  "你说想看跳舞，我给你跳",
+  "听你说想看跳舞，我给你跳",
+]) {
+  const report = partialReasonReport(quotedThenResponseScript);
+  index.applyReportSafetyGates(report, [], {
+    sourceScript: quotedThenResponseScript,
+    scenario: null,
+  });
+  assert.equal(
+    reasonStatus(report),
+    "met",
+    `转述后的主播回应仍是有效用户理由：${quotedThenResponseScript}`
+  );
+}
+for (const pureNarrationScript of ["凯哥说他想看返场。", "你说想看跳舞。"]) {
+  const report = partialReasonReport(pureNarrationScript);
+  index.applyReportSafetyGates(report, [], {
+    sourceScript: pureNarrationScript,
+    scenario: null,
+  });
+  assert.equal(
+    reasonStatus(report),
+    "partial",
+    `纯转述不能冒充给用户的正向理由：${pureNarrationScript}`
+  );
+}
+
+// ---- 中危修复回归：/api/coach 限流（防入口码泄露后烧 DeepSeek 额度）----
+// 路由级：同一入口码 1 分钟 30 次内放行，第 31 次 429 + Retry-After，且不再调模型。
+{
+  const rateLimitKv = new MemoryKV();
+  const rateLimitEnv = {
+    ACCESS_CODE: "access-code-123",
+    ADMIN_CODE: "admin-code-123",
+    DEEPSEEK_API_KEY: "test-key",
+    CASES: rateLimitKv,
+  };
+  const rateLimitPending = [];
+  const rateLimitCtx = { waitUntil: (promise) => rateLimitPending.push(promise) };
+  let modelCalls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    modelCalls += 1;
+    return new Response(
+      JSON.stringify({
+        choices: [{ message: { content: JSON.stringify(upstreamReport) } }],
+        usage: { prompt_tokens: 10, completion_tokens: 20 },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    );
+  };
+  try {
+    const coachRequest = () =>
+      new Request("https://lapiao.test/api/coach", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "CF-Connecting-IP": "203.0.113.7",
+        },
+        body: JSON.stringify({
+          accessCode: "access-code-123",
+          voteGap: "close",
+          script: baseScript,
+        }),
+      });
+    for (let i = 0; i < 30; i += 1) {
+      const res = await index.default.fetch(coachRequest(), rateLimitEnv, rateLimitCtx);
+      assert.equal(res.status, 200, `第 ${i + 1} 次批改应在限流额度内`);
+    }
+    const blocked = await index.default.fetch(coachRequest(), rateLimitEnv, rateLimitCtx);
+    assert.equal(blocked.status, 429, "超过入口码每分钟上限应返回 429");
+    assert.equal(blocked.headers.get("Retry-After"), "60", "429 应带 Retry-After 头");
+    assert.equal(modelCalls, 30, "被限流后不得再调 DeepSeek");
+    await Promise.all(rateLimitPending);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+// 限流函数直测：IP 维度独立计数；KV 缺失时 fail-open（鉴权仍是第一道防线）。
+{
+  const ipLimitKv = new MemoryKV();
+  // 每次调用换一个码：码维度 30/分钟不会先触发，这里只测 IP 维度 60/分钟。
+  for (let i = 0; i < 60; i += 1) {
+    const allowed = await index.checkCoachRateLimit(
+      { CASES: ipLimitKv },
+      `ip-probe-code-${i}`,
+      "203.0.113.9"
+    );
+    assert.equal(allowed, null, `IP 维度第 ${i + 1} 次应在额度内放行`);
+  }
+  const ipBlocked = await index.checkCoachRateLimit(
+    { CASES: ipLimitKv },
+    "some-code",
+    "203.0.113.9"
+  );
+  assert.equal(ipBlocked?.status, 429, "同一 IP 超限应返回 429");
+  const otherIp = await index.checkCoachRateLimit(
+    { CASES: ipLimitKv },
+    "another-code",
+    "198.51.100.2"
+  );
+  assert.equal(otherIp, null, "新 IP 新码不应被旧桶误拦");
+  const noBinding = await index.checkCoachRateLimit({}, "code", "1.2.3.4");
+  assert.equal(noBinding, null, "KV binding 缺失时 fail-open，不拦训练");
+}
+
+// ---- 低危修复回归：词表与文本判断的批量修复 ----
+// 覆盖 11 处：多谢进泛称词表 / 小数不拆句 / 问句不误判叙述 / 并列称呼连词 /
+// 句尾“了”助词 / 跨句承接 / “补位”要票词 / delivery 单独“哥姐” /
+// 口语尾数 / “还差一点”不是票数 / 泛谢同句不冒充具体感谢。
+
+// 1. 孤立“多谢”不是昵称，不能再虚过 target_user（自由模式）。
+{
+  const report = makeReportForScript("多谢，帮我补一票");
+  index.applyReportSafetyGates(report, [], {
+    sourceScript: "多谢，帮我补一票",
+    scenario: null,
+  });
+  assert.equal(targetStatus(report), "partial", "孤立“多谢”不能当成称呼对象");
+}
+
+// 2. 小数不拆句：数字中间的小数点不是句界；“3.谢谢”里的句点仍是句界。
+assert.deepEqual(
+  index.splitHardSentences("还差3.5票，谢谢"),
+  ["还差3.5票，谢谢"],
+  "数字中间的小数点不能被当成英文句号拆句"
+);
+assert.deepEqual(
+  index.splitHardSentences("3.谢谢"),
+  ["3.", "谢谢"],
+  "数字后的句点仍应正常断句"
+);
+
+// 3. 问句语气绕过叙述检查：问凯哥在不在是直接呼叫；陈述句仍是叙述（场景模式）。
+{
+  const askReport = makeReportForScript("凯哥在直播间吗");
+  index.applyReportSafetyGates(askReport, [], {
+    sourceScript: "凯哥在直播间吗",
+    scenario: { targetUser: "凯哥" },
+  });
+  assert.equal(targetStatus(askReport), "met", "“凯哥在直播间吗”是在问凯哥，不是叙述");
+}
+{
+  const narrateReport = makeReportForScript("凯哥在直播间");
+  index.applyReportSafetyGates(narrateReport, [], {
+    sourceScript: "凯哥在直播间",
+    scenario: { targetUser: "凯哥" },
+  });
+  assert.equal(targetStatus(narrateReport), "partial", "“凯哥在直播间”仍是叙述凯哥");
+}
+
+// 4. “和/跟”是并列称呼连词：和大姐一起被叫是直接呼语；和“你们/别人”一起出现仍是陈述。
+for (const conjunctionScript of ["凯哥和大姐，你们好", "凯哥和大姐，帮帮我"]) {
+  const report = makeReportForScript(conjunctionScript);
+  index.applyReportSafetyGates(report, [], {
+    sourceScript: conjunctionScript,
+    scenario: { targetUser: "凯哥" },
+  });
+  assert.equal(targetStatus(report), "met", `并列称呼仍是直接呼语：${conjunctionScript}`);
+}
+for (const statementScript of ["凯哥和你们一起上票", "凯哥和别人一起上票"]) {
+  const report = makeReportForScript(statementScript);
+  index.applyReportSafetyGates(report, [], {
+    sourceScript: statementScript,
+    scenario: { targetUser: "凯哥" },
+  });
+  assert.equal(targetStatus(report), "partial", `连词接群体/旁人仍是陈述：${statementScript}`);
+}
+
+// 5. 句尾“了”助词：感谢呼语不因“了”漏判；主持转述的感谢仍不能虚过（场景模式）。
+for (const thanksScript of ["谢谢凯哥了", "谢谢你凯哥了", "谢谢了凯哥"]) {
+  const report = makeReportForScript(thanksScript);
+  index.applyReportSafetyGates(report, [], {
+    sourceScript: thanksScript,
+    scenario: { targetUser: "凯哥" },
+  });
+  assert.equal(targetStatus(report), "met", `句尾“了”不影响感谢式呼语：${thanksScript}`);
+}
+{
+  const attributedReport = makeReportForScript("主持说谢谢凯哥");
+  index.applyReportSafetyGates(attributedReport, [], {
+    sourceScript: "主持说谢谢凯哥",
+    scenario: { targetUser: "凯哥" },
+  });
+  assert.equal(targetStatus(attributedReport), "partial", "主持转述的“谢谢凯哥”不能虚过");
+}
+
+// 6. 跨句承接：孤立称呼 + 下一句对话内容仍是称呼（自由/场景双模式）。
+for (const carriedScript of ["凯哥。谢谢你", "凯哥。你好"]) {
+  const report = makeReportForScript(carriedScript);
+  index.applyReportSafetyGates(report, [], {
+    sourceScript: carriedScript,
+    scenario: null,
+  });
+  assert.equal(targetStatus(report), "met", `孤立称呼跨句承接仍是称呼：${carriedScript}`);
+}
+{
+  const scenarioCarried = makeReportForScript("凯哥。谢谢你");
+  index.applyReportSafetyGates(scenarioCarried, [], {
+    sourceScript: "凯哥。谢谢你",
+    scenario: { targetUser: "凯哥" },
+  });
+  assert.equal(targetStatus(scenarioCarried), "met", "场景模式“凯哥。谢谢你”是跨句感谢");
+}
+for (const droppedScript of ["凯哥。大家好", "凯哥。你们今晚想看什么", "凯哥。今天天气不错"]) {
+  const report = makeReportForScript(droppedScript);
+  index.applyReportSafetyGates(report, [], {
+    sourceScript: droppedScript,
+    scenario: null,
+  });
+  assert.equal(targetStatus(report), "partial", `下一句转向群体/他事不应承接：${droppedScript}`);
+}
+
+// 7. “补位”是要票动作：命中 vote_instruction；否定形式照旧剥掉。
+{
+  const report = makeReportForScript("帮我补位");
+  index.applyReportSafetyGates(report, [], {
+    sourceScript: "帮我补位",
+    scenario: null,
+  });
+  assert.equal(
+    report.structure_checks.find((item) => item.key === "vote_instruction").status,
+    "met",
+    "“补位”应识别为可执行的补票动作"
+  );
+}
+{
+  const report = makeReportForScript("先不补位");
+  index.applyReportSafetyGates(report, [], {
+    sourceScript: "先不补位",
+    scenario: null,
+  });
+  assert.equal(
+    report.structure_checks.find((item) => item.key === "vote_instruction").status,
+    "partial",
+    "“先不补位”是否定，不能算动作"
+  );
+}
+
+// 8. delivery 阶段：对单人的“谢谢凯哥”不是兑现指令；“谢谢大家+到账”才是。
+{
+  const singleThanks = makeRawReport();
+  index.applyReportSafetyGates(singleThanks, [], {
+    sourceScript: "谢谢凯哥",
+    scenario: { phase: "delivery", targetUser: "凯哥" },
+  });
+  assert.equal(
+    singleThanks.structure_checks.find((item) => item.key === "vote_instruction").status,
+    "partial",
+    "对单人的感谢不能冒充“确认到账”的兑现动作"
+  );
+}
+{
+  const arrivalThanks = makeRawReport();
+  index.applyReportSafetyGates(arrivalThanks, [], {
+    sourceScript: "谢谢大家，礼物都到账了",
+    scenario: { phase: "delivery", targetUser: "凯哥" },
+  });
+  assert.equal(
+    arrivalThanks.structure_checks.find((item) => item.key === "vote_instruction").status,
+    "met",
+    "感谢群体并核对到账仍是兑现阶段的正确动作"
+  );
+}
+
+// 9. 口语尾数：结尾数字承接上一个单位量级，零后的尾数仍是个位。
+assert.equal(index.parseSpokenCount("三百二"), 320, "“三百二”=320");
+assert.equal(index.parseSpokenCount("一千三"), 1300, "“一千三”=1300");
+assert.equal(index.parseSpokenCount("一百零二"), 102, "“一百零二”=102（零后的尾数是个位）");
+assert.equal(index.parseSpokenCount("三百二十"), 320, "“三百二十”=320");
+assert.equal(index.parseSpokenCount("十五"), 15, "“十五”=15");
+
+// 10. “还差一点”是差得不多，不是 1 票；正常票差仍生成递降说明。
+assert.equal(index.summarizeTicketProgress("还差8个，现在只差一点"), "", "“还差一点”不是票数");
+assert.match(
+  index.summarizeTicketProgress("还差8个，现在只差2个"),
+  /从8降到2/,
+  "正常票差仍应生成递降说明"
+);
+
+// 11. 泛谢同句不冒充具体感谢：谢谢大家+顺带提昵称 ≠ 对目标的具体感谢。
+{
+  const genericThanks = makeRawReport();
+  index.applyReportSafetyGates(genericThanks, [], {
+    sourceScript: "谢谢大家，凯哥也在",
+    scenario: { targetUser: "凯哥", recentGift: "小心心 ×5" },
+  });
+  assert.equal(
+    genericThanks.structure_checks.find((item) => item.key === "gratitude").status,
+    "partial",
+    "“谢谢大家，凯哥也在”只是顺带提昵称，不是对凯哥的具体感谢"
+  );
+}
+{
+  const specificThanks = makeRawReport();
+  index.applyReportSafetyGates(specificThanks, [], {
+    sourceScript: "谢谢凯哥送的小心心",
+    scenario: { targetUser: "凯哥", recentGift: "小心心 ×5" },
+  });
+  assert.equal(
+    specificThanks.structure_checks.find((item) => item.key === "gratitude").status,
+    "met",
+    "“谢谢凯哥送的小心心”仍是对凯哥的具体感谢"
+  );
+}
+
 console.log("PASS worker safety gates and case lifecycle");

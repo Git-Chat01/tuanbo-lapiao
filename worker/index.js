@@ -44,6 +44,18 @@ const LIMITS = {
   bodyMaxBytes: 10 * 1024, // 请求体上限 10KB，防超大 payload（800 字话术 + 320 字理由 < 4KB，安全）
 };
 
+// 批改接口限流：防止入口码泄露/被共享后被用来烧 DeepSeek 额度。
+// 固定 1 分钟窗口 + KV 计数器（key: rl:code|ip:{sha256 前 8 字节}:{分钟桶}，
+// 与 case: 前缀隔离，不会混进案例清单）。读改写竞态可能少算——方向是"略宽松"，
+// 目标是防烧钱而不是精确计费；额度可按实际使用调整。每次批改 2 读 2 写，
+// 免费额度（10 万写/天）足以支撑几百人训练。
+const COACH_RATE_LIMIT = {
+  codePerMinute: 30, // 单入口码每分钟最多 30 次（正常迭代打字远达不到）
+  ipPerMinute: 60, // 单 IP 每分钟最多 60 次（防有码后多设备/多码轮换刷）
+  bucketMs: 60 * 1000,
+  ttlSeconds: 120, // 计数桶 2 分钟后自动过期，防残留
+};
+
 // 批改报告的枚举白名单（不信任模型输出，逃逸枚举 → 502 让前端重试）
 const VERDICT_ENUM = ["passed", "almost", "off"];
 const CARD_TYPE_ENUM = ["logic", "expression", "mentality", "persona"];
@@ -226,6 +238,19 @@ export default {
       // 未知字段丢弃，已知字段类型/范围非法由 sanitizeScenario 抛 400。
       const scenario = sanitizeScenario(body.scenario);
 
+      // 限流：只对"会调模型"的合法请求计数；参数非法的请求到不了这里。
+      // Cloudflare 直连时 CF-Connecting-IP 由边缘注入，本地联调无该头则只限入口码。
+      const clientIp = request.headers.get("CF-Connecting-IP") || "";
+      const rateError = await checkCoachRateLimit(env, body.accessCode, clientIp);
+      if (rateError) {
+        return jsonResponse(
+          { error: true, message: rateError.message },
+          rateError.status,
+          corsHeaders,
+          { "Retry-After": String(Math.ceil(COACH_RATE_LIMIT.bucketMs / 1000)) }
+        );
+      }
+
       // 红线检测（纯词表，不调模型）——命中不拒批，作用在判定与吸收两个闸门
       const redlineHits = detectRedline(body.script);
 
@@ -301,7 +326,13 @@ export default {
 };
 
 const GENERIC_TARGET_PATTERN =
-  /^(?:大哥|哥哥|小哥哥|帅哥|美女|小美女|靓仔|宝宝|宝贝|宝子|姐姐|小姐姐|大姐|老板|老师|大叔|叔叔|阿姨|哥们|兄弟们?|姐妹们?|老铁|大佬|家人们?|朋友们?|大家|各位|宝宝们?|粉丝们?|观众们?|你们?|我们?|他们?|她们?|它们?|主持|拜托大家|这一轮|这轮|现在|刚才|谢谢|感谢|我是|我想|我还|我刚|我准备|想看|愿意)/u;
+  /^(?:大哥|哥哥|小哥哥|帅哥|美女|小美女|靓仔|宝宝|宝贝|宝子|姐姐|小姐姐|大姐|老板|老师|大叔|叔叔|阿姨|哥们|兄弟们?|姐妹们?|老铁|大佬|家人们?|朋友们?|大家|各位|宝宝们?|粉丝们?|观众们?|你们?|我们?|他们?|她们?|它们?|主持|拜托大家|这一轮|这轮|现在|刚才|谢谢|感谢|多谢|我是|我想|我还|我刚|我准备|想看|愿意)/u;
+// 无后缀裸段（“加油，帮帮我”）里，常见捧场/应答词不是昵称：
+// 漏判只降 target_user 为 partial，误判会虚过，fail-closed 优先。
+const BARE_SEGMENT_NON_NAMES = new Set([
+  "加油", "可以", "好的", "收到", "欢迎", "辛苦", "来了",
+  "漂亮", "厉害", "太棒", "没问题", "支持", "真好", "冲", "顶",
+]);
 const AI_FLAVOR_SOURCE_PHRASES = [
   "怀揣舞台梦想",
   "热爱点亮",
@@ -362,15 +393,22 @@ const BEGGING_REINFORCEMENT_SIGNALS = [
   "我真的不能走",
 ];
 
-function splitHardSentences(value) {
-  const matches = String(value || "").match(
-    /[^。！？!?；;.]+(?:[。！？!?；;.]+[”’"'）】》]*)?|[。！？!?；;.]+[”’"'）】》]*/gu
-  );
-  return (matches || []).filter((item) => item.trim().length > 0);
+// 导出仅供本地无网络单元测试使用（data-URL 加载方式）。
+export function splitHardSentences(value) {
+  // “还差3.5票”里的小数点是数字的一部分，不是英文句号：
+  // 先用全角点占位躲开句号切分，切完再还原成半角。
+  const matches = String(value || "")
+    .replace(/(\p{N})\.(?=\p{N})/gu, "$1．")
+    .match(/[^。！？!?；;.]+(?:[。！？!?；;.]+[”’"'）】》]*)?|[。！？!?；;.]+[”’"'）】》]*/gu);
+  return (matches || [])
+    .filter((item) => item.trim().length > 0)
+    .map((item) => item.replaceAll("．", "."));
 }
 
+// 前缀里的连接词（“所以/不过/但是/刚刚”）不是人名：
+// “凯哥，所以你能不能帮我”仍是继续对凯哥说话，不是转身叫一个叫“所以”的人。
 const DIRECT_CONTINUATION_PATTERN =
-  /^(?:(?:那|这轮|现在|接下来|然后|刚才|主持(?:刚|刚才)?说)[，,\s]*)?(?:你(?!们)|要是你(?!们)|如果你(?!们)|这个(?:新舞|节目|整活)?你(?!们)|这支舞你(?!们)|这段(?:舞|表演|才艺)?你(?!们)|愿不愿意|想不想|要不要|是不是|能不能|可不可以|方便(?:的话)?|请你|麻烦你|帮我|给我|来帮我|再帮我|听我|看一下|别走|我给你|我来给你|我问你|听你的)/u;
+  /^(?:(?:那|这轮|现在|接下来|然后|所以|不过|但是|刚刚|刚才|主持(?:刚|刚才)?说)[，,\s]*)?(?:你(?!们)|要是你(?!们)|如果你(?!们)|这个(?:新舞|节目|整活)?你(?!们)|这支舞你(?!们)|这段(?:舞|表演|才艺)?你(?!们)|愿不愿意|想不想|要不要|是不是|能不能|可不可以|方便(?:的话)?|请你|麻烦你|帮我|给我|来帮我|再帮我|听我|看一下|别走|我给你|我来给你|我问你|听你的)/u;
 const AUDIENCE_SWITCH_PATTERN =
   /^(?:家人们?|朋友们?|大家|各位|宝宝们?|粉丝们?|观众们?|你们|兄弟们?|姐妹们?)(?:[，,:：\s]|$)/u;
 const GENERIC_AUDIENCE_THANKS_PATTERN =
@@ -398,19 +436,36 @@ function looksLikeAnotherAddressee(rawBody, target) {
     /^(?:请|让|麻烦)?([\p{L}\p{N}_·-]{1,12}?)(?:你(?!们)|能不能|可不可以|愿不愿意|想不想|来帮我)/u
   )?.[1];
   if (!other) return false;
-  return ![String(target || "").trim(), "那", "现在", "这轮", "接下来"].includes(other);
+  // 连接词不是人名：漏判只会保守降级 target_user，误判会虚过“换人称呼”判断。
+  // “谢谢你”里的“谢谢”是跨句感谢（“凯哥。谢谢你”），也不是转身叫一个叫“谢谢”的人。
+  return ![
+    String(target || "").trim(),
+    "那", "现在", "这轮", "接下来", "所以", "然后", "不过", "但是", "刚刚", "刚才",
+    "谢谢", "感谢", "多谢",
+  ].includes(other);
 }
 
 function isNaturalNoDelimiterAddress(rawTail) {
   const sentence = String(rawTail || "").split(/[。！？!?；;]/u)[0].trim();
   if (!sentence) return false;
 
+  // “凯哥和大姐，你们好”里的“和”是并列称呼的连词，不是转向叙述：
+  // 剥掉“和+带称谓昵称”后剩下的“你们好”仍然是在对凯哥说话。
+  // 只认哥/姐/总/老板这类具体称呼，不碰“和你们/和别人/和大家”，
+  // 否则“凯哥和你们一起上票”这类陈述句会被误判成直接呼叫。
+  const conjunctionJoin =
+    /^(?:和|跟|与|以及|还有)[，,\s]*[\p{L}\p{N}_·-]{1,10}(?:哥|姐|爷|叔|姨|总|老板|老师)(?!们)[，,\s]*/u;
+  const hadConjunctionJoin = conjunctionJoin.test(sentence);
+  const addressSentence = sentence.replace(conjunctionJoin, "");
+
   // 先排除“凯哥刚说/送了/告诉我他……”这类在谈论凯哥的叙述。反问式的
   // “凯哥刚才不是说……吗”仍然是在当面对话，不属于这里。
+  const questionTone = /(?:吗|么|呢|嘛|吧|呀|啊)[。！!?]?$|[？!?]$/u.test(sentence);
   if (
     /^(?:(?:刚|刚才|刚刚|之前|当时|已经)?(?:说|讲|表示|提到|送了|刷了|投了|发了|给了)|告诉我(?:他|她|自己)|(?:是|在|成为)(?:榜|直播间))/u.test(
       sentence
     ) &&
+    !questionTone &&
     !/^(?:刚才|刚刚)?不是说.{0,20}(?:吗|么|呢|嘛)/u.test(sentence)
   ) {
     return false;
@@ -418,10 +473,12 @@ function isNaturalNoDelimiterAddress(rawTail) {
 
   // 新人常省略呼语后的逗号。这里按“对话语气”识别，而不是限定某几个完整句式：
   // 有一/二人称、请求/命令动词或疑问语气，都说明名字是在被直接呼叫。
-  if (/(?:[！？!?]|(?:吗|么|呢|嘛|吧|呀|啊)[。！!?]?$)/u.test(sentence)) return true;
-  if (/^.{0,8}(?:你(?!们)|我(?!们)|咱)/u.test(sentence)) return true;
+  if (/(?:[！？!?]|(?:吗|么|呢|嘛|吧|呀|啊)[。！!?]?$)/u.test(addressSentence)) return true;
+  if (/^.{0,8}(?:你(?!们)|我(?!们)|咱)/u.test(addressSentence)) return true;
+  // 并列称呼下“你们”包含被称呼的人；单独出现的“你们”仍走 looksLikeAnotherAddressee 的保守路径。
+  if (hadConjunctionJoin && /^.{0,8}你们/u.test(addressSentence)) return true;
   return /^(?:请|麻烦|帮|给|来|再|先|别|不要|不用|听|看|等|留|走|告诉|问|谢谢|感谢|多谢|现在|这轮|接下来|还差|想看|愿意|要不要|是不是|能否|能不能|可不可以|方便)/u.test(
-    sentence
+    addressSentence
   );
 }
 
@@ -473,8 +530,10 @@ function isAttributedTargetMention(sourceScript, targetStart) {
     .replace(/\s+/g, "");
   const clauses = prefix.split(/[。！？!?；;，,]/u).filter(Boolean);
   const clause = clauses[clauses.length - 1] || "";
+  // 说/讲后允许“了/完/过/的”（“主持说了，凯哥……”仍是转述）：
+  // 否则“了”一出现就把转述误判成主播自己开口，虚过 target_user。
   if (
-    /^(?:主持|他|她|用户|别人|有人|旁人)(?:刚|刚才)?(?:说|讲|问|提到|表示)[：:“”"']*$/u.test(
+    /^(?:主持|他|她|用户|别人|有人|旁人)(?:刚|刚才)?(?:说|讲|问|提到|表示)(?:了|完|过|的)?[：:“”"']*$/u.test(
       clause
     )
   ) {
@@ -482,7 +541,7 @@ function isAttributedTargetMention(sourceScript, targetStart) {
   }
   return (
     !/^我/u.test(clause) &&
-    /^[\p{L}\p{N}_·-]{2,8}(?:刚|刚才)?(?:说|讲|问|提到|表示)[：:“”"']*$/u.test(
+    /^[\p{L}\p{N}_·-]{2,8}(?:刚|刚才)?(?:说|讲|问|提到|表示)(?:了|完|过|的)?[：:“”"']*$/u.test(
       clause
     )
   );
@@ -491,11 +550,13 @@ function isAttributedTargetMention(sourceScript, targetStart) {
 function freeModeTargetToken(segment, hasFollowingSegment) {
   const text = String(segment || "")
     .trim()
-    .replace(/^(?:那|然后|所以|这轮|这一轮|现在|刚才|刚刚)[，,\s]*/u, "")
+    // 连接词与礼貌词可叠加且都不是昵称：剥掉后“麻烦你能不能帮我”只剩
+    // “你能不能帮我”，泛称“你”不会再漏进昵称匹配。
+    .replace(/^(?:(?:那|然后|所以|这轮|这一轮|现在|刚才|刚刚|麻烦|请|让|拜托)[，,\s]*)+/u, "")
     .replace(/^我(?:想|来|再)?(?:问|确认)(?:下|一下)?[，,\s]*/u, "");
   if (!text || GENERIC_TARGET_PATTERN.test(text)) return "";
   if (
-    /^(?:(?:刚|刚才|刚刚|之前)?(?:主持|他|她|用户|别人|有人|旁人)|[\p{L}\p{N}_·-]{2,8})(?:刚|刚才)?(?:说|讲|问|提到|表示|告诉(?:我)?)(?:的)?$/u.test(
+    /^(?:(?:刚|刚才|刚刚|之前)?(?:主持|他|她|用户|别人|有人|旁人)|[\p{L}\p{N}_·-]{2,8})(?:刚|刚才)?(?:说|讲|问|提到|表示|告诉(?:我)?)(?:了|完|过|的)?$/u.test(
       text
     )
   ) {
@@ -519,15 +580,24 @@ function freeModeTargetToken(segment, hasFollowingSegment) {
   )?.[1];
   if (directNickname && !GENERIC_TARGET_PATTERN.test(directNickname)) return directNickname;
 
-  // 没有固定后缀的昵称只在“昵称，后续互动”这种直接呼语里接受。
-  if (hasFollowingSegment && /^[\p{L}\p{N}_·-]{1,10}$/u.test(text)) return text;
+  // 没有固定后缀的昵称只在“昵称，后续互动”这种直接呼语里接受；
+  // 捧场/应答词和“说了/提到”这类转述残片不是昵称。
+  if (
+    hasFollowingSegment &&
+    /^[\p{L}\p{N}_·-]{1,10}$/u.test(text) &&
+    !BARE_SEGMENT_NON_NAMES.has(text) &&
+    !/^(?:说|讲|问|提到|表示|告诉|听说)(?:了|完|过|的)?$/u.test(text)
+  ) {
+    return text;
+  }
   return "";
 }
 
 function hasPostposedDirectAddress(sourceScript, target) {
   const escapedTarget = escapeRegExp(target);
+  // “了”也是常见句尾助词（“谢谢你凯哥了”），漏了会让双模式不对称。
   const targetAtEnd = new RegExp(
-    `${escapedTarget}(?!们)(?:啊|呀|呢|哈|嘛|啦)?\\s*[。！？!?；;]*$`,
+    `${escapedTarget}(?!们)(?:啊|呀|呢|哈|嘛|啦|了)?\\s*[。！？!?；;]*$`,
     "u"
   );
   for (const sentence of splitHardSentences(sourceScript)) {
@@ -544,7 +614,7 @@ function hasPostposedDirectAddress(sourceScript, target) {
       continue;
     }
     if (
-      /(?:你(?!们)|谢谢你|感谢你|多谢你|想不想|要不要|是不是|愿不愿意|能不能|可不可以|方便吗|帮我|听我|告诉我|[吗么呢嘛][，,]?$|[？?][，,]?$)/u.test(
+      /(?:你(?!们)|(?:谢谢|感谢|多谢)(?:你|了)?|想不想|要不要|是不是|愿不愿意|能不能|可不可以|方便吗|帮我|听我|告诉我|[吗么呢嘛][，,]?$|[？?][，,]?$)/u.test(
         prefix
       )
     ) {
@@ -560,8 +630,9 @@ function hasConcreteTargetAddress(sourceScript, scenarioTarget = "") {
   if (requiredTarget) {
     const escapedTarget = escapeRegExp(requiredTarget);
     const source = String(sourceScript || "");
+    // “了”前后都收：谢谢了凯哥 / 谢谢凯哥了 都是对凯哥的具体感谢。
     const postposedThanks = new RegExp(
-      `(?:谢谢|感谢|多谢)(?:你)?(?:啊|呀|呢|哈|啦)?[，,\\s]*${escapedTarget}(?!们)(?=$|[。！？!?；;，,:：])`,
+      `(?:谢谢|感谢|多谢)(?:你|了)?(?:啊|呀|呢|哈|啦|了)?[，,\\s]*${escapedTarget}(?!们)(?:了)?(?=$|[。！？!?；;，,:：])`,
       "gu"
     );
     for (const match of source.matchAll(postposedThanks)) {
@@ -571,13 +642,15 @@ function hasConcreteTargetAddress(sourceScript, scenarioTarget = "") {
     }
     if (hasPostposedDirectAddress(source, requiredTarget)) return true;
 
+    // 前缀同样允许“现在/刚才/刚刚”（与自由模式一致）：
+    // “现在凯哥，帮帮我”是直接呼语，不能因漏了逗号就不认。
     const patterns = [
       new RegExp(
-        `(?:^|[。！？!?；;，,:：])\\s*(?:(?:那|然后|所以|这轮|这一轮)[，,\\s]*)?${escapedTarget}(?!们)`,
+        `(?:^|[。！？!?；;，,:：])\\s*(?:(?:那|然后|所以|这轮|这一轮|现在|刚才|刚刚)[，,\\s]*)?${escapedTarget}(?!们)`,
         "gu"
       ),
       new RegExp(
-        `(?:^|[。！？!?；;，,:：])\\s*我(?:想|来|再)?(?:问|确认)(?:下|一下)?[，,\\s]*${escapedTarget}(?!们)`,
+        `(?:^|[。！？!?；;，,:：])\\s*(?:(?:现在|刚才|刚刚)[，,\\s]*)?我(?:想|来|再)?(?:问|确认)(?:下|一下)?[，,\\s]*${escapedTarget}(?!们)`,
         "gu"
       ),
     ];
@@ -596,7 +669,24 @@ function hasConcreteTargetAddress(sourceScript, scenarioTarget = "") {
     return false;
   }
 
+  // 跨句承接：“凯哥。谢谢你”里前一句只有孤立的称呼，先暂存“凯哥”，
+  // 下一句出现实际对话内容再判断是否继续在对凯哥说话。只暂存一句：
+  // 再往后还等不到内容就作废，避免误判“凯哥。大家好”这类转向群体。
+  let carriedTarget = "";
   for (const sentence of splitHardSentences(sourceScript)) {
+    if (carriedTarget) {
+      const nextSentence = String(sentence || "").replace(/\s+/g, "");
+      // 下一句转向群体（你们/大家…）时不承接：“凯哥。你们今晚想看什么”
+      // 是在问全场，不是在继续对凯哥说话。
+      const switchedToAudience =
+        /^(?:家人们?|朋友们?|大家|各位|宝宝们?|粉丝们?|观众们?|你们|咱们|兄弟们?|姐妹们?)/u.test(
+          nextSentence
+        );
+      if (!switchedToAudience && hasAddressedContent(nextSentence, carriedTarget)) {
+        return true;
+      }
+      carriedTarget = "";
+    }
     const segments = sentence.split(/[，,:：]/u).map((item) => item.trim());
     for (let index = 0; index < segments.length; index += 1) {
       const segment = segments[index];
@@ -606,7 +696,7 @@ function hasConcreteTargetAddress(sourceScript, scenarioTarget = "") {
       // 自由模式也要看称呼前的说话人，不能因为冒号后恰好是昵称就误判 direct address。
       const precedingSpeaker = segments.slice(0, index).join("").replace(/\s+/g, "");
       if (
-        /(?:(?:刚|刚才|刚刚|之前)?(?:主持|他|她|用户|别人|有人|旁人)|[\p{L}\p{N}_·-]{2,8})(?:刚|刚才)?(?:说|讲|问|提到|表示|告诉(?:我)?)(?:的)?$/u.test(
+        /(?:(?:刚|刚才|刚刚|之前)?(?:主持|他|她|用户|别人|有人|旁人)|[\p{L}\p{N}_·-]{2,8})(?:刚|刚才)?(?:说|讲|问|提到|表示|告诉(?:我)?)(?:了|完|过|的)?$/u.test(
           precedingSpeaker
         )
       ) {
@@ -630,6 +720,20 @@ function hasConcreteTargetAddress(sourceScript, scenarioTarget = "") {
       ].join("，");
       if (hasAddressedContent(body, target)) return true;
     }
+
+    // 整句只有一个孤立昵称片段（“凯哥。”）时暂存，供下一句承接。
+    // 只认带称谓后缀的昵称（哥/姐/总/老板…）：无后缀的普通词句（“今天天气
+    // 不错”）下一句接“你好”时会虚过；转述残片（“主持说凯哥”）也不能暂存。
+    if (segments.length === 1) {
+      const bare = segments[0].replace(/[\p{P}\s]+$/u, "");
+      if (
+        /^[\p{L}\p{N}_·-]{1,10}(?:哥|姐|爷|叔|姨|总|老板|老师)$/u.test(bare) &&
+        !GENERIC_TARGET_PATTERN.test(bare) &&
+        !/(?:说|讲|问|提到|表示|告诉|听说)/u.test(bare)
+      ) {
+        carriedTarget = bare;
+      }
+    }
   }
   return false;
 }
@@ -641,7 +745,15 @@ function hasNegatingPrefix(sourceScript, index) {
   const modifiers = "(?:再|去|会|要|想|真的|继续|在|说|讲){0,3}";
   const negationCue =
     "(?:不|没|未|别|不要|不用|无需|不必|不能|不该|并不|绝不|从不|从来不|从没|从来没|没有|并没有|才不|不会|才不会|不是|不是在|不想|没必要|没有必要|不需要)";
-  const negatingTail = new RegExp(`${negationCue}${modifiers}(?:我|自己|主播)?$`, "u");
+  // 否定词与信号之间允许“跟/对/向+人称(+说/讲)”中转引语：
+  // “我不会跟你说求求你”里的“求求你”是被转述的话，不是主播原话。
+  // 注意只认“介词+具体人称”，不认泛指（“我不会跟别人求求你”不剥离，fail-closed）。
+  const addressedTail =
+    "(?:跟|对|向|和|给|同|冲)(?:你|他|她|我|自己|大家|观众|主持|大哥|家人|[\\p{L}\\p{N}_·-]{1,10}(?:哥|姐|总|老板|老师))?(?:说|讲|喊|问)?";
+  const negatingTail = new RegExp(
+    `${negationCue}(?:${modifiers}${addressedTail}${modifiers}|${modifiers})(?:我|自己|主播)?$`,
+    "u"
+  );
   // “不得不/不能不”等本身是双重否定；但若外层是“不会说不得不……”，
   // 外层否定仍支配整段被提及的话，不能只看离信号最近的“不”。
   const doubleNegative = prefix.match(
@@ -682,12 +794,14 @@ function withoutAttributedQuotedText(value) {
       /(?:跟|对|向|和|给|同|冲)(?:你|他|她|主持|观众|用户|家人|大哥|[\p{L}\p{N}_·-]{1,10}(?:哥|姐|总|老板|老师))(?:刚|刚才|之前|当时)?(?:说|讲|问)(?:的|过|是|了|那句|这句)*$/u.test(
         prefix
       );
+    // 归因动词后允许冒号（“他说：”“比如：”）——转述引语里的乞求词不能被当主播原话。
+    // 主语词表不含“我”，主播自述“我说：‘……’”仍保留为她本人的话。
     const attributedToSomeoneElse =
       (!currentSpeakerAddressingSomeone &&
-        /(?:你|他|她|主持|观众|用户|家人|大哥|[\p{L}\p{N}_·-]{1,10}(?:哥|姐|总|老板|老师))(?:刚|刚才|之前|当时)?(?:(?:说|问|写|发|刷|提过|讲过)(?:的|过|是|了|那句|这句)*|(?:的)?(?:原话|那句|这句))$/u.test(
+        /(?:你|他|她|主持|观众|用户|家人|大哥|[\p{L}\p{N}_·-]{1,10}(?:哥|姐|总|老板|老师))(?:刚|刚才|之前|当时)?(?:(?:说|问|写|发|刷|提过|讲过)(?:的|过|是|了|那句|这句)*[：:]?|(?:的)?(?:原话|那句|这句))$/u.test(
           prefix
         )) ||
-      /(?:引用|原话|比如|例如|举例|(?:别|不要|不能|不该)(?:再)?(?:说|讲))(?:是|了|这句|那句)*$/u.test(
+      /(?:引用|原话|比如|例如|举例|(?:别|不要|不能|不该)(?:再)?(?:说|讲))(?:是|了|这句|那句)*[：:]?$/u.test(
         prefix
       ) ||
       /^(?:这|那)(?:几|三|两|两个)?个字|^(?:才|这才)(?:算|是)/u.test(suffix);
@@ -834,12 +948,17 @@ function isAttributedViewerInterest(sentence) {
     `^(?:刚|刚才|刚刚|之前)?(?:听|听到)?(?:主持|他|她|用户|别人|有人|旁人|我|[\\p{L}\\p{N}_·-]{2,8})(?:刚|刚才)?(?:说|讲|问|提到|表示|告诉我)[：:,，]?${VIEWER_SUBJECT_SOURCE}.{0,12}${viewingCue}`,
     "u"
   );
+  // 转述必须“整句都是转述”才算：“你说想看跳舞，我给你跳”只有前半句是转述，
+  // 逗号后是主播自己的回应，不能整句跳过。cue 后允许被转述的内容、句尾语气词
+  // 和标点，不允许再出现新的分句。
+  const attributedOnlyTail =
+    `(?:.{0,16}${VIEWER_CONTENT_PATTERN.source})?(?:吗|么|呢|嘛|吧|呀|啊)?(?:[。！？!?；;]|$)[”’"'」』]*$`;
   const viewerSelfReport = new RegExp(
-    `^${VIEWER_SUBJECT_SOURCE}(?:刚|刚才)?(?:说|讲|表示)(?:他|她|自己)?${viewingCue}`,
+    `^${VIEWER_SUBJECT_SOURCE}(?:刚|刚才)?(?:说|讲|表示)(?:他|她|自己)?${viewingCue}${attributedOnlyTail}`,
     "u"
   );
   const heardViewerSelfReport = new RegExp(
-    `^(?:刚|刚才|刚刚|之前)?(?:听|听到)${VIEWER_SUBJECT_SOURCE}(?:说|讲|表示)(?:他|她|自己)?${viewingCue}`,
+    `^(?:刚|刚才|刚刚|之前)?(?:听|听到)${VIEWER_SUBJECT_SOURCE}(?:说|讲|表示)(?:他|她|自己)?${viewingCue}${attributedOnlyTail}`,
     "u"
   );
   return narratorFirst.test(text) || viewerSelfReport.test(text) || heardViewerSelfReport.test(text);
@@ -1098,7 +1217,7 @@ function detectViewerReason(sourceScript, scenario = null) {
 function hasExplicitVoteInstruction(sourceScript) {
   const source = withoutAttributedQuotedText(String(sourceScript || ""));
   const directAction =
-    /(?:补(?:一补|一脚|一下|一点|一些|(?:一|两|几)(?:张|票|手|个|份)|上|齐|票)|跟(?:上一点|一下|一脚|上)|上(?:多少|一票|几票|几张|一张|一点|点票|票)|投(?:一票|几票|一下|一点|点票|票)|组(?:一组|一下|一手|一个|两个|几组|几个)|认(?:一手|一份|一下|一个|几个|领(?:一手|一份|一下|一个|几个)?)|抓(?:一下|一手|一份|一个|最后一(?:手|份|个))|加(?:一|两|几)(?:个|手|份)|抹(?:个|一下)?零|接(?:一下|一半|半手|半个)|丢(?:一丢|一下|一点|几张|几票)|刷(?:一票|一下|一点|几张|几票)|送(?:一颗|一个|一张|一点)|助力(?:一下|一把)?|搭把手|帮(?:我)?一把)/u;
+    /(?:补(?:一补|一脚|一下|一点|一些|(?:一|两|几)(?:张|票|手|个|份)|上|齐|票|位)|跟(?:上一点|一下|一脚|上)|上(?:多少|一票|几票|几张|一张|一点|点票|票)|投(?:一票|几票|一下|一点|点票|票)|组(?:一组|一下|一手|一个|两个|几组|几个)|认(?:一手|一份|一下|一个|几个|领(?:一手|一份|一下|一个|几个)?)|抓(?:一下|一手|一份|一个|最后一(?:手|份|个))|加(?:一|两|几)(?:个|手|份)|抹(?:个|一下)?零|接(?:一下|一半|半手|半个)|丢(?:一丢|一下|一点|几张|几票)|刷(?:一票|一下|一点|几张|几票)|送(?:一颗|一个|一张|一点)|助力(?:一下|一把)?|搭把手|帮(?:我)?一把)/u;
   const distributedAction =
     /(?:一人|每人|一个人)(?:来|上|投|补|组|送|刷|丢)?(?:一|两|几)?(?:个|颗|张|票|手|组)/u;
   const requestCue =
@@ -1122,10 +1241,14 @@ function hasExplicitVoteInstruction(sourceScript) {
 function stripNegatedCurrentActions(value) {
   return String(value || "")
     .replace(
-      /(?:先)?(?:不用|不要|别|无需|无须|不必|不再|不用再|别再)(?:去|找人|让人|继续|再|马上|现在|直接|提前|急着){0,3}(?:拉票|要票|上票|投票|补(?:位|一脚|一下|一点|一个|一手)?|组(?:一个|一手|一下)?|认(?:领|一个|一手|一下)?|抓(?:一下|一个|一手)?|加(?:一个|一手|一下)?|抹(?:个|一下)?零|接(?:一半|半手|半个)?|丢|送|上)/gu,
+      // 否定词表覆盖裸“不/不能/不该/不准/不再”（“先不补票”“不能补票”）；
+      // 动作词表补“每人/一人+量词”，让“不用每人一票”这类否定分布式动作也被剥掉。
+      // 边界说明：“谁不补一票”这类挑战句会被剥成残留词，按没有明确指令处理
+      // （fail-closed：漏判动作只会降 partial，不会虚过毕业门槛）。
+      /(?:先)?(?:不用|不要|不(?:会|能|该|准|再|想|让|许|可以)?|别(?:再|急着)?|无需|无须|不必)(?:去|找人|让人|继续|再|马上|现在|直接|提前|急着){0,3}(?:拉票|要票|上票|投票|补(?:位|一脚|一下|一点|一个|一手)?|组(?:一个|一手|一下)?|认(?:领|一个|一手|一下)?|抓(?:一下|一个|一手)?|加(?:一个|一手|一下)?|抹(?:个|一下)?零|接(?:一半|半手|半个)?|(?:每人|一人|一个人)(?:一|两|几)?(?:个|颗|张|票|手|组)?|丢|送|上)/gu,
       " "
     )
-    .replace(/(?:先)?(?:别|不要|不用|无需|不必|不急着|别急着)(?:马上|现在|直接|提前|急着){0,2}(?:丢|送|上)/gu, " ")
+    .replace(/(?:先)?(?:别(?:急着)?|不(?:要|用|能|该|准|会|急着)?|无需|无须|不必)(?:马上|现在|直接|提前|急着){0,2}(?:丢|送|上)/gu, " ")
     .replace(/\s+/g, "");
 }
 
@@ -1145,8 +1268,10 @@ function hasDeliveryExecutionInstruction(sourceScript) {
   const compact = withoutAttributedQuotedText(String(sourceScript || "")).replace(/\s+/g, "");
   const fulfillExisting =
     /(?:按|照).{0,8}(?:刚才|之前|各自|大家)?(?:约定|认领).{0,12}(?:丢|送|上|兑现)|(?:刚才|之前)(?:认|组).{0,12}(?:现在|一起|统一)?(?:丢|送|上|兑现)/u;
+  // 单独的“哥/姐”能从“谢谢凯哥”里误配出“哥”，让一句对单人的感谢
+  // 冒充兑现阶段动作；只保留“哥哥/姐姐”这种明确的叠字称呼。
   const acknowledgeArrival =
-    /(?:谢谢|感谢|收到|收到了|到账|接住).{0,24}(?:大家|你们|哥哥|姐姐|哥|姐|认领|礼物|出手|这(?:一|几|些|个|手))|(?:大家|你们|哥哥|姐姐|哥|姐).{0,12}(?:谢谢|感谢|收到|接住)/u;
+    /(?:谢谢|感谢|收到|收到了|到账|接住).{0,24}(?:大家|你们|哥哥|姐姐|认领|礼物|出手|这(?:一|几|些|个|手))|(?:大家|你们|哥哥|姐姐).{0,12}(?:谢谢|感谢|收到|接住)/u;
   return fulfillExisting.test(compact) || acknowledgeArrival.test(compact);
 }
 
@@ -1191,7 +1316,8 @@ function hasCurrentPhaseInstruction(sourceScript, phase) {
   return hasExplicitVoteInstruction(sourceScript);
 }
 
-function parseSpokenCount(token) {
+// 导出仅供本地无网络单元测试使用（data-URL 加载方式）。
+export function parseSpokenCount(token) {
   const value = String(token || "").trim();
   if (/^\d+$/u.test(value)) return Number(value);
   const digits = { 零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
@@ -1199,22 +1325,34 @@ function parseSpokenCount(token) {
 
   let total = 0;
   let current = 0;
+  let lastUnit = 1; // 最近一次单位量级（十/百/千），决定尾数位权
+  let sawZeroAfterUnit = false; // “一百零二”的尾数“二”是个位，不做位权倍乘
   for (const character of value) {
     if (Object.prototype.hasOwnProperty.call(digits, character)) {
       current = digits[character];
+      if (character === "零" || character === "〇") sawZeroAfterUnit = true;
     } else if (character === "十") {
       total += (current || 1) * 10;
       current = 0;
+      lastUnit = 10;
+      sawZeroAfterUnit = false;
     } else if (character === "百") {
       total += (current || 1) * 100;
       current = 0;
+      lastUnit = 100;
+      sawZeroAfterUnit = false;
     } else if (character === "千") {
       total += (current || 1) * 1000;
       current = 0;
+      lastUnit = 1000;
+      sawZeroAfterUnit = false;
     } else {
       return null;
     }
   }
+  // 口语“三百二/一千三”省略了尾数的单位，结尾的“二/三”承接上一个单位
+  // 的十分之一量级（320/1300）；出现过零的“一百零二”尾数就是个位（102）。
+  if (current && lastUnit > 10 && !sawZeroAfterUnit) return total + current * (lastUnit / 10);
   return total + current;
 }
 
@@ -1223,10 +1361,12 @@ function parseSpokenCount(token) {
  * 例如 20→18 只能说明期间确认收到 2 个；17→15→15 说明先收到 2 个，
  * 随后暂时没有新变化，绝不能写成“前两拍各收到 2 个”。
  */
-function summarizeTicketProgress(sourceScript) {
+// 导出仅供本地无网络单元测试使用（data-URL 加载方式）。
+export function summarizeTicketProgress(sourceScript) {
   const observations = [];
+  // “还差一点”是差得不多，不是差 1 票；数字后跟“点”的一律不当作票数。
   const pattern =
-    /(?:还(?:需|差)|差|要(?:啦|拉|拿)?)(?:最后)?\s*(\d{1,8}|[零〇一二两三四五六七八九十百千]{1,8})\s*(?:个|颗|手|票|张|组|星辰)?/gu;
+    /(?:还(?:需|差)|差|要(?:啦|拉|拿)?)(?:最后)?\s*(\d{1,8}|[零〇一二两三四五六七八九十百千]{1,8})(?!点)\s*(?:个|颗|手|票|张|组|星辰)?/gu;
   for (const match of String(sourceScript || "").matchAll(pattern)) {
     const count = parseSpokenCount(match[1]);
     if (Number.isFinite(count)) observations.push({ raw: match[1], count });
@@ -1265,6 +1405,8 @@ function hasSpecificScenarioGratitude(sourceScript, scenario) {
   for (let index = 0; index < sentences.length; index += 1) {
     const sentence = sentences[index];
     if (!/(?:谢谢|感谢|多谢)/u.test(sentence)) continue;
+    // “谢谢大家，凯哥也在”只是顺带提了昵称，泛谢不等于对凯哥的具体感谢。
+    if (GENERIC_AUDIENCE_THANKS_PATTERN.test(sentence)) continue;
     if (target && sentence.includes(target)) return true;
     if (giftCue.length >= 2 && sentence.includes(giftCue)) return true;
 
@@ -1980,6 +2122,63 @@ function checkAdminCode(request, env) {
 }
 
 /**
+ * 取小段稳定指纹（SHA-256 前 8 字节 hex），用于限流 key，不落明文入口码/IP。
+ */
+async function shortHash(value) {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(String(value || ""))
+  );
+  return Array.from(new Uint8Array(digest).slice(0, 8), (byte) =>
+    byte.toString(16).padStart(2, "0")
+  ).join("");
+}
+
+/**
+ * 批改接口固定窗口限流：同一分钟同一入口码/IP 超限返回 429 错误对象，放行返回 null。
+ * KV binding 缺失时 fail-open——鉴权仍是第一道防线，限流只是防烧钱，
+ * 且 CASES 缺失时案例模块本就会先失败。KV 抖动同样降级放行，
+ * 限流失效好过批改整体 500。
+ * @returns {Promise<{status:number, message:string}|null>}
+ */
+export async function checkCoachRateLimit(env, accessCode, ip) {
+  if (!env || !env.CASES) return null;
+  const bucket = Math.floor(Date.now() / COACH_RATE_LIMIT.bucketMs);
+  const entries = [
+    {
+      key: `rl:code:${await shortHash(accessCode)}:${bucket}`,
+      max: COACH_RATE_LIMIT.codePerMinute,
+      label: "入口码",
+    },
+  ];
+  if (ip) {
+    entries.push({
+      key: `rl:ip:${await shortHash(ip)}:${bucket}`,
+      max: COACH_RATE_LIMIT.ipPerMinute,
+      label: "IP",
+    });
+  }
+  for (const entry of entries) {
+    try {
+      const current = (await env.CASES.get(entry.key, "json")) || 0;
+      if (current >= entry.max) {
+        return {
+          status: 429,
+          message: `批改太频繁（按${entry.label}每分钟最多 ${entry.max} 次），休息一下再继续`,
+        };
+      }
+      await env.CASES.put(entry.key, JSON.stringify(current + 1), {
+        expirationTtl: COACH_RATE_LIMIT.ttlSeconds,
+      });
+    } catch (err) {
+      console.log(`rate limit degraded: ${err.message}`);
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
  * 清洗可选现场情境。未知字段静默丢弃，避免前端迭代时破坏旧接口；
  * 已知字段一旦提供就必须满足固定类型、长度与数值范围。
  * 文本折叠为单行，避免把换行伪装成新的 prompt 段落。
@@ -2642,12 +2841,13 @@ class HttpError extends Error {
  * @param {number} status - HTTP 状态码
  * @param {object} corsHeaders - CORS 头（所有出口统一带上）
  */
-function jsonResponse(data, status, corsHeaders) {
+function jsonResponse(data, status, corsHeaders, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
       "Content-Type": "application/json; charset=utf-8",
       ...corsHeaders,
+      ...extraHeaders,
     },
   });
 }
