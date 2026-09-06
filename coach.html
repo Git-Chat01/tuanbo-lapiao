@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' https://lapiao.aivar.cc http://127.0.0.1:* http://localhost:*; object-src 'none'; form-action 'self'; base-uri 'self'">
+  <!-- 本地联调只放行 wrangler dev 默认端口 8787；线上页面即使被诱导填 ?api= 也连不出去 -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' https://lapiao.aivar.cc http://127.0.0.1:8787 http://localhost:8787; object-src 'none'; form-action 'self'; base-uri 'self'">
   <!-- 隐藏后台：不给任何页面加链接，同时告诉搜索引擎不要收录 -->
   <meta name="robots" content="noindex, nofollow">
   <title>拉票话术教练 · 后台</title>

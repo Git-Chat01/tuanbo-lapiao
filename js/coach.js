@@ -2,6 +2,24 @@
 // 全局 var 风格与主播端一致，无构建工具；复用 config.js 的 API_BASE / LABELS / LIMITS
 // 桌面操作背景：鼠标 hover 友好、信息密度高，不做手机触控优化
 
+// 点击劫持防护：后台有管理密码和案例数据，绝不允许被嵌进别的页面 iframe。
+// 发现被嵌入就试图把顶层页面替换成本页；跨域替换失败时持续清空页面内容，
+// 不给外层站点留下可操作的后台界面。
+if (window.top !== window.self) {
+  try {
+    window.top.location = window.self.location;
+  } catch (e) {
+    // 跨域拿不到顶层也不影响下面持续清空
+  }
+  setInterval(function () {
+    try {
+      document.body.textContent = "";
+    } catch (e) {
+      // body 尚未就绪时忽略，下一个周期再清
+    }
+  }, 300);
+}
+
 var Coach = {
   // 当前 tab：auto（自动吸收清单）/ manual（教练投喂清单）
   _tab: "auto",
@@ -54,6 +72,7 @@ var Coach = {
     setTimeout(function () { input.focus(); }, 50);
 
     var confirm = function () {
+      if (confirmBtn.disabled) return; // 验证中防连点：双击/回车都可能重复触发
       var code = input.value.trim();
       if (!code) return;
       confirmBtn.disabled = true;
@@ -75,10 +94,12 @@ var Coach = {
             input.select();
           }
         })
-        .catch(function () {
+        .catch(function (err) {
           confirmBtn.disabled = false;
           confirmBtn.textContent = "进入";
-          error.textContent = "连不上后台，检查网络后再试";
+          // 探针超时和网络不通是两种处境：前者多半还能再试，后者要检查网络
+          error.textContent =
+            err && err.name === "TimeoutError" ? "验证超时，请重试" : "连不上后台，检查网络后再试";
           error.hidden = false;
         });
     };
@@ -93,15 +114,26 @@ var Coach = {
    * 不单独做校验接口——用最小的真实请求当探针，密码对错一次见分晓。
    */
   checkCode: function (code) {
-    return fetch(API_BASE + "/api/admin/cases?source=auto&limit=1", {
-      headers: { "X-Admin-Code": code },
-    }).then(function (res) {
-      return res.json().then(function (data) {
-        return Boolean(res.ok && data && data.ok === true && Array.isArray(data.items));
-      }, function () {
-        return false;
-      });
+    // 8 秒探针超时：网络黑洞时不能让“验证中……”无限挂起
+    var timeout = new Promise(function (_resolve, reject) {
+      setTimeout(function () {
+        var err = new Error("验证超时");
+        err.name = "TimeoutError";
+        reject(err);
+      }, 8000);
     });
+    return Promise.race([
+      fetch(API_BASE + "/api/admin/cases?source=auto&limit=1", {
+        headers: { "X-Admin-Code": code },
+      }).then(function (res) {
+        return res.json().then(function (data) {
+          return Boolean(res.ok && data && data.ok === true && Array.isArray(data.items));
+        }, function () {
+          return false;
+        });
+      }),
+      timeout,
+    ]);
   },
 
   // ---- 带管理头的请求助手（401 统一处理：清缓存 + 弹密码门） ----

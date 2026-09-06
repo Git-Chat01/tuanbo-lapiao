@@ -8,6 +8,8 @@ var DEFAULT_API = "https://lapiao.aivar.cc";
 // 只允许在 loopback 页面上用 loopback API 覆盖做本地联调。
 // 线上页面即使被诱导打开 ?api=https://evil.example 也会忽略，
 // 避免把主播入口码或教练管理码发给任意地址。
+// 配合 index.html / coach.html 的 CSP：connect-src 对 loopback 只放行 8787 端口
+// （wrangler dev 默认端口），本地换端口跑 wrangler 时记得同步改两处 CSP。
 var API_BASE = (function () {
   var pageHost = window.location.hostname;
   var isLocalPage = pageHost === "127.0.0.1" || pageHost === "localhost";
