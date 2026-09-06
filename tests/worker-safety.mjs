@@ -2935,7 +2935,7 @@ for (const pureNarrationScript of ["凯哥说他想看返场。", "你说想看�
 }
 
 // ---- 中危修复回归：/api/coach 限流（防入口码泄露后烧 DeepSeek 额度）----
-// 路由级：同一入口码 1 分钟 30 次内放行，第 31 次 429 + Retry-After，且不再调模型。
+// 路由级：同一入口码 1 分钟 60 次内放行，第 61 次 429 + Retry-After，且不再调模型。
 {
   const rateLimitKv = new MemoryKV();
   const rateLimitEnv = {
@@ -2972,14 +2972,14 @@ for (const pureNarrationScript of ["凯哥说他想看返场。", "你说想看�
           script: baseScript,
         }),
       });
-    for (let i = 0; i < 30; i += 1) {
+    for (let i = 0; i < 60; i += 1) {
       const res = await index.default.fetch(coachRequest(), rateLimitEnv, rateLimitCtx);
       assert.equal(res.status, 200, `第 ${i + 1} 次批改应在限流额度内`);
     }
     const blocked = await index.default.fetch(coachRequest(), rateLimitEnv, rateLimitCtx);
     assert.equal(blocked.status, 429, "超过入口码每分钟上限应返回 429");
     assert.equal(blocked.headers.get("Retry-After"), "60", "429 应带 Retry-After 头");
-    assert.equal(modelCalls, 30, "被限流后不得再调 DeepSeek");
+    assert.equal(modelCalls, 60, "被限流后不得再调 DeepSeek");
     await Promise.all(rateLimitPending);
   } finally {
     globalThis.fetch = originalFetch;
