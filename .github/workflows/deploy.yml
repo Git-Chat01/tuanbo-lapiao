@@ -20,6 +20,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verify coaching and frontend safety
+        run: |
+          node tests/worker-safety.mjs
+          node tests/frontend-safety.mjs
+
       - name: Deploy
         uses: peaceiris/actions-gh-pages@v4
         with:

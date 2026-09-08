@@ -162,6 +162,8 @@ var Report = {
   },
 
   _solutionFor: function (report, focus) {
+    var coaching = Report._coachingFor(report, focus);
+    if (coaching) return coaching.action;
     var challenge = Report._challengeFor(focus);
     var direction = report.direction || {};
     if (focus && focus.key === "vote_instruction") {
@@ -627,6 +629,16 @@ var Report = {
         evidence: report.ai_flavor || report.card_why || "结构齐了，但还像一套谁都能念的话。",
       };
     }
+    // 没有安全/错句问题、只是两个核心都未形成时，仍展示有效的具体短带教。
+    // 不让“off”大类标题覆盖模型已经找准的那一个缺口。
+    if (report && report.verdict === "off" && report.card_type === "logic" &&
+        !(report.line_reviews || []).some(function (line) { return line.mark === "wrong"; })) {
+      var requestedGap = checks.find(function (check) {
+        return report.coaching && check.key === report.coaching.focus_key &&
+          ["user_reason", "vote_instruction"].indexOf(check.key) >= 0 && check.status !== "met" && check.status !== "na";
+      });
+      if (requestedGap && Report._coachingFor(report, requestedGap)) return requestedGap;
+    }
     if (
       report &&
       report.verdict === "off" &&
@@ -645,8 +657,13 @@ var Report = {
       };
     }
 
-    for (var i = 0; i < checks.length; i++) {
-      if (checks[i].status !== "met" && checks[i].status !== "na") return checks[i];
+    // 非核心项仍如实记录，但不能抢走真正的教学焦点。
+    var coreKeys = ["user_reason", "vote_instruction"];
+    var requestedKey = report && report.coaching && report.coaching.focus_key;
+    if (coreKeys.indexOf(requestedKey) >= 0) coreKeys = [requestedKey].concat(coreKeys.filter(function (key) { return key !== requestedKey; }));
+    for (var i = 0; i < coreKeys.length; i++) {
+      var gap = checks.find(function (check) { return check.key === coreKeys[i] && check.status !== "met" && check.status !== "na"; });
+      if (gap) return gap;
     }
 
     // 结构全齐不代表一定过关：某句站错角度仍是真正的本轮焦点。
@@ -694,14 +711,12 @@ var Report = {
     var heading = Report._el("header", "review-heading");
     var challenge = Report._challengeFor(focus);
     var eyebrow = "话术闯关 · 第 " + progress.totalAttempts + " 次挑战";
-    var title = challenge.number
-      ? "第 " + challenge.number + " 关 · " + challenge.title
-      : "加练关 · " + challenge.title;
+    var title = "这次只练：" + challenge.title;
     heading.setAttribute("aria-live", "polite");
     heading.appendChild(Report._el("span", null, eyebrow));
     heading.appendChild(Report._el("h1", null, title));
-    heading.appendChild(Report._el("p", "review-heading__progress", Report._progressMessage(progress, focus)));
-    if (report.echo) heading.appendChild(Report._el("p", "review-heading__echo", report.echo));
+    var coaching = Report._coachingFor(report, focus);
+    heading.appendChild(Report._el("p", "review-heading__progress", coaching ? coaching.keep : "已经做到的先保留，这次只改一处。"));
     return heading;
   },
 
@@ -747,6 +762,8 @@ var Report = {
   },
 
   _focusWhy: function (report, focus) {
+    var coaching = Report._coachingFor(report, focus);
+    if (coaching) return coaching.why;
     var reviews = Array.isArray(report.line_reviews) ? report.line_reviews : [];
     if (focus && focus.key === "line_angle") {
       for (var i = 0; i < reviews.length; i++) {
@@ -754,6 +771,7 @@ var Report = {
       }
     }
     var challenge = Report._challengeFor(focus);
+    if (Report._directionMatchesFocus(report.card_why, focus)) return report.card_why;
     if (challenge.number && challenge.why) return challenge.why;
     return report.card_why || report.verdict_reason || (focus.label + "没落到现场，观众就不知道怎么接你的话。");
   },
@@ -765,7 +783,40 @@ var Report = {
     return row;
   },
 
+  _coachingFor: function (report, focus) {
+    var value = report && report.coaching;
+    if (!value || !focus || value.focus_key !== focus.key) return null;
+    var limits = { keep: 40, original: 60, action: 45, example: 55, why: 50 };
+    if (!Object.keys(limits).every(function (key) {
+      return typeof value[key] === "string" && value[key].trim() && Array.from(value[key]).length <= limits[key];
+    })) return null;
+    var source = App.state.lastRequest && App.state.lastRequest.script;
+    if (!source || source.replace(/\s/g, "").indexOf(value.original.replace(/\s/g, "")) < 0) return null;
+    return value;
+  },
+
   _focusPaper: function (report, focus, progress) {
+    var coaching = Report._coachingFor(report, focus);
+    var paper = Report._el("section", "focus-paper focus-paper--compact" + (report.redline_note ? " focus-paper--redline" : ""));
+    paper.setAttribute("aria-label", "这次只改一处");
+    var direction = Report._specificDirectionFor(report, focus) || Report._solutionFor(report, focus);
+    paper.appendChild(Report._challengeRow("这次只改", coaching ? coaching.action : Report._shortFeedback(direction, 65, "只改教练指出的这一处，其他先保留。"), "challenge-card__row--solution"));
+    if (coaching) {
+      paper.appendChild(Report._challengeRow("你的原话", coaching.original, "challenge-card__row--evidence"));
+      paper.appendChild(Report._challengeRow("可以这样改", coaching.example, "challenge-card__row--specific"));
+    }
+    paper.appendChild(Report._challengeRow("为什么", Report._shortFeedback(Report._focusWhy(report, focus), 70, "先把这一处说清，让观众听懂你的意思。详细原因可展开复盘。")));
+    return paper;
+  },
+
+  _shortFeedback: function (text, max, fallback) {
+    if (typeof text !== "string" || !text.trim()) return fallback;
+    if (Array.from(text).length <= max) return text;
+    var firstSentence = text.match(/^[^。！？!?]+[。！？!?]/);
+    return firstSentence && Array.from(firstSentence[0]).length <= max ? firstSentence[0] : fallback;
+  },
+
+  _legacyFocusPaper: function (report, focus, progress) {
     var challenge = Report._challengeFor(focus);
     var guidance = Report._guidanceFor(report, focus, progress);
     var paper = Report._el("section", "focus-paper" + (report.redline_note ? " focus-paper--redline" : ""));
@@ -857,7 +908,7 @@ var Report = {
     section.appendChild(Report._el(
       "p",
       "revision-desk__hint",
-      "下面还是你自己的原话。已经拿下的本拍 " + progress.metCount + " 项先保留，不用重写整篇。"
+      "用自己的话改这一处，其他先保留。"
     ));
 
     var input = Report._el("textarea", "revision-input");
@@ -1100,7 +1151,10 @@ var Report = {
       root.hidden = true;
       return;
     }
-    root.appendChild(section);
+    var details = Report._el("details", "review-details");
+    details.appendChild(Report._el("summary", null, "展开看现场拆解"));
+    details.appendChild(section);
+    root.appendChild(details);
     root.hidden = false;
   },
 
@@ -1144,14 +1198,18 @@ var Report = {
     var checks = progress.checks;
     var focus = progress.focus;
     content.appendChild(Report._heading(report, focus, progress));
-    content.appendChild(Report._challengeMap(checks, focus, progress));
     content.appendChild(Report._focusPaper(report, focus, progress));
-    var roundDynamics = Report._roundDynamics(report);
-    if (roundDynamics) content.appendChild(roundDynamics);
-    var help = Report._helpPanel(report, focus, progress);
-    if (help) content.appendChild(help);
     content.appendChild(Report._revisionDesk(focus, progress));
-    content.appendChild(Report._fullReview(report, checks, focus));
+    var details = Report._el("details", "review-details");
+    details.appendChild(Report._el("summary", null, "想看详细分析？展开复盘"));
+    details.appendChild(Report._challengeMap(checks, focus, progress));
+    if (!Report._coachingFor(report, focus)) details.appendChild(Report._legacyFocusPaper(report, focus, progress));
+    var roundDynamics = Report._roundDynamics(report);
+    if (roundDynamics) details.appendChild(roundDynamics);
+    var help = Report._helpPanel(report, focus, progress);
+    if (help) details.appendChild(help);
+    details.appendChild(Report._fullReview(report, checks, focus));
+    content.appendChild(details);
     App.showView("report");
   },
 
@@ -1174,14 +1232,14 @@ var Report = {
     var learn = document.getElementById("passed-learn");
     Report._clear(learn);
     var main = report.verdict_reason || "参与理由和上票动作已经站稳，这一轮可以拿去练开口。";
-    learn.appendChild(Report._el("p", null, main));
+    learn.appendChild(Report._el("p", null, Report._shortFeedback(main, 80, "这版文字已经达到本轮要求，可以开口练。")));
     var achievement = Report._passAchievement(progress);
     if (achievement) learn.appendChild(Report._el("p", "passed-new-skill", achievement));
-    if (report.one_thing) learn.appendChild(Report._el("p", null, "你真正学会的是：" + report.one_thing));
+    if (report.one_thing) learn.appendChild(Report._el("p", null, "开口时记住：" + Report._shortFeedback(report.one_thing, 60, "先看对方怎么回应，再接下一句。")));
     learn.appendChild(Report._el(
       "p",
       "passed-self-check",
-      "以后自己走这条链路：看现场、抓人性、递动作、看反馈、接下一拍。"
+      "这版文字可以开口练；现场能否接住回应，还要继续验证。"
     ));
     Report._renderPassedRoundDynamics(report);
 

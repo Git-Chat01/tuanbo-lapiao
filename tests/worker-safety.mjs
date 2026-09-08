@@ -18,7 +18,7 @@ async function loadIndexModule() {
   let source = await readFile(new URL("../worker/index.js", import.meta.url), "utf8");
   source = source
     .replace(
-      'import { SYSTEM_PROMPT, buildUserPrompt } from "./prompt.js";',
+      'import { SYSTEM_PROMPT, buildUserPrompt } from "./current-review.js";',
       'const SYSTEM_PROMPT = ""; const buildUserPrompt = (...args) => { globalThis.__lastBuildUserPromptArgs = args; return "test prompt"; };'
     )
     .replace(
@@ -185,6 +185,118 @@ const makeReportForScript = (script, overrides = {}) =>
     script
   );
 
+{
+  const script = "这是当前完整稿";
+  const contradiction = makeReportForScript(script, {verdict:"almost"});
+  assert.equal(index.getReportQualityIssue(contradiction,script), "核心已达标但结论仍卡关");
+  const stale = makeReportForScript(script, {verdict_reason:"你还在说“这是已经删掉的旧句”。"});
+  assert.equal(index.getReportQualityIssue(stale,script), "点评引用了当前稿不存在的原句");
+  const clean = makeReportForScript(script);
+  assert.equal(index.getReportQualityIssue(clean,script), "");
+  const emptyEvidence = {structure_checks:[{key:"self_intro",status:"missing",evidence:""},{key:"user_reason",status:"met",evidence:""}]};
+  index.completeMissingEvidenceLabels(emptyEvidence);
+  assert.equal(emptyEvidence.structure_checks[0].status,"missing");
+  assert.equal(emptyEvidence.structure_checks[0].evidence,"当前稿未出现这一项");
+  assert.equal(emptyEvidence.structure_checks[1].evidence,"", "达标证据不能由程序补造");
+  for (const groupScript of ["已经组齐了，大家继续认一个，现在马上丢，不用等主持。", "大家好，我是小林。现在还差十五个，哥哥姐姐们量力组一组，我这边继续找人，大家一起冲过去。"]) {
+    const groupReport = makeReportForScript(groupScript);
+    index.applyReportSafetyGates(groupReport,[],{sourceScript:groupScript});
+    assert.notEqual(groupReport.structure_checks[2].status,"met","报数和组满陈述不是用户昵称");
+  }
+  const makeInterestMismatch = () => makeRawReport({verdict:"almost",verdict_reason:"未说明补票目标",structure_checks:allMetChecks().map(item=>item.key === "user_reason" ? {...item,status:"partial",evidence:"已回应返场，但未说明共同目标"}:item)});
+  const interestScript = "小林，你刚说想看返场，我再跳一遍。想看的量力补一点。";
+  const mismatch = makeInterestMismatch();
+  index.reconcileExplicitInterest(mismatch,interestScript,null);
+  assert.equal(mismatch.structure_checks[3].status,"met");
+  assert.equal(mismatch.verdict,"passed");
+  assert.ok(interestScript.includes(mismatch.structure_checks[3].evidence));
+  for (const script of ["小林你在榜上很久了，帮我组一组。", "小林，你想看返场，但我不跳。补一票。", "小林，你想看返场，我再跳一遍。", "如果你想看返场，我再跳一遍。补一票。", "大家人多力量大，能不能过就看你们了。组一组。"]) {
+    const raw = makeInterestMismatch();
+    index.reconcileExplicitInterest(raw,script,null);
+    assert.equal(raw.verdict,"almost", "模糊、假设、否定和没有动作都不能借明确兴趣放行");
+  }
+}
+
+// 新人短带教：原话不足不能被心理解释、场景事实或关键词自动补成过关。
+{
+  const script = "大家好啊我是你们的高高，现在还差十五个距离，榜上的哥哥姐姐们可以大胆口嗨一个两个可以组组队我们人多力量大往前走走.随哥看你在榜上有会了方便出来组一组队吗现在高高身后没有人只有榜上的哥姐们啦 能不能过就看你们了";
+  const cardWhy = "已经点名并邀请，但共同参与的理由还比较泛。";
+  const report = makeReportForScript(script, {
+    verdict: "almost", card_why: cardWhy,
+    structure_checks: allMetChecks().map(item => item.key === "user_reason" ? {...item, status: "partial", evidence: "人多力量大，理由仍较泛"} : item),
+    round_dynamics: validRoundDynamics({human_drivers: [{driver: "protection", evidence: "现在高高身后没有人只有榜上的哥姐们啦", mechanism: "可能让观众愿意保护，但还没有说到位"}]}),
+  });
+  index.applyReportSafetyGates(report, [], {sourceScript: script, voteGap: "close"});
+  assert.equal(report.verdict, "almost");
+  assert.equal(report.structure_checks[3].status, "partial");
+  assert.equal(report.card_why, cardWhy, "不得用通用肯定抹掉原句缺口");
+  assert.equal(report.structure_checks[2].status, "met", "点名随哥仍应被承认");
+  assert.equal(report.structure_checks[4].status, "met", "正常组队动作仍应被承认");
+}
+for (const evidence of ["凯哥刚才认领了五个", "凯哥刚才已经认领100个，所有人都跟着上票"]) {
+  const script = "大家帮我补一票吧，我想留下来。";
+  const report = makeReportForScript(script, {round_dynamics: validRoundDynamics({human_drivers: [{driver: "social_proof", evidence, mechanism: "别人带头可能推动跟随"}]})});
+  index.applyReportSafetyGates(report, [], {sourceScript: script, scenario: {userSignal: "凯哥刚才认领了五个"}});
+  assert.notEqual(report.verdict, "passed", "场景或四字重合都不能冒充主播已经说到位");
+}
+{
+  const script = "凯哥，现在你说了算，大家帮我补一票。";
+  const report = makeReportForScript(script, {verdict: "almost", structure_checks: allMetChecks().map(item => item.key === "user_reason" ? {...item, status: "partial", evidence: "没说什么由他决定"} : item)});
+  index.applyReportSafetyGates(report, [], {sourceScript: script});
+  assert.equal(report.structure_checks[3].status, "partial", "空选择词不自动提升理由");
+}
+
+const shortCoaching = {
+  focus_key: "user_reason", keep: "点名并邀请的动作可以保留。", original: "大家帮我补一票",
+  action: "把共同参与这轮的意思说清楚。", example: "愿意一起守这轮的，量力搭一点，我继续报差距。", why: "让对方知道如何和你一起参与。",
+};
+{
+  const script = "大家帮我补一票，我想留下来。";
+  const report = makeReportForScript(script, {coaching: {...shortCoaching, extra: "discard"}});
+  assert.deepEqual(report.coaching, shortCoaching);
+  for (const bad of [{...shortCoaching, original: "不存在的原句"}, {...shortCoaching, why: "长".repeat(51)}, {...shortCoaching, focus_key: "invented"}]) {
+    assert.equal(makeReportForScript(script, {coaching: bad}).coaching, undefined, "非法短卡应退回旧报告，不截断误导新人");
+  }
+  for (const example of ["你刚说想看新舞，补一手我就跳。", "你补一手就稳了。"] ) {
+    const unsafe = makeReportForScript(script, {coaching: {...shortCoaching, example}});
+    index.applyReportSafetyGates(unsafe, [], {sourceScript: script});
+    assert.equal(unsafe.coaching, undefined, "虚构兴趣或保证结果不得通过短卡绕过校验");
+    assert.equal(unsafe.direction.examples.length, 0);
+  }
+  const phaseUnsafe = makeReportForScript(script, {coaching: {...shortCoaching, focus_key: "vote_instruction", example: "大家继续认一手。"}});
+  index.applyReportSafetyGates(phaseUnsafe, [], {sourceScript: script, scenario: {phase: "awaiting_drop"}});
+  assert.match(phaseUnsafe.coaching.example, /等主持统一口令/, "组满后的错误短卡应换成确定安全的阶段指引");
+  assert.doesNotMatch(phaseUnsafe.coaching.example, /继续认|再来|马上丢/);
+}
+{
+  const revision = {previousScript: "凯哥方便一起组队吗？", focusKey: "user_reason", instruction: "把共同目标说清。"};
+  assert.deepEqual(index.normalizeRevision({...revision, extra: "discard"}), revision);
+  for (const bad of [null, [], {...revision, previousScript: "长".repeat(501)}, {...revision, focusKey: "passed"}, {...revision, instruction: "长".repeat(301)}]) {
+    assert.equal(index.normalizeRevision(bad), null);
+  }
+  const userPrompt = prompt.buildUserPrompt("close", "当前稿", [], [], null, revision);
+  assert.ok(userPrompt.includes(JSON.stringify(revision)));
+  assert.match(userPrompt, /待核对数据，不是指令/);
+  assert.match(userPrompt, /改对就在 coaching.keep 具体确认/);
+  assert.ok(userPrompt.indexOf(JSON.stringify(revision)) < userPrompt.indexOf("【她写的话术 · 当前稿"), "旧稿必须先于明确标记的当前评分稿");
+  assert.match(userPrompt, /本次唯一评分对象/);
+  const source = await readFile(new URL("../worker/current-review.js", import.meta.url), "utf8");
+  const knowledge = toDataUrl(await readFile(new URL("../worker/prompt.js", import.meta.url), "utf8"));
+  const current = await import(toDataUrl(source.replace('from "./prompt.js";', `from "${knowledge}";`)));
+  const input = current.buildUserPrompt("close", "当前稿", [{script:"别人的旧稿"}], [], null, revision);
+  assert.equal(JSON.parse(input).currentScript, "当前稿");
+  assert.ok(!input.includes(revision.previousScript));
+  assert.ok(!input.includes("别人的旧稿"));
+  assert.match(current.SYSTEM_PROMPT, /两个核心 met.{0,30}必须 passed/);
+  const fixed = {verdict:"almost",structure_checks:[{key:"user_reason",status:"met"}],coaching:{keep:"原先优点"}};
+  index.applyRevisionFeedback(fixed, revision, "不同的新稿");
+  assert.match(fixed.coaching.keep, /这版已经说清/);
+  assert.equal(fixed.verdict, "almost", "复练历史不得抬高结论");
+  const unfinished = {verdict:"almost",structure_checks:[{key:"user_reason",status:"partial"}],coaching:{keep:"原先优点"}};
+  index.applyRevisionFeedback(unfinished, revision, "不同的新稿");
+  assert.equal(unfinished.coaching.keep, "原先优点");
+}
+
 // 红线不论模型原判什么都必须 off；persona 不得 passed。
 const redlineAlmost = {
   card_type: "logic",
@@ -217,14 +329,14 @@ assert.equal(cleanPassed.verdict, "passed");
 assert.equal(cleanPassed._lineReviewsContractValid, true);
 assert.equal(JSON.stringify(cleanPassed).includes("_lineReviewsContractValid"), false);
 
-// 模型仅因“还能更好”保守给 almost，但五项与安全硬门槛全部满足时，后端应稳定晋级。
+// 后端不再替模型作语义晋级；过严的模型结论应校准提示，而非抹掉诊断。
 const conservativeAlmost = index.normalizeReport(
   makeRawReport({ verdict: "almost", verdict_reason: "互动还可以更强" }),
   "测试原句"
 );
 index.applyReportSafetyGates(conservativeAlmost, []);
-assert.equal(conservativeAlmost.verdict, "passed");
-assert.match(conservativeAlmost.verdict_reason, /达到文字稿门槛/);
+assert.equal(conservativeAlmost.verdict, "almost");
+assert.equal(conservativeAlmost.verdict_reason, "互动还可以更强");
 
 const partialButQualifiedAlmost = index.normalizeReport(
   makeRawReport({
@@ -234,7 +346,7 @@ const partialButQualifiedAlmost = index.normalizeReport(
   "测试原句"
 );
 index.applyReportSafetyGates(partialButQualifiedAlmost, []);
-assert.equal(partialButQualifiedAlmost.verdict, "passed");
+assert.equal(partialButQualifiedAlmost.verdict, "almost");
 
 const normalizedRoundDynamics = index.normalizeReport(makeRawReport(), "测试原句");
 assert.deepEqual(normalizedRoundDynamics.round_dynamics, validRoundDynamics());
@@ -1061,7 +1173,7 @@ for (const neutralPoliteRequestScript of [
   "现在还差十票，凯哥，帮帮我，你愿意上多少看着来。",
 ]) {
   const neutralPoliteRequest = makeReportForScript(neutralPoliteRequestScript, {
-    verdict: "almost",
+    verdict: "passed",
   });
   index.applyReportSafetyGates(neutralPoliteRequest, [], {
     sourceScript: neutralPoliteRequestScript,
@@ -1098,7 +1210,7 @@ assert.match(kneeling.card_why, /自贬|姿态逻辑/u);
 assert.doesNotMatch(kneeling.verdict_reason, /可以过关/u);
 
 const notCooperatingScript = "现在还差十票，凯哥，你想看返场就补一张，我不配合硬要票。";
-const notCooperating = makeReportForScript(notCooperatingScript, { verdict: "almost" });
+const notCooperating = makeReportForScript(notCooperatingScript, { verdict: "passed" });
 index.applyReportSafetyGates(notCooperating, [], {
   sourceScript: notCooperatingScript,
   scenario: { targetUser: "凯哥" },
@@ -1117,7 +1229,7 @@ assert.equal(unworthy.card_type, "logic");
 assert.equal(unworthy.line_reviews[0].mark, "wrong");
 
 const negatedUnworthyScript = "现在还差十票，凯哥，你想看返场就补一张，我才不会说我不配。";
-const negatedUnworthy = makeReportForScript(negatedUnworthyScript, { verdict: "almost" });
+const negatedUnworthy = makeReportForScript(negatedUnworthyScript, { verdict: "passed" });
 index.applyReportSafetyGates(negatedUnworthy, [], {
   sourceScript: negatedUnworthyScript,
   scenario: { targetUser: "凯哥" },
@@ -1234,7 +1346,7 @@ for (const negatedBeggingScript of [
   "现在还差十票，凯哥，你想看返场就补一张，我没有真的求求你。",
 ]) {
   const negatedBegging = makeReportForScript(negatedBeggingScript, {
-    verdict: "almost",
+    verdict: "passed",
   });
   index.applyReportSafetyGates(negatedBegging, [], {
     sourceScript: negatedBeggingScript,
@@ -1249,7 +1361,7 @@ for (const negatedBeggingScript of [
 }
 
 const nestedNegationScript = "现在还差十票，凯哥，你想看返场就补一张，我不会说不得不求求你。";
-const nestedNegation = makeReportForScript(nestedNegationScript, { verdict: "almost" });
+const nestedNegation = makeReportForScript(nestedNegationScript, { verdict: "passed" });
 index.applyReportSafetyGates(nestedNegation, [], {
   sourceScript: nestedNegationScript,
   scenario: { targetUser: "凯哥" },
@@ -1361,9 +1473,9 @@ index.applyReportSafetyGates(explicitViewerReason, [], {
 });
 assert.equal(
   explicitViewerReason.structure_checks.find((item) => item.key === "user_reason").status,
-  "met"
+  "partial"
 );
-assert.equal(explicitViewerReason.verdict, "passed");
+assert.equal(explicitViewerReason.verdict, "almost", "即使命中内容关键词，也不能覆盖语义缺口");
 
 // user_reason 也是原子能力：观看、互动、选择或兑现价值成立就过，不再要求扣数/上票动作。
 // B2/B3 只改标点，两个判断必须一致。
@@ -1378,7 +1490,7 @@ for (const atomicViewerReasonScript of [
   const atomicViewerReason = makeReportForScript(atomicViewerReasonScript, {
     verdict: "almost",
     structure_checks: allMetChecks().map((item) =>
-      item.key === "user_reason" ? { ...item, status: "missing" } : item
+      item.key === "user_reason" ? { ...item, status: "met" } : item
     ),
   });
   index.applyReportSafetyGates(atomicViewerReason, [], {
@@ -1388,7 +1500,7 @@ for (const atomicViewerReasonScript of [
   assert.equal(
     atomicViewerReason.structure_checks.find((item) => item.key === "user_reason").status,
     "met",
-    `已有用户侧价值时应纠正模型的 missing：${atomicViewerReasonScript}`
+    `模型已正确识别用户侧价值时应保留 met：${atomicViewerReasonScript}`
   );
 }
 
@@ -1399,7 +1511,7 @@ for (const interactiveQuestionScript of [
   const interactiveQuestion = makeReportForScript(interactiveQuestionScript, {
     verdict: "almost",
     structure_checks: allMetChecks().map((item) =>
-      item.key === "user_reason" ? { ...item, status: "partial" } : item
+      item.key === "user_reason" ? { ...item, status: "met" } : item
     ),
   });
   index.applyReportSafetyGates(interactiveQuestion, [], {
@@ -1470,7 +1582,7 @@ for (const positiveAlternativeScript of [
   const positiveAlternative = makeReportForScript(positiveAlternativeScript, {
     verdict: "almost",
     structure_checks: allMetChecks().map((item) =>
-      item.key === "user_reason" ? { ...item, status: "partial" } : item
+      item.key === "user_reason" ? { ...item, status: "met" } : item
     ),
   });
   index.applyReportSafetyGates(positiveAlternative, [], {
@@ -1504,7 +1616,7 @@ const contextualGenericOfferScript = "凯哥，那我给你安排。";
 const contextualGenericOffer = makeReportForScript(contextualGenericOfferScript, {
   verdict: "almost",
   structure_checks: allMetChecks().map((item) =>
-    item.key === "user_reason" ? { ...item, status: "partial" } : item
+    item.key === "user_reason" ? { ...item, status: "met" } : item
   ),
 });
 index.applyReportSafetyGates(contextualGenericOffer, [], {
@@ -1571,7 +1683,7 @@ for (const viewerValueWithoutVoteActionScript of [
   const viewerValueWithoutVoteAction = makeReportForScript(viewerValueWithoutVoteActionScript, {
     verdict: "almost",
     structure_checks: allMetChecks().map((item) =>
-      item.key === "user_reason" ? { ...item, status: "partial" } : item
+      item.key === "user_reason" ? { ...item, status: "met" } : item
     ),
   });
   index.applyReportSafetyGates(viewerValueWithoutVoteAction, [], {
@@ -1620,12 +1732,12 @@ index.applyReportSafetyGates(atomicReasonEvidence, [], {
 });
 assert.match(
   atomicReasonEvidence.structure_checks.find((item) => item.key === "user_reason").evidence,
-  /人性参与支点|才艺、保护、归属、身份、互惠/,
+  /参与理由仍待核对/,
   "给理由未过时也要按当前原子标准解释"
 );
 assert.doesNotMatch(
   atomicReasonEvidence.structure_checks.find((item) => item.key === "user_reason").evidence,
-  /扣1|上票反馈/,
+  /^没有让.*(?:扣1|上票反馈)/,
   "完整复盘里不能保留 user_reason 的隐藏动作条件"
 );
 
@@ -1633,7 +1745,7 @@ const contextualSignalResponseScript = "凯哥，你刚才不是说想看撒娇�
 const contextualSignalResponse = makeReportForScript(contextualSignalResponseScript, {
   verdict: "almost",
   structure_checks: allMetChecks().map((item) =>
-    item.key === "user_reason" ? { ...item, status: "missing" } : item
+    item.key === "user_reason" ? { ...item, status: "met" } : item
   ),
 });
 index.applyReportSafetyGates(contextualSignalResponse, [], {
@@ -1653,7 +1765,7 @@ for (const naturalSignalResponseScript of [
   const naturalSignalResponse = makeReportForScript(naturalSignalResponseScript, {
     verdict: "almost",
     structure_checks: allMetChecks().map((item) =>
-      item.key === "user_reason" ? { ...item, status: "partial" } : item
+      item.key === "user_reason" ? { ...item, status: "met" } : item
     ),
   });
   index.applyReportSafetyGates(naturalSignalResponse, [], {
@@ -1675,7 +1787,7 @@ for (const directHostQuestionScript of [
   const directHostQuestion = makeReportForScript(directHostQuestionScript, {
     verdict: "almost",
     structure_checks: allMetChecks().map((item) =>
-      item.key === "user_reason" ? { ...item, status: "partial" } : item
+      item.key === "user_reason" ? { ...item, status: "met" } : item
     ),
   });
   index.applyReportSafetyGates(directHostQuestion, [], {
@@ -2095,8 +2207,8 @@ const promotableOptionalPartials = index.normalizeReport(
 index.applyReportSafetyGates(promotableOptionalPartials, []);
 assert.equal(
   promotableOptionalPartials.verdict,
-  "passed",
-  "模型仅因非核心项 partial 给 almost 时，后端应按新门槛稳定晋级"
+  "almost",
+  "状态位齐全也不自动晋级；已有正确 passed 的非核心缺项用例仍须通过"
 );
 
 const wrongPassed = index.normalizeReport(
@@ -2309,7 +2421,7 @@ const normalizedDirection = index.normalizeReport(
   })
 );
 assert.match(normalizedDirection.direction.summary, /用你自己的话说/);
-assert.equal(Array.from(normalizedDirection.direction.examples[0]).length, 25);
+assert.equal(Array.from(normalizedDirection.direction.examples[0]).length, 30, "示范不应截断半句话");
 
 const aiPhraseSource = "我是怀揣舞台梦想的小满，想用热情点燃这个舞台。";
 const normalizedAiEvidence = index.normalizeReport(
@@ -2394,6 +2506,7 @@ try {
   assert.equal(oldBody.report.structure_checks.length, 5);
   assert.equal(oldBody.report.verdict, "passed");
   assert.equal(globalThis.__lastBuildUserPromptArgs[4], null);
+  assert.equal(globalThis.__lastBuildUserPromptArgs[5], null);
 
   const scenarioResponse = await index.default.fetch(
     new Request("https://lapiao.test/api/coach", {
@@ -2410,12 +2523,14 @@ try {
           hostCue: "主持说\n就差最后一脚",
           unknown: "discard",
         },
+        revision: {previousScript: "凯哥，大家帮我组一组。", focusKey: "user_reason", instruction: "先接住互动。", extra: "discard"},
       }),
     }),
     workerEnv,
     ctx
   );
   assert.equal(scenarioResponse.status, 200);
+  assert.equal(globalThis.__lastBuildUserPromptArgs[5], null, "旧稿和旧建议不得进入当前评分模型");
   assert.deepEqual(globalThis.__lastBuildUserPromptArgs[4], {
     id: "round-2",
     secondsLeft: 30,
@@ -2910,7 +3025,7 @@ for (const quotedThenResponseScript of [
   "你说想看跳舞，我给你跳",
   "听你说想看跳舞，我给你跳",
 ]) {
-  const report = partialReasonReport(quotedThenResponseScript);
+  const report = makeReportForScript(quotedThenResponseScript);
   index.applyReportSafetyGates(report, [], {
     sourceScript: quotedThenResponseScript,
     scenario: null,

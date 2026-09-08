@@ -187,6 +187,14 @@
   animation: challenge-reveal 320ms var(--stage-ease);
 }
 .presenter-page .focus-paper--redline { border-top-color: var(--stage-red); }
+.presenter-page .focus-paper--compact { clip-path: none; }
+.presenter-page .focus-paper--compact .challenge-card__row p {
+  font-size: 16px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.presenter-page .focus-paper--compact .challenge-card__row--solution p { font-weight: 700; }
+.presenter-page .focus-paper--compact .challenge-card__label { font-size: 13px; }
 .presenter-page .focus-paper__head,
 .presenter-page .passed-paper__head {
   display: flex;

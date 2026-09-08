@@ -4,7 +4,7 @@
 var Api = {
   _inFlight: false, // 同一时间只允许一个批改请求
   _requestId: 0, // 陈旧响应守卫
-  _timeoutMs: 60000, // 前端超时：Worker 自身 45s 超时，这里留 15s 余量
+  _timeoutMs: 105000, // Worker 思考与正文最多 90s，另留 15s 网络余量
 
   init: function () {},
 
@@ -60,6 +60,13 @@ var Api = {
     };
     if (payload.scenario && typeof payload.scenario === "object") {
       body.scenario = payload.scenario;
+    }
+    if (payload.revision && typeof payload.revision === "object") {
+      body.revision = {
+        previousScript: payload.revision.previousScript,
+        focusKey: payload.revision.focusKey,
+        instruction: payload.revision.instruction,
+      };
     }
 
     // 前端超时保险。旧 WebView 没有 AbortController 时用 Promise.race 降级，

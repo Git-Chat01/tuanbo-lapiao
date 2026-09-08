@@ -408,7 +408,7 @@ function testChallengeProgressTracksRealLearning() {
 
   const regressed = makeChallengeReport(["met", "met", "missing", "met", "missing"]);
   const regressedProgress = context.Report._recordResult(regressed);
-  assert.equal(regressedProgress.focus.key, "target_user");
+  assert.equal(regressedProgress.focus.key, "vote_instruction", "非核心项不抢走当下动作缺口");
   assert.equal(regressedProgress.needsReinforcement.length, 1, "修改时不小心删掉已掌握项应被识别为需要补稳");
   assert.match(
     context.Report._progressMessage(regressedProgress, regressedProgress.focus),
@@ -1276,8 +1276,8 @@ async function testTimeoutWithoutAbortControllerInvalidatesLateResponse() {
     }
   );
 
-  const timeoutTimer = timers.find((item) => item.ms === 60000);
-  assert.ok(timeoutTimer, "应设置 60 秒总预算超时");
+  const timeoutTimer = timers.find((item) => item.ms === 105000);
+  assert.ok(timeoutTimer, "应设置 105 秒总预算超时，为 Worker 留 15 秒余量");
   const requestIdAtSubmit = context.Api._requestId;
   timeoutTimer.fn(); // 触发超时
 
@@ -1444,6 +1444,65 @@ function testCspAllowsOnlyProductionApiAndDevPort8787() {
   }
 }
 
+function testShortCoachingUsesTheActualSentence() {
+  const element = (tag) => ({tagName: tag, children: [], textContent: "", dataset: {}, style: {},
+    appendChild(child) { this.children.push(child); return child; }, setAttribute() {}});
+  const context = createBrowserContext({
+    App: {state: {lastRequest: {script: "凯哥，你可以考虑，我等你回应。", scenario: null}}},
+    document: {createElement: element},
+  });
+  loadScript(context, "site/js/report.js");
+  const focus = {key: "user_reason", label: "给参与理由"};
+  const report = makeChallengeReport(["missing", "missing", "met", "partial", "met"], {
+    coaching: {focus_key: "user_reason", keep: "你给对方留了考虑空间。", original: "你可以考虑", action: "先接住考虑，不把它说成已答应。", example: "你先考虑，我等你回应。", why: "上票请求不能建立在未确认的承诺上。"},
+    card_why: "具体原因不能被模板覆盖", direction: {summary: "旧模板", examples: []},
+  });
+  assert.equal(context.Report._focusCheck(context.Report._checks(report), report).key, "user_reason", "不强迫补开场介绍和感谢");
+  assert.equal(context.Report._focusWhy(report, focus), report.coaching.why, "正确解释中提到上票也不能被关键词过滤掉");
+  assert.equal(context.Report._solutionFor(report, focus), report.coaching.action);
+  const card = context.Report._focusPaper(report, focus, {});
+  assert.equal(card.children.length, 4, "主卡只显示改什么、原话、一个示范、为什么");
+  const texts = card.children.map(row => row.children[1].textContent);
+  assert.deepEqual(texts, [report.coaching.action, report.coaching.original, report.coaching.example, report.coaching.why]);
+  assert.ok(texts.join("").length <= 210, "主卡正文必须保持简短");
+  assert.equal(context.Report._coachingFor({...report, coaching: {...report.coaching, original: "虚构原句"}}, focus), null);
+  assert.equal(context.Report._coachingFor({...report, coaching: {...report.coaching, focus_key: "gratitude"}}, focus), null);
+  assert.equal(context.Report._shortFeedback("一句很长且没有句号".repeat(30), 50, "短提示"), "短提示", "超长输出不能撑满首屏或截半句");
+  const source = readFileSync(resolve(projectRoot, "site/js/report.js"), "utf8");
+  assert.doesNotMatch(source, /你真正学会的是/);
+}
+
+async function testRevisionContextFollowsOnlyTheSameScene() {
+  const original = {script: "凯哥，大家一起组一组。", voteGap: "close", scenario: {id: "one", phase: "closing"}, mode: "guided"};
+  const previousReport = makeChallengeReport(["missing", "missing", "met", "partial", "met"]);
+  let captured;
+  const context = createBrowserContext({
+    App: {state: {lastRequest: original, lastReport: previousReport}, toast() {}, lockStage() {}, unlockStage() {}, showView() {}},
+    Api: {_inFlight: false, submit(payload) {captured = payload;}},
+    document: {getElementById() {return null;}},
+  });
+  loadScript(context, "site/js/report.js");
+  context.Report.showLoading = () => {};
+  loadScript(context, "site/js/form.js");
+  const changed = {...original, script: "凯哥，愿意一起守这轮的量力搭一点，我继续报差距。"};
+  context.Form._submitData(changed);
+  assert.equal(captured.revision.previousScript, original.script);
+  assert.equal(captured.revision.focusKey, "user_reason");
+  assert.ok(captured.revision.instruction.length > 0);
+  const revision = captured.revision;
+  context.App.state.lastReport = previousReport;
+  context.Form._submitData({...changed, script: "换个现场继续练。", scenario: {id: "two"}});
+  assert.equal(captured.revision, undefined, "换场景不能携带上一关的要求");
+
+  let wire;
+  const apiContext = createBrowserContext({API_BASE: "https://coach.example.test", App: {getAccessCode() {return "test-code";}},
+    fetch(_url, options) {wire = JSON.parse(options.body); return Promise.resolve({ok: true, json: async () => ({report: {}})});},
+  });
+  loadScript(apiContext, "site/js/api.js");
+  await new Promise(resolvePromise => apiContext.Api.submit({...changed, revision: {...revision, extra: "discard"}}, {onFinish: resolvePromise}));
+  assert.deepEqual(wire.revision, JSON.parse(JSON.stringify(revision)), "API 只传上一版、同一修改点和方向，不传整段历史或多余字段");
+}
+
 try {
   testApiOverrideCannotExfiltrateCodes();
   testAccessCodeSurvivesStorageFailure();
@@ -1476,6 +1535,8 @@ try {
   await testCoachCodeProbeSuccess();
   await testAuthModalGuardAndErrorMessages();
   testCspAllowsOnlyProductionApiAndDevPort8787();
+  testShortCoachingUsesTheActualSentence();
+  await testRevisionContextFollowsOnlyTheSameScene();
   console.log("PASS");
 } catch (error) {
   console.error(error && error.stack ? error.stack : error);
