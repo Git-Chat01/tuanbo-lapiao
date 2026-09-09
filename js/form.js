@@ -439,6 +439,25 @@ var Form = {
       App.toast("教练正在看上一版，等结果出来再改");
       return;
     }
+    var previous = App.state.lastRequest;
+    var previousReport = App.state.lastReport;
+    // 仅同一请求的鉴权重试保留已构造记录；新场景不能继承传入的旧 revision。
+    var retryRevision = previous === data && !previousReport ? data.revision : null;
+    delete data.revision;
+    if (previous && previousReport && previousReport.verdict !== "passed" && previous.script !== data.script &&
+        previous.voteGap === data.voteGap &&
+        JSON.stringify(previous.scenario || null) === JSON.stringify(data.scenario || null) &&
+        (previous.mode || "guided") === (data.mode || "guided")) {
+      var focus = Report._focusCheck(Report._checks(previousReport), previousReport);
+      var coaching = Report._coachingFor(previousReport, focus);
+      data.revision = {
+        previousScript: previous.script,
+        focusKey: focus.key,
+        instruction: coaching ? coaching.action : (Report._specificDirectionFor(previousReport, focus) || Report._solutionFor(previousReport, focus)),
+      };
+    } else if (retryRevision) {
+      data.revision = retryRevision;
+    }
     App.state.form = data;
     App.state.lastRequest = data;
     App.state.lastReport = null;
