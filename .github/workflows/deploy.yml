@@ -1,4 +1,5 @@
 # CI：push master → 跑两套安全测试；只有 site/ 真的变了才发布到 gh-pages
+# 也可以手动触发（workflow_dispatch）强制重发前端，见下方 on: 处的说明
 # 沿用 expense-tracker 的模式（peaceiris 直接推分支，绕过官方部署 API）
 # ⚠️ 关键差异：publish_dir 是 ./site 而不是 . —— 保证 worker/ 与 .dev.vars 绝不进公开的 gh-pages 分支
 #
@@ -12,6 +13,11 @@ name: Test and deploy site
 on:
   push:
     branches: [master]
+
+  # 手动兜底（2026-09-15）：site/ 没变化时 push 会跳过发布，若哪天需要强制重发前端，
+  # 走 Actions 页面 → Test and deploy site → Run workflow → 选 master。
+  # 手动触发一律发布——否则 site/ 自上次推送以来没变的话，手动重发会被同一道守卫挡回去。
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -50,7 +56,16 @@ jobs:
           # 用 env 传入，避免把事件字段拼进 shell 脚本
           BEFORE_SHA: ${{ github.event.before }}
           HEAD_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
+          # 手动触发没有 before 字段，语义就是"我现在就要发前端"，直接放行。
+          # 这条必须显式写：不写的话靠下面 BEFORE_SHA 为空也能跑通，但那是巧合不是设计，
+          # 将来谁给工作流加了别的非 push 触发就会踩坑。
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "手动触发，跳过 site/ 变更检测，强制发布"
+            exit 0
+          fi
           # 首次推送或强推时 before 是全 0，历史不可比，保守起见照常发布
           if [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
