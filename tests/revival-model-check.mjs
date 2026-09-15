@@ -6,16 +6,20 @@ import { readFile } from "node:fs/promises";
 const toDataUrl = (source) =>
   `data:text/javascript;base64,${Buffer.from(source, "utf8").toString("base64")}`;
 
+// 生产用的是 current-review.js 的 SYSTEM_PROMPT（index.js 从它取），不是 prompt.js 的。
+// 它自身只 import prompt.js 的业务知识，是纯模块、无副作用，直接动态 import 真文件即可；
+// data: URL 那套绕行只对需要打桩的 index.js 才必要。用错提示词会让这个测试验的不是线上行为。
 async function loadPromptModule() {
-  const source = await readFile(new URL("../worker/prompt.js", import.meta.url), "utf8");
-  return import(toDataUrl(source));
+  return import(new URL("../worker/current-review.js", import.meta.url));
 }
 
 async function loadIndexModule() {
   let source = await readFile(new URL("../worker/index.js", import.meta.url), "utf8");
   source = source
     .replace(
-      'import { SYSTEM_PROMPT, buildUserPrompt } from "./prompt.js";',
+      // 目标必须与 index.js 当前实际 import 一致；c255d6a 改成 current-review.js
+      // 后这里没同步，替换落空导致整个测试从 2026-09-08 起加载即崩。
+      'import { SYSTEM_PROMPT, buildUserPrompt } from "./current-review.js";',
       'const SYSTEM_PROMPT = ""; const buildUserPrompt = () => "";'
     )
     .replace(
@@ -26,6 +30,15 @@ async function loadIndexModule() {
       'import { detectRedline } from "./redlines.js";',
       "const detectRedline = () => [];"
     );
+  // 字符串替换是静默失败的：目标对不上不会抛错，只是留下相对 import，
+  // 让 data: URL 在解析阶段炸掉——c255d6a 之后这个测试就这样静静死了 7 天。
+  // 显式断言，保证以后 index.js 改 import 而这里没同步时，立刻报出真正的原因。
+  const leftover = source.match(/from "\.\/[^"]+"/);
+  if (leftover) {
+    throw new Error(
+      `loadIndexModule 未能替换 ${leftover[0]}：index.js 的 import 变了，请同步本测试的替换规则`
+    );
+  }
   return import(toDataUrl(source));
 }
 
@@ -189,7 +202,8 @@ function statusOf(report, key) {
 
 async function requestRaw(fixture) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 60_000);
+  // 与生产 DEEPSEEK_CONFIG.timeoutMs 对齐：开启思考后单次耗时变长，60s 会误杀
+  const timeout = setTimeout(() => controller.abort(), 90_000);
   try {
     const response = await fetch("https://api.deepseek.com/chat/completions", {
       method: "POST",
@@ -198,10 +212,13 @@ async function requestRaw(fixture) {
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: "deepseek-v4-flash",
-        temperature: 0,
-        max_tokens: 3000,
-        thinking: { type: "disabled" }, // 与生产 Worker 一致：v4 默认开思考会挤占输出额度
+        // 与生产 Worker（DEEPSEEK_CONFIG）保持一致：模型、思考档位、token 预算
+        // 三者任一不同，这个测试绿了都不代表线上行为正确。
+        model: "deepseek-flash",
+        temperature: 0, // 思考模式下空转，保留只为与生产参数逐项对齐
+        max_tokens: 6000,
+        thinking: { type: "enabled" },
+        reasoning_effort: "low",
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: prompt.SYSTEM_PROMPT },

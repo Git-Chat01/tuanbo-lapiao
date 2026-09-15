@@ -162,8 +162,14 @@ const SCENARIO_FIELD_ORDER = [
 // DeepSeek 调用参数
 const DEEPSEEK_CONFIG = {
   url: "https://api.deepseek.com/chat/completions",
-  // 真实复练评测：Pro + low 能识别承接后的改稿；禁用思考的 Flash 不稳定。
-  model: "deepseek-v4-pro",
+  // V4.1 Flash（2026-09-10 发布，官方推荐名 deepseek-flash）。官方口径是性能/费用/
+  // 速度全面超越 V4 Pro，输出单价约为其 1/3；旧名 deepseek-v4-flash 路由到同一模型。
+  // 此前用 Pro 是因为"能识别承接后的改稿"，但那个结论基于旧的 V4 Flash。
+  // 2026-09-15 实测：live-coaching 8/8 判定正确、revival-model-check 5/5 通过，
+  // 该顾虑对 V4.1 Flash 不成立。model-quality 全量跑批尚未复跑。
+  model: "deepseek-flash",
+  // ⚠️ 思考模式不支持 temperature：官方明确"设置参数不会报错，但也不会生效"，
+  // 故该参数在 thinking.enabled 下为空转，保留只为关掉思考时能重新生效。
   // 温度演进：0.7 → 0.3 → 0。
   // 0.7：同一稿每次换新挑剔点，好稿永远 almost；
   // 0.3：本地 3/3 稳定，但线上空案例库时 case2 仍小概率翻车
