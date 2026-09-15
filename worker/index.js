@@ -177,8 +177,16 @@ const DEEPSEEK_CONFIG = {
   // 0 只减少随机性，不保证模型完全确定；上线依靠证据与一致性检查。
   // 文案多样性由不同稿子内容自然产生，教学工具判定正确 > 文案多样。
   temperature: 0,
-  // 给思考与 JSON 正文共同留预算；若正文截断，返回教练错误，不给新人判失败。
-  maxTokens: 6000,
+  // 给思考与 JSON 正文共同留预算；正文截断会返回教练错误，不给新人判失败。
+  // ⚠️ 2026-09-15 实测 6000 远远不够：思考 token 与正文共享这个额度，
+  // deepseek-flash 的思考实测跑到 6179（撞顶），把正文挤成 0 字符——
+  // finish_reason=length + JSON.parse("") 抛错，前端只看到「报告格式出错」。
+  // 真实稿子两轮跑批 10 次请求失败 8 次，其中 5 次是这个原因。
+  // 提到 16000 后同一批稿子 5/5 成功，输出 token 全在 6276–9029（即每次都超 6000）。
+  // 代价是耗时从 12–33s 升到 31–44s：实测约 205 token/s，跑满 16000 约 78s，
+  // 仍在 90s 超时内但余量变薄。若线上开始出现 504「教练想太久了」，
+  // 优先调低这个值或抬 timeoutMs，别再退回 6000。
+  maxTokens: 16000,
   timeoutMs: 90000, // 前端 105s，留网络与校验余量。
 };
 
@@ -2613,11 +2621,25 @@ export function getReportQualityIssue(report, sourceScript) {
   if (report.verdict !== "passed" && core.some(item => item.key === report.coaching?.focus_key && item.status === "met")) return "修改点要求重做已达标核心";
   const compact = text => String(text || "").replace(/\s+/gu, "");
   const source = compact(sourceScript);
-  // 模型用引号指称原句时必须真实存在，旧句、案例句不可混入批评。
+  // 模型用引号指称原句时必须来自当前稿，旧句、案例句不可混入批评。
+  // 但不能要求逐字：模型常写概括性引号——实测「身后没家人」指代
+  // 「我身后没有别的家人」，逐字比对会误杀整份报告（真实请求约 18% 因此 502，
+  // 用户白等 20–30 秒一个字都拿不到）。所以补一条宽松判定：引号内字符
+  // 按序都能在原稿里依次找到，就算概括引用；整句在原稿里完全找不到对应才判违规。
+  const quotedFromSource = (quote) => {
+    if (source.includes(quote)) return true;
+    let from = 0;
+    for (const ch of quote) {
+      from = source.indexOf(ch, from);
+      if (from === -1) return false;
+      from += 1;
+    }
+    return true;
+  };
   const diagnoses = [report.verdict_reason, report.card_why, ...report.line_reviews.map(item => item.comment)];
   for (const text of diagnoses) {
     for (const match of String(text || "").matchAll(/[“「]([^”」]{4,})[”」]/gu)) {
-      if (!source.includes(compact(match[1]))) return "点评引用了当前稿不存在的原句";
+      if (!quotedFromSource(compact(match[1]))) return "点评引用了当前稿不存在的原句";
     }
   }
   return "";
@@ -2882,10 +2904,17 @@ export function normalizeReport(report, sourceScript) {
   const rawDirection =
     report.direction && typeof report.direction === "object" ? report.direction : {};
   const rawDirectionSummary = str(rawDirection.summary).trim();
+  // 模型常自己就以「。」收尾，再无条件补一个会拼出「。。」双句号（真实报告出现过）。
+  // 已有句末标点就不补，没有才补，保证 summary 与「用你自己的话说」之间有停顿。
+  const summaryHead = rawDirectionSummary
+    ? /[。！？!?；;…]$/u.test(rawDirectionSummary)
+      ? rawDirectionSummary
+      : `${rawDirectionSummary}。`
+    : "先按本轮关键方向修改，";
   const direction = {
     summary: rawDirectionSummary.includes("用你自己的话说")
       ? rawDirectionSummary
-      : `${rawDirectionSummary ? `${rawDirectionSummary}。` : "先按本轮关键方向修改，"}用你自己的话说`,
+      : `${summaryHead}用你自己的话说`,
     examples: Array.isArray(rawDirection.examples)
       ? rawDirection.examples
           .filter((x) => typeof x === "string")

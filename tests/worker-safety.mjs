@@ -193,6 +193,27 @@ const makeReportForScript = (script, overrides = {}) =>
   assert.equal(index.getReportQualityIssue(stale,script), "点评引用了当前稿不存在的原句");
   const clean = makeReportForScript(script);
   assert.equal(index.getReportQualityIssue(clean,script), "");
+
+  // 概括性引号不能误杀整份报告：实测线上「身后没家人」指代「我身后没有别的家人」，
+  // 逐字比对会把一份好报告判死（真实请求约 18% 因此 502，用户白等 20–30 秒一个字拿不到）。
+  const paraphraseScript = "我身后没有别的家人，全靠榜上的哥哥姐姐来帮我。";
+  const paraphrase = makeReportForScript(paraphraseScript, {
+    verdict_reason: "把“身后没家人”这种诉苦句换成量力邀请。",
+  });
+  assert.equal(
+    index.getReportQualityIssue(paraphrase, paraphraseScript),
+    "",
+    "字符按序来自原稿的概括性引号不应判死报告"
+  );
+
+  // 双句号：模型自己以「。」收尾时不能再补一个（真实报告出现过「。。」）
+  const dotted = makeReportForScript(script, { direction: { summary: "先改这一句。", examples: [] } });
+  assert.ok(!dotted.direction.summary.includes("。。"), `summary 不应出现双句号：${dotted.direction.summary}`);
+  assert.ok(dotted.direction.summary.endsWith("用你自己的话说"), "summary 仍须以「用你自己的话说」收尾");
+
+  // 该补句号时仍要补，否则和「用你自己的话说」粘在一起
+  const noStop = makeReportForScript(script, { direction: { summary: "先改这一句", examples: [] } });
+  assert.ok(noStop.direction.summary.startsWith("先改这一句。用"), `缺句末标点时应补句号：${noStop.direction.summary}`);
   const emptyEvidence = {structure_checks:[{key:"self_intro",status:"missing",evidence:""},{key:"user_reason",status:"met",evidence:""}]};
   index.completeMissingEvidenceLabels(emptyEvidence);
   assert.equal(emptyEvidence.structure_checks[0].status,"missing");
