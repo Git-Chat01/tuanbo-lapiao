@@ -12,6 +12,8 @@
   animation: thinking-line 1.2s var(--stage-ease) infinite alternate;
 }
 .presenter-page .coach-thinking h1 { margin: 0 0 8px; font-size: var(--font-size-xl); }
+/* 等待秒数：字号更小、颜色更淡，只做时间锚点，不和轮播文案抢注意力 */
+.presenter-page .coach-thinking__elapsed { margin-top: 10px; font-size: var(--font-size-sm); opacity: .72; }
 .presenter-page .coach-thinking p { margin: 0 auto; max-width: 290px; color: var(--stage-muted); }
 .presenter-page .coach-thinking__steps {
   display: flex;

@@ -110,6 +110,7 @@ var Report = {
   },
 
   _loadingTimer: null,
+  _loadingClockTimer: null,
 
   init: function () {
     document.getElementById("btn-back-edit").addEventListener("click", Report._onBackEdit);
@@ -1256,6 +1257,8 @@ var Report = {
     var state = Report._coachingState();
     var title = document.querySelector("#report-loading h1");
     if (title) title.textContent = "教练正在看第 " + (state.totalAttempts + 1) + " 次挑战";
+    var elapsedNode = document.getElementById("loading-elapsed");
+    if (elapsedNode) elapsedNode.textContent = ""; // 清掉上一轮留下的秒数，从 0 开始数
     Report._startLoadingMessages();
   },
 
@@ -1273,11 +1276,26 @@ var Report = {
       index = (index + 1) % messages.length;
       node.textContent = messages[index];
     }, 4200);
+    // 长等待不该是黑盒：手机端这一轮最长要等一两分钟，主播得知道自己在等什么、还要不要等。
+    // 秒数单独走 1 秒一跳的定时器（和 4.2 秒轮播文案分开），超过 20 秒补一句安抚，
+    // 否则屏幕上一直没动静，主播会以为卡死而反复刷新——刷新就要从头再等一次。
+    var startedAt = Date.now();
+    var elapsedNode = document.getElementById("loading-elapsed");
+    var paintElapsed = function () {
+      if (!elapsedNode) return;
+      var seconds = Math.floor((Date.now() - startedAt) / 1000);
+      elapsedNode.textContent = seconds < 5 ? "" : "已经等了 " + seconds + " 秒，" +
+        (seconds >= 20 ? "教练还在写，先别关页面，刷新要重新排一次队。" : "教练还在写。");
+    };
+    paintElapsed();
+    Report._loadingClockTimer = setInterval(paintElapsed, 1000);
   },
 
   _stopLoadingMessages: function () {
     if (Report._loadingTimer) clearInterval(Report._loadingTimer);
+    if (Report._loadingClockTimer) clearInterval(Report._loadingClockTimer);
     Report._loadingTimer = null;
+    Report._loadingClockTimer = null;
   },
 
   showError: function (message) {
