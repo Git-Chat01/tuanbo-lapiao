@@ -980,6 +980,41 @@ function testRevivalScenariosKeepFactsAndStagesSeparate() {
   assert.equal(reportContext.Report._focusCheck(phaseChecks, { verdict: "almost", line_reviews: [] }).key, "vote_instruction");
 }
 
+function testLoadingShowsHonestElapsedTime() {
+  // 长等待不能是黑盒：手机端这一轮最长要等一两分钟，秒数必须如实往上走，
+  // 并且超过 20 秒要劝住「别刷新」——刷新等于从头再排一次队。
+  const elements = {};
+  const elementFor = (id) => (elements[id] || (elements[id] = { id, textContent: "" }));
+  const intervals = new Map();
+  let seq = 0;
+  let now = 0;
+  const context = createBrowserContext({
+    document: {
+      getElementById(id) { return elementFor(id); },
+      querySelector() { return { textContent: "" }; },
+    },
+    Date: { now: () => now },
+    setInterval(fn, ms) { seq += 1; intervals.set(seq, { fn, ms }); return seq; },
+    clearInterval(id) { intervals.delete(id); },
+  });
+  loadScript(context, "site/js/report.js");
+  const tick = () => { for (const timer of [...intervals.values()]) timer.fn(); };
+
+  context.Report._startLoadingMessages();
+  assert.equal(elementFor("loading-elapsed").textContent, "", "5 秒内不改文案，只走轮播");
+  now = 6000;
+  tick();
+  assert.match(elementFor("loading-elapsed").textContent, /已经等了 6 秒/, "5 秒后应如实报出等待秒数");
+  assert.doesNotMatch(elementFor("loading-elapsed").textContent, /刷新/, "20 秒内不必提刷新");
+  now = 21000;
+  tick();
+  assert.match(elementFor("loading-elapsed").textContent, /已经等了 21 秒/);
+  assert.match(elementFor("loading-elapsed").textContent, /刷新要重新排一次队/, "久等必须劝住刷新");
+
+  context.Report._stopLoadingMessages();
+  assert.equal(intervals.size, 0, "结束时必须同时清掉轮播与秒数两个定时器");
+}
+
 function testRoundDynamicsParagraphsPreserveContent() {
   const context = createBrowserContext({
     document: {
@@ -1581,6 +1616,7 @@ try {
   await testAuthModalGuardAndErrorMessages();
   testCspAllowsOnlyProductionApiAndDevPort8787();
   testShortCoachingUsesTheActualSentence();
+  testLoadingShowsHonestElapsedTime();
   await testRevisionContextFollowsOnlyTheSameScene();
   console.log("PASS");
 } catch (error) {
