@@ -198,8 +198,9 @@ export default {
     const corsHeaders = {
       "Access-Control-Allow-Origin": corsOrigin,
       "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-      // X-Admin-Code 是管理接口鉴权头，缺了浏览器对带自定义头的请求预检直接失败
-      "Access-Control-Allow-Headers": "Content-Type, X-Admin-Code",
+      // X-Admin-Code 是管理接口鉴权头，缺了浏览器对带自定义头的请求预检直接失败。
+      // Accept 按规范是安全头、通常不进预检清单，列上只是防个别浏览器把它带进来。
+      "Access-Control-Allow-Headers": "Content-Type, X-Admin-Code, Accept",
       "Access-Control-Max-Age": "86400",
     };
 
@@ -282,55 +283,65 @@ export default {
         console.log(`cases retrieve fail (degraded): ${err.message}`);
       }
 
-      // 调 DeepSeek 批改
-      const result = await callDeepSeek(env, {
-        voteGap: body.voteGap,
-        script: body.script,
-        cases,
-        redlineHits,
-        scenario,
-        revision: normalizeRevision(body.revision),
-      });
+      // 生成阶段包成一个函数：非流式走原来的 jsonResponse，流式交给 streamCoachResponse。
+      // 两种路径跑的是同一份逻辑与同一套安全闸门，不会分叉。
+      const generate = async () => {
+        // 调 DeepSeek 批改
+        const result = await callDeepSeek(env, {
+          voteGap: body.voteGap,
+          script: body.script,
+          cases,
+          redlineHits,
+          scenario,
+          revision: normalizeRevision(body.revision),
+        });
 
-      // 契约校验 + 缺失字段补默认值
-      const report = normalizeReport(result.report, body.script);
+        // 契约校验 + 缺失字段补默认值
+        const report = normalizeReport(result.report, body.script);
 
-      // 后端安全闸门：不信任模型对红线与人设卡的最终判定。
-      // 必须在学习候选闸门之前执行，避免不合格稿进入候选池。
-      applyReportSafetyGates(report, redlineHits, {
-        sourceScript: body.script,
-        scenario,
-        voteGap: body.voteGap,
-      });
-      applyRevisionFeedback(report, body.revision, body.script);
+        // 后端安全闸门：不信任模型对红线与人设卡的最终判定。
+        // 必须在学习候选闸门之前执行，避免不合格稿进入候选池。
+        applyReportSafetyGates(report, redlineHits, {
+          sourceScript: body.script,
+          scenario,
+          voteGap: body.voteGap,
+        });
+        applyRevisionFeedback(report, body.revision, body.script);
 
-      // 学习候选闸门：只有「过关 + 无红线 + 非人设卡」的稿子才进入候选池。
-      // 自动稿不会直接参与后续检索；只有教练发布的案例才是当前判断尺子。
-      if (report.verdict === "passed" && redlineHits.length === 0 && report.card_type !== "persona") {
-        ctx.waitUntil(
-          (async () => {
-            try {
-              const id = await tryAbsorb(env, {
-                script: body.script,
-                voteGap: body.voteGap,
-                report,
-                scenario,
-              });
-              if (id) console.log(`absorb ok: ${id}`);
-            } catch (err) {
-              console.log(`absorb fail: ${err.message}`);
-            }
-          })()
+        // 学习候选闸门：只有「过关 + 无红线 + 非人设卡」的稿子才进入候选池。
+        // 自动稿不会直接参与后续检索；只有教练发布的案例才是当前判断尺子。
+        if (report.verdict === "passed" && redlineHits.length === 0 && report.card_type !== "persona") {
+          ctx.waitUntil(
+            (async () => {
+              try {
+                const id = await tryAbsorb(env, {
+                  script: body.script,
+                  voteGap: body.voteGap,
+                  report,
+                  scenario,
+                });
+                if (id) console.log(`absorb ok: ${id}`);
+              } catch (err) {
+                console.log(`absorb fail: ${err.message}`);
+              }
+            })()
+          );
+        }
+
+        // 日志只记元信息，不记入口码与话术全文（学员内容隐私 + 省日志成本）
+        console.log(
+          `coach ok: ${Date.now() - startedAt}ms, verdict=${report.verdict}, card=${report.card_type}, ` +
+            `cases=${cases.length}, redline=${redlineHits.length}, ` +
+            `tokens in=${result.usage.prompt_tokens} out=${result.usage.completion_tokens}`
         );
-      }
+        return { ok: true, report, usage: result.usage };
+      };
 
-      // 日志只记元信息，不记入口码与话术全文（学员内容隐私 + 省日志成本）
-      console.log(
-        `coach ok: ${Date.now() - startedAt}ms, verdict=${report.verdict}, card=${report.card_type}, ` +
-          `cases=${cases.length}, redline=${redlineHits.length}, ` +
-          `tokens in=${result.usage.prompt_tokens} out=${result.usage.completion_tokens}`
-      );
-      return jsonResponse({ ok: true, report, usage: result.usage }, 200, corsHeaders);
+      // 只有前端会带这个头；脚本、测试、旧页面不带 → 保持纯 JSON 与原有状态码语义。
+      const wantsStream = (request.headers.get("Accept") || "").includes("application/x-ndjson");
+      if (wantsStream) return streamCoachResponse(generate, corsHeaders, startedAt);
+
+      return jsonResponse(await generate(), 200, corsHeaders);
     } catch (err) {
       const status = err.status || 500;
       console.log(`coach error: ${Date.now() - startedAt}ms, status=${status}, ${err.message}`);
@@ -1990,6 +2001,32 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
     if (Array.isArray(report.direction.examples)) report.direction.examples = report.direction.examples.filter(example => !guaranteesResult(example));
     if (guaranteesResult(report.direction.summary)) report.direction.summary = "只说明当前能参与的动作，不替主持保证结果。用你自己的话说。";
   }
+  // 示范句是给主播照着说的：书面词和内部术语（模型会照搬 prompt 指令里的用词）不能出现在里面。
+  // 主播自己原稿里就有的词不算——已过关时 example 本就是引用她的原句，不能反过来判她。
+  const writtenTerms = /(?:量力|承接|自愿|诉求|机制|支点|维度|赋能|闭环)/gu;
+  const writtenTermsIn = (text) =>
+    (String(text || "").match(writtenTerms) || []).filter(term => !sourceScript.includes(term));
+  // 示范句的书面词只做「删词」这一层轻修，绝不因此撤掉整个 coaching：
+  // 撤了会触发 getReportQualityIssue 的「缺少有效的短带教」整单 502，
+  // 主播白等几十秒一个字都拿不到——比示范句里混进一个书面词严重得多。
+  // 删完读不通（太短，比如「我承接一下」只剩「我一下」）就留空串：
+  // 前端 _coachingFor 取不到 example 会退回只显示点评，也好过让主播照着念半截话。
+  const speakable = (text) => {
+    const value = String(text || "");
+    if (writtenTermsIn(value).length === 0) return value;
+    const kept = value
+      .replace(/(?:量力|承接|自愿|诉求|机制|支点|维度|赋能|闭环)的?/gu, (match) =>
+        // 她自己原稿里说过的词照留，只删模型自己带进来的；顺手吃掉后面的「的」，
+        // 免得删出「的哥哥姐姐」这种缺主语的半截话。
+        (sourceScript.includes(match.replace(/的$/u, "")) ? match : ""))
+      // 删词会留下连在一起的逗号或句末孤零零的逗号（「愿意的，量力。」→「愿意的，。」），
+      // 顺手并成一个；句末的「。！？」是句子本来的收尾，必须留着。
+      .replace(/[，,、；;]{2,}/gu, "，")
+      .replace(/[，,、；;]+(?=[。！？!?])/gu, "")
+      .replace(/^[\s，,、；;]+/u, "")
+      .replace(/[\s，,、；;]+$/u, "");
+    return Array.from(kept).length < 6 ? "" : kept;
+  };
   // 短带教与完整报告共用边界，不能因新字段绕过已有阶段和事实校验。
   // 校验失败只撤掉教练自己的示范，不把模型错误算到新人头上。
   if (report.coaching) {
@@ -2004,11 +2041,15 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
         : ["result", "post_round"].includes(scenarioPhase) && hasExplicitVoteInstruction(proposedSpeech);
     if (inventedContent || prematureGuarantee || phaseConflict) {
       delete report.coaching;
-      if (inventedContent || prematureGuarantee) {
-        report.direction.summary = "只沿着原话已有的事实改一句，不补造观众偏好，也不保证上票后的结果。用你自己的话说。";
-        report.direction.examples = [];
-      }
+      report.direction.summary = "只沿着原话已有的事实改一句，不补造观众偏好，也不保证上票后的结果。用你自己的话说。";
+      report.direction.examples = [];
+    } else if (writtenTermsIn(proposedSpeech).length > 0) {
+      report.coaching.example = speakable(proposedSpeech);
     }
+  }
+  // 没有 coaching 时示范句也照样落在 direction.examples 上，同样得清一遍书面词（只删不进）。
+  if (Array.isArray(report.direction?.examples) && report.direction.examples.some(example => writtenTermsIn(example).length > 0)) {
+    report.direction.examples = report.direction.examples.map(speakable).filter(example => example);
   }
   // 明确乞求/自贬已有原句证据时，模型短卡不合格也能给出确定且安全的一步。
   // 不为语义不确定的稿件生成万能示范，不改变最终判定。
@@ -2018,7 +2059,7 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
     if (typeof original === "string" && sourceScript.includes(original)) {
       report.coaching = {focus_key:report.redline_note ? "redline" : "logic",keep:"你已经把想争取支持的请求说出来了。",original,
         action:"去掉乞求或自贬，换成观众能自愿接住的邀请。",
-        example:"愿意一起守这轮的量力补一点，我继续组人报差距。",
+        example:"愿意一起守这轮的方便就补一点，我继续组人报差距。",
         why:"说清一起做什么、你会如何接住，观众仍能自己选择。"};
       report.direction = {summary:report.coaching.action,examples:[report.coaching.example]};
     }
@@ -3035,5 +3076,66 @@ function jsonResponse(data, status, corsHeaders, extraHeaders = {}) {
       ...corsHeaders,
       ...extraHeaders,
     },
+  });
+}
+
+// 流式保活心跳间隔。iPhone Safari 对完全收不到数据的连接约 60 秒判死，
+// 而模型生成最长要 90 秒——一点字节都不发的请求就是第一次「连不上教练」的死因。
+// 10 秒留 6 倍余量，也远小于任何网关的空闲阈值。
+const STREAM_HEARTBEAT_MS = 10000;
+
+/**
+ * 流式返回教练结果：先周期性发心跳行，最后一行才是结果 JSON（NDJSON）。
+ * 只覆盖生成阶段——入口码、限流、参数校验都在流开始之前完成，那些失败仍是真实状态码；
+ * 一旦首字节发出，HTTP 状态码就改不了了，所以生成期的失败（502/503/504）编码进最后一行，
+ * 由前端按 payload.status 走同一套错误分类。
+ * 行协议：心跳是 {"t":"ping"}，客户端只认最后一个非空行，多余行天然被忽略。
+ * @param {() => Promise<object>} run - 生成报告（含安全闸门）的完整流程
+ * @param {object} corsHeaders - CORS 头
+ * @param {number} startedAt - 请求开始时间，仅用于错误日志
+ */
+function streamCoachResponse(run, corsHeaders, startedAt) {
+  const encoder = new TextEncoder();
+  let heartbeat = null;
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (text) => {
+        try {
+          controller.enqueue(encoder.encode(text));
+          return true;
+        } catch {
+          return false; // 客户端已断开，enqueue 会抛
+        }
+      };
+      // 立刻发第一行：响应头与首字节马上到达，浏览器不再面对一个完全静默的请求。
+      send('{"t":"ping"}\n');
+      heartbeat = setInterval(() => {
+        if (!send('{"t":"ping"}\n')) clearInterval(heartbeat);
+      }, STREAM_HEARTBEAT_MS);
+
+      let payload;
+      try {
+        payload = await run();
+      } catch (err) {
+        const status = err.status || 500;
+        console.log(`coach error: ${Date.now() - startedAt}ms, status=${status}, ${err.message}`);
+        payload = { error: true, status, message: err.publicMessage || "出错了，请重试" };
+      }
+      clearInterval(heartbeat);
+      send(JSON.stringify(payload));
+      try {
+        controller.close();
+      } catch {
+        // 客户端已断开，流已经关了，正常收场
+      }
+    },
+    cancel() {
+      // 客户端断开（超时/关页面）时清掉定时器，不让它空转。
+      if (heartbeat) clearInterval(heartbeat);
+    },
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: { "Content-Type": "application/x-ndjson; charset=utf-8", ...corsHeaders },
   });
 }

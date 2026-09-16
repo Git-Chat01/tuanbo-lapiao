@@ -269,7 +269,7 @@ for (const evidence of ["凯哥刚才认领了五个", "凯哥刚才已经认领
 
 const shortCoaching = {
   focus_key: "user_reason", keep: "点名并邀请的动作可以保留。", original: "大家帮我补一票",
-  action: "把共同参与这轮的意思说清楚。", example: "愿意一起守这轮的，量力搭一点，我继续报差距。", why: "让对方知道如何和你一起参与。",
+  action: "把共同参与这轮的意思说清楚。", example: "愿意一起守这轮的搭一点，我继续报差距。", why: "让对方知道如何和你一起参与。",
 };
 {
   const script = "大家帮我补一票，我想留下来。";
@@ -288,6 +288,35 @@ const shortCoaching = {
   index.applyReportSafetyGates(phaseUnsafe, [], {sourceScript: script, scenario: {phase: "awaiting_drop"}});
   assert.match(phaseUnsafe.coaching.example, /等主持统一口令/, "组满后的错误短卡应换成确定安全的阶段指引");
   assert.doesNotMatch(phaseUnsafe.coaching.example, /继续认|再来|马上丢/);
+}
+{
+  // 示范句里的书面词（模型会照搬 prompt 指令里的用词）只删词、不撤短卡：
+  // 撤了会触发 getReportQualityIssue 的「缺少有效的短带教」整单 502，
+  // 主播白等几十秒一个字都拿不到，比示范句里留一个书面词严重得多。
+  const script = "大家帮我补一票，我想留下来。";
+  const written = makeReportForScript(script, {verdict: "almost", coaching: {...shortCoaching, example: "愿意一起守这轮的，量力搭一点，我继续报差距。"}});
+  index.applyReportSafetyGates(written, [], {sourceScript: script});
+  assert.ok(written.coaching, "示范句带书面词不得撤掉整个短带教");
+  assert.equal(written.coaching.example, "愿意一起守这轮的，搭一点，我继续报差距。", "书面词应就地删掉，句子其余部分保留");
+  assert.doesNotMatch(written.coaching.example, /量力/);
+
+  // 删完读不通就留空串（前端取不到 example 会退回只显示点评），但仍不能撤短卡
+  const tooShort = makeReportForScript(script, {verdict: "almost", coaching: {...shortCoaching, example: "我承接一下。"}});
+  index.applyReportSafetyGates(tooShort, [], {sourceScript: script});
+  assert.ok(tooShort.coaching, "删词后读不通也只留空示范，不撤短卡");
+  assert.equal(tooShort.coaching.example, "");
+
+  // 主播自己原稿里说过的词照留：已过关时示范句本就是引用她的原句，不能反过来判她
+  const ownWords = "愿意的哥姐量力搭一点，我继续报差距。";
+  const quoted = makeReportForScript(ownWords, {verdict: "passed", coaching: {...shortCoaching, original: ownWords, example: ownWords}});
+  index.applyReportSafetyGates(quoted, [], {sourceScript: ownWords});
+  assert.equal(quoted.coaching.example, ownWords, "原稿里她自己说过的词不算书面语污染");
+
+  // 没有 coaching 时示范句落在 direction.examples 上，同样清一遍
+  const dirOnly = makeReportForScript(script, {direction: {summary: "把共同参与说清。", examples: ["愿意的哥哥姐姐量力搭一点。"]}});
+  index.applyReportSafetyGates(dirOnly, [], {sourceScript: script});
+  assert.equal(dirOnly.direction.examples.length, 1, "能读通的示范句保留");
+  assert.doesNotMatch(dirOnly.direction.examples[0], /量力/);
 }
 {
   const revision = {previousScript: "凯哥方便一起组队吗？", focusKey: "user_reason", instruction: "把共同目标说清。"};

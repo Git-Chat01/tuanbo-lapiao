@@ -39,6 +39,23 @@ function loadScript(context, relativePath) {
   vm.runInContext(source, context, { filename });
 }
 
+/**
+ * 伪装 fetch 响应。api.js 现在用 res.text() 读整段响应体再取最后一个非空行解析
+ * （为了同时吃纯 JSON 和 NDJSON 保活流），所以桩必须提供 text() 而不是 json()。
+ * @param {number} status - HTTP 状态码
+ * @param {object|string} body - 要返回的对象（自动序列化）或原始文本（网关 HTML 等）
+ * @param {object} extra - 附加到响应对象上的字段
+ */
+function fakeResponse(status, body, extra = {}) {
+  const text = typeof body === "string" ? body : JSON.stringify(body);
+  return { ok: status >= 200 && status < 300, status, text: () => Promise.resolve(text), ...extra };
+}
+
+/** NDJSON 保活流的响应体：若干心跳行 + 最后一行结果，验证「取最后一个非空行」解析。 */
+function ndjsonBody(payload, pings = 2) {
+  return Array.from({ length: pings }, () => '{"t":"ping"}').join("\n") + "\n" + JSON.stringify(payload) + "\n";
+}
+
 function testAccessCodeSurvivesStorageFailure() {
   const storageError = new Error("storage disabled");
   const context = createBrowserContext({
@@ -122,13 +139,9 @@ async function testApiWithoutAbortController() {
       fetchCount += 1;
       assert.equal(url, "https://coach.example.test/api/coach");
       assert.equal(options.method, "POST");
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        json() {
-          return Promise.resolve({ report: { verdict: "almost" } });
-        },
-      });
+      // 新前端会带 Accept: application/x-ndjson 请求保活流；这里同时覆盖心跳行解析
+      assert.equal(options.headers.Accept, "application/x-ndjson");
+      return Promise.resolve(fakeResponse(200, ndjsonBody({ report: { verdict: "almost" } })));
     },
   });
 
@@ -1053,13 +1066,7 @@ async function testRenderErrorIsNotReportedAsNetworkError() {
       toast(message) { toastMessages.push(message); },
     },
     fetch() {
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        json() {
-          return Promise.resolve({ report: { verdict: "almost" } });
-        },
-      });
+      return Promise.resolve(fakeResponse(200, { report: { verdict: "almost" } }));
     },
     console: {
       log() {},
@@ -1111,17 +1118,9 @@ async function testGatewayFailureRetriesExactlyOnce() {
         fetchCount += 1;
         if (fetchCount === 1) {
           // 网关故障典型表现：返回 HTML 页面而不是 JSON
-          return Promise.resolve({
-            ok: false,
-            status: gatewayStatus,
-            json() { return Promise.reject(new Error("unexpected token <")); },
-          });
+          return Promise.resolve(fakeResponse(gatewayStatus, "<html><body>Bad gateway</body></html>"));
         }
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          json() { return Promise.resolve({ report: { verdict: "almost" } }); },
-        });
+        return Promise.resolve(fakeResponse(200, { report: { verdict: "almost" } }));
       },
     });
     loadScript(context, "site/js/api.js");
@@ -1160,11 +1159,7 @@ async function testGatewayFailureDoesNotRetryBusinessErrors() {
       App: { getAccessCode() { return "code-1"; }, toast() {} },
       fetch() {
         fetchCount += 1;
-        return Promise.resolve({
-          ok: false,
-          status: fixture.status,
-          json() { return Promise.resolve(fixture.json); },
-        });
+        return Promise.resolve(fakeResponse(fixture.status, fixture.json));
       },
     });
     loadScript(context, "site/js/api.js");
@@ -1195,11 +1190,7 @@ async function testRepeatedGatewayFailureReportsAfterOneRetry() {
     App: { getAccessCode() { return "code-1"; }, toast() {} },
     fetch() {
       fetchCount += 1;
-      return Promise.resolve({
-        ok: false,
-        status: 502,
-        json() { return Promise.reject(new Error("unexpected token <")); },
-      });
+      return Promise.resolve(fakeResponse(502, "<html><body>Bad gateway</body></html>"));
     },
   });
   loadScript(context, "site/js/api.js");
@@ -1225,11 +1216,7 @@ async function testParseFailureWithoutErrorStatusIsParsingMessage() {
     API_BASE: "https://coach.example.test",
     App: { getAccessCode() { return "code-1"; }, toast() {} },
     fetch() {
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        json() { return Promise.reject(new Error("unexpected token <")); },
-      });
+      return Promise.resolve(fakeResponse(200, "<html><body>proxy page</body></html>"));
     },
   });
   loadScript(context, "site/js/api.js");
@@ -1245,6 +1232,63 @@ async function testParseFailureWithoutErrorStatusIsParsingMessage() {
   });
   assert.equal(errorResult.status, 200);
   assert.equal(errorResult.message, "结果解析失败，稍后再试");
+}
+
+async function testStreamedErrorPayloadKeepsBusinessStatus() {
+  // 流式响应一旦开流，HTTP 状态码就锁死在 200，失败只能写在最后一行里（payload.status）。
+  // 这类失败的分类必须和普通 502 一致：能重试、文案正确，绝不能掉进「连不上教练」。
+  let fetchCount = 0;
+  let successReport = null;
+  let errorResult = null;
+  const context = createBrowserContext({
+    API_BASE: "https://coach.example.test",
+    App: { getAccessCode() { return "code-1"; }, toast() {} },
+    fetch() {
+      fetchCount += 1;
+      if (fetchCount === 1) {
+        return Promise.resolve(fakeResponse(200, { error: true, status: 502, message: "教练这次判断不一致，未给你判分。原稿已保留，请重试。" }));
+      }
+      return Promise.resolve(fakeResponse(200, ndjsonBody({ ok: true, report: { verdict: "almost" } })));
+    },
+  });
+  loadScript(context, "site/js/api.js");
+  await new Promise((resolvePromise) => {
+    context.Api.submit(
+      { voteGap: "close", script: "这是一段足够长的测试话术", scenario: null },
+      {
+        onSuccess(report) { successReport = report; },
+        onError(status, message) { errorResult = { status, message }; },
+        onFinish() { resolvePromise(); },
+      }
+    );
+  });
+  assert.equal(fetchCount, 2, "流内 502 应和普通 502 一样自动重试一次");
+  assert.ok(successReport && successReport.verdict === "almost", "重试成功后应交付报告");
+  assert.equal(errorResult, null, "重试成功后不得再进错误回调");
+
+  // 流内失败且预算不足以重试时，必须给出后端文案，而不是网络错误
+  let secondError = null;
+  const noRetryContext = createBrowserContext({
+    API_BASE: "https://coach.example.test",
+    App: { getAccessCode() { return "code-1"; }, toast() {} },
+    setTimeout(fn, ms) { return setTimeout(fn, ms); },
+    fetch() {
+      return Promise.resolve(fakeResponse(200, { error: true, status: 503, message: "教练这会儿忙不过来，稍后再试。" }));
+    },
+  });
+  loadScript(noRetryContext, "site/js/api.js");
+  noRetryContext.Api._retryMinBudgetMs = 10 ** 9; // 模拟时间已耗光，重试必然跑不完
+  await new Promise((resolvePromise) => {
+    noRetryContext.Api.submit(
+      { voteGap: "close", script: "这是一段足够长的测试话术", scenario: null },
+      {
+        onSuccess() {},
+        onError(status, message) { secondError = { status, message }; },
+        onFinish() { resolvePromise(); },
+      }
+    );
+  });
+  assert.deepEqual(secondError, { status: 503, message: "教练这会儿忙不过来，稍后再试。" });
 }
 
 async function testTimeoutWithoutAbortControllerInvalidatesLateResponse() {
@@ -1496,7 +1540,7 @@ async function testRevisionContextFollowsOnlyTheSameScene() {
 
   let wire;
   const apiContext = createBrowserContext({API_BASE: "https://coach.example.test", App: {getAccessCode() {return "test-code";}},
-    fetch(_url, options) {wire = JSON.parse(options.body); return Promise.resolve({ok: true, json: async () => ({report: {}})});},
+    fetch(_url, options) {wire = JSON.parse(options.body); return Promise.resolve(fakeResponse(200, {report: {}}));},
   });
   loadScript(apiContext, "site/js/api.js");
   await new Promise(resolvePromise => apiContext.Api.submit({...changed, revision: {...revision, extra: "discard"}}, {onFinish: resolvePromise}));
@@ -1529,6 +1573,7 @@ try {
   await testGatewayFailureDoesNotRetryBusinessErrors();
   await testRepeatedGatewayFailureReportsAfterOneRetry();
   await testParseFailureWithoutErrorStatusIsParsingMessage();
+  await testStreamedErrorPayloadKeepsBusinessStatus();
   await testTimeoutWithoutAbortControllerInvalidatesLateResponse();
   testCoachFrameBusterClearsEmbeddedPage();
   await testCoachCodeProbeTimesOut();

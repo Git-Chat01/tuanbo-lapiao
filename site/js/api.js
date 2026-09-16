@@ -5,34 +5,53 @@ var Api = {
   _inFlight: false, // 同一时间只允许一个批改请求
   _requestId: 0, // 陈旧响应守卫
   _timeoutMs: 105000, // Worker 思考与正文最多 90s，另留 15s 网络余量
+  _retryMinBudgetMs: 45000, // 重试至少要留得下一次生成；预算不够就直说，别让用户白等
 
   init: function () {},
 
   /**
-   * 单次批改尝试：fetch + JSON 解析统一封装。
-   * res.json() 失败说明后端没返回合法 JSON（比如网关 502/504 的 HTML 页面），
+   * 单次批改尝试：fetch + 响应解析统一封装。
+   * 响应有两种形态，用同一条路径解析：
+   *   1. 纯 JSON（旧 Worker、本地 mock、测试桩）；
+   *   2. NDJSON —— Worker 在生成期间每 10 秒发一行心跳（{"t":"ping"}）保活手机端连接
+   *      （iPhone Safari 对长时间收不到字节的连接约 60 秒判死），只有最后一个非空行是结果。
+   * 所以取“最后一个非空行”JSON.parse 即可同时吃两种；不需要 ReadableStream/TextDecoder，
+   * 旧 WebView 也能跑 —— 保活发生在 TCP 层，这里只是 await 整个文本。
+   * 解析失败说明后端没返回合法 JSON（比如网关 502/504 的 HTML 页面），
    * 打上 parseFailed 标记让上层单独分类，而不是混进“连不上教练”的网络错误。
    * @param {object} requestOptions - fetch 选项（含同一 signal）
    * @param {Promise} timeoutPromise - 与初次请求共享的总超时预算
    */
   _attempt: function (requestOptions, timeoutPromise) {
     return Promise.race([fetch(API_BASE + "/api/coach", requestOptions), timeoutPromise]).then(function (res) {
-      return res
-        .json()
-        .catch(function () {
+      return res.text().then(function (text) {
+        var lines = String(text || "").split("\n");
+        var lastLine = "";
+        for (var i = lines.length - 1; i >= 0; i--) {
+          if (lines[i].trim()) {
+            lastLine = lines[i];
+            break;
+          }
+        }
+        var data;
+        try {
+          data = JSON.parse(lastLine);
+        } catch (parseError) {
           var err = new Error("教练返回了无法识别的响应");
           err.parseFailed = true;
           err.status = res.status || 0;
           throw err;
-        })
-        .then(function (data) {
-          if (!res.ok) {
-            var err = new Error(data && data.message ? data.message : "请求失败");
-            err.status = res.status;
-            throw err;
-          }
-          return data;
-        });
+        }
+        // 流式响应状态码恒为 200，生成期的失败写在体内（payload.status）；
+        // 非流式的业务错误同时带 HTTP 状态码，两者取其一。
+        var status = data && data.status ? data.status : res.status;
+        if (!res.ok || (data && data.error)) {
+          var apiError = new Error(data && data.message ? data.message : "请求失败");
+          apiError.status = status;
+          throw apiError;
+        }
+        return data;
+      });
     });
   },
 
@@ -82,9 +101,12 @@ var Api = {
         reject(timeoutError);
       }, Api._timeoutMs);
     });
+    var submittedAt = Date.now();
     var requestOptions = {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      // Accept 让 Worker 走流式保活（生成期间发心跳行）；旧 Worker 不认识这个头，
+      // 照旧返回纯 JSON，上面的解析路径两种都能吃。
+      headers: { "Content-Type": "application/json", "Accept": "application/x-ndjson" },
       body: JSON.stringify(body),
     };
     if (controller) requestOptions.signal = controller.signal;
@@ -113,7 +135,10 @@ var Api = {
 
       // Worker 网关短暂故障（502/503/504）自动重试一次，共用一个超时预算；
       // 401/429 等业务状态不重试，避免把“入口码不对”拖成两次请求。
-      if ((status === 502 || status === 503 || status === 504) && !retried) {
+      // 预算不够就别重试：90 秒超时后只剩十几秒，第二次注定跑不完，
+      // 用户却要多等一轮（实测“等了两分钟”就是这么来的）。
+      var remainingBudget = Api._timeoutMs - (Date.now() - submittedAt);
+      if ((status === 502 || status === 503 || status === 504) && !retried && remainingBudget >= Api._retryMinBudgetMs) {
         retried = true;
         return new Promise(function (resolve) {
           setTimeout(resolve, 1500);

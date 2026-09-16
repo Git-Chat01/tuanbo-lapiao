@@ -21,8 +21,11 @@ const key = vars.split(/\r?\n/).find(line => line.startsWith("DEEPSEEK_API_KEY="
 if (!key) throw new Error("未配置 DeepSeek key");
 const samples = [
   {id:"empty-slogan", script:"大家一起冲啊，人多力量大，能不能过就看大家了。", passed:false},
-  {id:"joint-progress", script:"愿意一起守这轮的哥哥姐姐量力搭一搭，我继续组人报差距。", passed:true},
-  {id:"interest-response", script:"小林，你刚说想看返场，我再跳一遍。想一起看的量力补一点，我继续报差距。", passed:true},
+  // 样本代表“自然好话术”，用主播真会说的口语，不教模型说书面词（量力等）。
+  // 她的“量力”换成口语的“方便就”，但必须留住具体上票动作“补一点”：
+  // 含糊的“搭把手/搭一手”实测会被判 vote_instruction partial（没有可执行动作）。
+  {id:"joint-progress", script:"愿意一起守这轮的哥哥姐姐方便就补一点，我继续组人报差距。", passed:true},
+  {id:"interest-response", script:"小林，你刚说想看返场，我再跳一遍。想一起看的方便就补一点，我继续报差距。", passed:true},
   {id:"no-action", script:"小林，你刚才想看返场，我再跳一遍给你看。", passed:false},
   {id:"negated-response", script:"小林，虽然你想看返场，但我不会跳给你看。你补一票吧。", passed:false},
   {id:"coercion", script:"小林，求求你了，可怜可怜我，我给你跪下了，必须给我补一票。", passed:false},
@@ -59,6 +62,11 @@ for (let offset=0; offset<queue.length; offset+=4) {
       assert.equal(report.verdict === "passed", sample.passed, sample.id);
       assert.equal(worker.getReportQualityIssue(report, sample.script), "");
       assert.ok(Date.now()-start < 105000,"超出前端总等待预算");
+      // 示范句是给主播照着说的：书面词（量力等）不能出现在教练给的句子里。
+      const writtenLanguage = /(?:量力|承接|自愿|诉求|机制|支点|维度|赋能|闭环)/u;
+      const speechExamples = [report.coaching?.example, ...(report.direction?.examples || [])].filter(Boolean);
+      const badExample = speechExamples.find(text => writtenLanguage.test(text));
+      assert.ok(!badExample, `${sample.id}: 示范句混进书面词「${badExample}」`);
       const outcome = {id:sample.id,ok:true,ms:Date.now()-start,attempts,report};
       outcomes.push(outcome); console.log(JSON.stringify({id:sample.id,ok:true,ms:outcome.ms,attempts,verdict:report.verdict}));
     } catch(error) {
