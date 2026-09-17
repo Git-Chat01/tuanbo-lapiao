@@ -129,7 +129,17 @@
     var prompterHead = make("div", "voice-coach__prompter-head");
     var prompterLabel = make("span", null, "本轮定稿");
     var statusBadge = make("span", "voice-coach__status-badge", "准备好就开始");
-    append(prompterHead, prompterLabel, statusBadge);
+    var prompterActions = make("div", "voice-coach__prompter-actions");
+    var copyScript = make("button", "script-copy-button");
+    copyScript.type = "button";
+    copyScript.title = "复制完整话术";
+    copyScript.disabled = true;
+    var copyIcon = make("span", "script-copy-icon");
+    copyIcon.setAttribute("aria-hidden", "true");
+    append(copyScript, copyIcon, make("span", null, "复制话术"));
+    copyScript.addEventListener("click", function () { Report.copyScript(state.script); });
+    append(prompterActions, statusBadge, copyScript);
+    append(prompterHead, prompterLabel, prompterActions);
     var script = make("p", "voice-coach__script");
     var recordingMeta = make("div", "voice-coach__recording-meta");
     var timer = make("strong", "voice-coach__timer", "00:00 / 01:00");
@@ -252,6 +262,7 @@
       back: back,
       title: title,
       script: script,
+      copyScript: copyScript,
       statusBadge: statusBadge,
       timer: timer,
       meterFill: meterFill,
@@ -1064,6 +1075,7 @@
     state.onBack = null;
     setPhase(hideRoot ? "closed" : "ready");
     if (state.els.script) setText(state.els.script, "");
+    if (state.els.copyScript) state.els.copyScript.disabled = true;
     if (state.els.countdown) state.els.countdown.hidden = true;
     if (state.els.errorBox) state.els.errorBox.hidden = true;
     if (state.els.result) state.els.result.hidden = true;
@@ -1101,6 +1113,7 @@
 
     resetInternal(false);
     state.script = typeof options.script === "string" ? options.script.trim() : "";
+    state.els.copyScript.disabled = !state.script;
     state.onBack = typeof options.onBack === "function" ? options.onBack : null;
     state.root.hidden = false;
     setText(
