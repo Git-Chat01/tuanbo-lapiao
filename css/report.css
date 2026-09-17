@@ -574,7 +574,15 @@
 }
 
 .presenter-page .passed-script-section { margin-top: 17px; }
-.presenter-page .passed-script-section h2 { margin: 0 0 9px; font-size: var(--font-size-md); }
+.presenter-page .passed-script-section__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-bottom: 9px;
+}
+.presenter-page .passed-script-section h2 { margin: 0; font-size: var(--font-size-md); }
 .presenter-page .passed-script {
   padding: 14px;
   white-space: pre-wrap;

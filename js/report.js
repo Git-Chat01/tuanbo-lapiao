@@ -1220,6 +1220,7 @@ var Report = {
     Report._showRedlineBanner("");
     document.getElementById("btn-back-edit").disabled = false;
     document.getElementById("passed-script").textContent = App.state.lastRequest ? App.state.lastRequest.script : "";
+    document.getElementById("btn-copy").disabled = !document.getElementById("passed-script").textContent.trim();
 
     var passedGoal = document.querySelector(".training-goal--passed");
     if (passedGoal) {
@@ -1361,9 +1362,12 @@ var Report = {
   },
 
   _onCopy: function () {
-    var script = document.getElementById("passed-script").textContent;
-    if (!script) return;
-    var done = function () { App.toast("已复制，可以去开口练了"); };
+    Report.copyScript(document.getElementById("passed-script").textContent);
+  },
+
+  copyScript: function (script) {
+    if (!script || !script.trim()) return;
+    var done = function () { App.toast("话术已复制"); };
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(script).then(done, function () { Report._copyFallback(script, done); });
     } else {
@@ -1372,6 +1376,7 @@ var Report = {
   },
 
   _copyFallback: function (text, done) {
+    var previousFocus = document.activeElement;
     var field = document.createElement("textarea");
     field.value = text;
     field.setAttribute("readonly", "");
@@ -1383,8 +1388,12 @@ var Report = {
     var copied = false;
     try { copied = document.execCommand("copy"); } catch (error) { copied = false; }
     document.body.removeChild(field);
+    if (previousFocus && previousFocus.focus) {
+      try { previousFocus.focus({ preventScroll: true }); }
+      catch (error) { previousFocus.focus(); }
+    }
     if (copied) done();
-    else App.toast("长按上面的稿子手动复制");
+    else App.toast("复制未成功，请长按或选中话术手动复制");
   },
 
   _onNewRound: function () {

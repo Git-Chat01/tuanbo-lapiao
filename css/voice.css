@@ -152,6 +152,17 @@
   text-align: right;
 }
 
+#voice-coach-root .voice-coach__prompter-head {
+  flex-wrap: wrap;
+}
+
+#voice-coach-root .voice-coach__prompter-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+
 #voice-coach-root .voice-coach__script {
   max-height: 34vh;
   overflow-y: auto;

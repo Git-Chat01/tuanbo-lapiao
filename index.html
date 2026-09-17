@@ -147,14 +147,18 @@
         </section>
 
         <section class="passed-script-section">
-          <h2>拿这一版开口练</h2>
+          <div class="passed-script-section__head">
+            <h2>拿这一版开口练</h2>
+            <button type="button" id="btn-copy" class="script-copy-button" title="复制完整话术" disabled>
+              <span class="script-copy-icon" aria-hidden="true"></span><span>复制话术</span>
+            </button>
+          </div>
           <div id="passed-script" class="passed-script"></div>
         </section>
 
         <button type="button" id="btn-start-voice" class="training-primary">
           <span>拿这版开口练</span><span aria-hidden="true">→</span>
         </button>
-        <button type="button" id="btn-copy" class="training-secondary">复制这版话术</button>
         <button type="button" id="btn-new-round" class="training-secondary-link">换一轮重新练</button>
       </section>
 
