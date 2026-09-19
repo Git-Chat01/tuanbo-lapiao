@@ -190,6 +190,71 @@ const DEEPSEEK_CONFIG = {
   timeoutMs: 90000, // 前端 105s，留网络与校验余量。
 };
 
+// 修改评分、安全闸门或案例标准时递增；提示词和模型配置也参与指纹。
+// 只复用已完成的检查，不用缓存把一个未经验证的模型输出变成标准答案。
+const REVIEW_VERSION = "2026-09-19-coaching-2";
+const REVIEW_TTL_SECONDS = 7 * 24 * 60 * 60;
+const reviewStores = new WeakMap();
+
+export async function reviewRecordKey(accessCode, voteGap, script, scenario) {
+  const input = JSON.stringify([REVIEW_VERSION, SYSTEM_PROMPT, DEEPSEEK_CONFIG,
+    accessCode, voteGap, script, scenario]);
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+  return "review:" + Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
+}
+
+function reviewStore(env) {
+  const kv = env.CASES;
+  if (!kv || typeof kv.get !== "function" || typeof kv.put !== "function") return null;
+  if (!reviewStores.has(kv)) reviewStores.set(kv, { records: new Map(), pending: new Map() });
+  return reviewStores.get(kv);
+}
+
+function rememberReview(store, key, record) {
+  store.records.delete(key);
+  store.records.set(key, record);
+  while (store.records.size > 128) store.records.delete(store.records.keys().next().value);
+}
+
+export async function readReviewRecord(env, key) {
+  const store = reviewStore(env);
+  if (!store) return null;
+  let record = store.records.get(key);
+  if (!record) {
+    try { record = await env.CASES.get(key, "json"); }
+    catch { console.log("review read degraded"); }
+  }
+  if (!record || record.version !== REVIEW_VERSION || !(record.expiresAt > Date.now()) ||
+      !VERDICT_ENUM.includes(record.result?.report?.verdict) || !record.result?.ok) {
+    store.records.delete(key);
+    return null;
+  }
+  rememberReview(store, key, record);
+  return structuredClone(record.result);
+}
+
+export async function reuseReview(env, key, generate) {
+  const store = reviewStore(env);
+  if (!store) return generate();
+  if (!store.pending.has(key)) {
+    const pending = (async () => {
+      const saved = await readReviewRecord(env, key);
+      if (saved) return saved;
+      const result = await generate(); // 错误绝不保存；复练反馈不写入基础报告。
+      const record = { version: REVIEW_VERSION, expiresAt: Date.now() + REVIEW_TTL_SECONDS * 1000,
+        result: structuredClone(result) };
+      rememberReview(store, key, record);
+      try { await env.CASES.put(key, JSON.stringify(record), { expirationTtl: REVIEW_TTL_SECONDS }); }
+      catch { console.log("review write degraded"); }
+      return result;
+    })();
+    store.pending.set(key, pending);
+    // 同一 isolate 的并发请求合并；KV 跨地区首次并发不提供强一致性。
+    pending.finally(() => store.pending.delete(key)).catch(() => {});
+  }
+  return structuredClone(await store.pending.get(key));
+}
+
 export default {
   // v2 起带 ctx：吸收走 ctx.waitUntil，与批改响应解耦（KV 写失败不影响学员体验）
   async fetch(request, env, ctx) {
@@ -217,6 +282,7 @@ export default {
         {
           ok: true,
           service: "tuanbo-lapiao-coach",
+          reviewVersion: REVIEW_VERSION,
         },
         200,
         corsHeaders
@@ -285,7 +351,12 @@ export default {
 
       // 生成阶段包成一个函数：非流式走原来的 jsonResponse，流式交给 streamCoachResponse。
       // 两种路径跑的是同一份逻辑与同一套安全闸门，不会分叉。
-      const generate = async () => {
+      const revision = normalizeRevision(body.revision);
+      const recordKey = await reviewRecordKey(body.accessCode, body.voteGap, body.script, scenario);
+      const previous = revision && revision.previousScript !== body.script.trim()
+        ? await readReviewRecord(env, await reviewRecordKey(body.accessCode, body.voteGap, revision.previousScript, scenario))
+        : null;
+      const evaluate = async () => {
         // 调 DeepSeek 批改
         const result = await callDeepSeek(env, {
           voteGap: body.voteGap,
@@ -306,7 +377,6 @@ export default {
           scenario,
           voteGap: body.voteGap,
         });
-        applyRevisionFeedback(report, body.revision, body.script);
 
         // 学习候选闸门：只有「过关 + 无红线 + 非人设卡」的稿子才进入候选池。
         // 自动稿不会直接参与后续检索；只有教练发布的案例才是当前判断尺子。
@@ -335,6 +405,14 @@ export default {
             `tokens in=${result.usage.prompt_tokens} out=${result.usage.completion_tokens}`
         );
         return { ok: true, report, usage: result.usage };
+      };
+
+      const generate = async () => {
+        const result = await reuseReview(env, recordKey, evaluate);
+        const conflict = getRevisionConflict(result.report, revision, body.script, previous?.report);
+        if (conflict) throw new HttpError(409, conflict, "coach example and recheck conflict");
+        applyRevisionFeedback(result.report, revision, body.script, previous?.report);
+        return result;
       };
 
       // 只有前端会带这个头；脚本、测试、旧页面不带 → 保持纯 JSON 与原有状态码语义。
@@ -428,7 +506,7 @@ export function splitHardSentences(value) {
   // 先用全角点占位躲开句号切分，切完再还原成半角。
   const matches = String(value || "")
     .replace(/(\p{N})\.(?=\p{N})/gu, "$1．")
-    .match(/[^。！？!?；;.]+(?:[。！？!?；;.]+[”’"'）】》]*)?|[。！？!?；;.]+[”’"'）】》]*/gu);
+    .match(/[^。！？!?；;.\r\n]+(?:[。！？!?；;.]+[”’"'）】》]*|\r?\n+)?|[。！？!?；;.]+[”’"'）】》]*/gu);
   return (matches || [])
     .filter((item) => item.trim().length > 0)
     .map((item) => item.replaceAll("．", "."));
@@ -904,7 +982,7 @@ function hasIntroducedContentAdvice(advice, sourceScript) {
 }
 
 function feedbackLedAdvice(ticketProgressSummary) {
-  if (/暂未看到新的票差变化/u.test(String(ticketProgressSummary || ""))) {
+  if (/暂未看到新的票差变化|这两次报数相同/u.test(String(ticketProgressSummary || ""))) {
     return {
       nextMove:
         "这一拍的票差暂时没再动；下一拍换一个人性支点，把带头、选择或共同闯关的位置递给仍在观望的人，再看有没有新反馈。",
@@ -1406,17 +1484,17 @@ export function summarizeTicketProgress(sourceScript) {
     const current = observations[index];
     if (current.count < previous.count) {
       changes.push(
-        `从${previous.raw}降到${current.raw}，确认这期间收到${previous.count - current.count}个上票反馈`
+        `从${previous.raw}降到${current.raw}，稿内缺口减少${previous.count - current.count}个`
       );
     } else if (current.count === previous.count) {
-      changes.push(`随后仍是${current.raw}，暂未看到新的票差变化`);
+      changes.push(`下一次仍报${current.raw}，这两次报数相同`);
     } else {
       changes.push(
         `从${previous.raw}变为${current.raw}，可能发生换轮或重置，需要结合现场确认`
       );
     }
   }
-  return `票差按原稿${changes.join("；")}。`;
+  return `票差按原稿${changes.join("；")}；不能仅据此确认到账或末尾缺口。`;
 }
 
 function hasSpecificScenarioGratitude(sourceScript, scenario) {
@@ -1490,6 +1568,10 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
   const scenario = context.scenario && typeof context.scenario === "object"
     ? context.scenario
     : null;
+  // 新评审必须先给可定位的关系判断。旧报告保留兼容规则；新报告的语义
+  // 不再被“有没有谢谢/某个动词”覆盖，红线、阶段冲突等硬边界仍独立执行。
+  const hasInteractionReview = Boolean(report.interaction_review) &&
+    !getInteractionReviewIssue(report, sourceScript, scenario, context.voteGap);
 
   // 模型常把泛称“支持/出手”顺手写成“礼物”。只有原稿或现场真的出现礼物事实
   // 才能保留这个词；否则统一退回可观察的“支持”，避免复盘给新人编现场。
@@ -1510,7 +1592,7 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
   }
 
   const ticketProgressSummary = summarizeTicketProgress(sourceScript);
-  if (ticketProgressSummary && report.round_dynamics) {
+  if (!hasInteractionReview && ticketProgressSummary && report.round_dynamics) {
     const modelFlow = typeof report.round_dynamics.flow_read === "string"
       ? report.round_dynamics.flow_read
       : "";
@@ -1523,6 +1605,13 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
     report.round_dynamics.response_read = Array.from(ticketProgressSummary)
       .slice(0, LIMITS.roundDynamicsTextMax)
       .join("");
+  }
+
+  // 新报告保留模型对时间线的完整判断，不用数字正则覆盖现场证据。
+  // 无外部现场时明确这些是稿内陈述，不能包装为已经验证的实际反馈。
+  if (hasInteractionReview && !scenario && report.round_dynamics &&
+      !report.round_dynamics.response_read.startsWith("仅依据稿内描述：")) {
+    report.round_dynamics.response_read = `仅依据稿内描述：${report.round_dynamics.response_read}`;
   }
 
   // 新人稿里没有建立才艺/节目期待时，模型容易条件反射地把“加个才艺诱饵”
@@ -1561,7 +1650,7 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
     ? report.structure_checks.find((item) => item && item.key === "gratitude")
     : null;
   if (
-    sourceScript &&
+    !hasInteractionReview && sourceScript &&
     gratitudeCheck?.status === "met" &&
     typeof scenario?.recentGift === "string" &&
     scenario.recentGift.trim() &&
@@ -1580,7 +1669,7 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
   const targetCheck = Array.isArray(report.structure_checks)
     ? report.structure_checks.find((item) => item && item.key === "target_user")
     : null;
-  if (sourceScript && targetCheck) {
+  if (!hasInteractionReview && sourceScript && targetCheck) {
     const scenarioTarget = typeof scenario?.targetUser === "string"
       ? scenario.targetUser.trim()
       : "";
@@ -1619,7 +1708,7 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
   );
   // 理由是否说到位是语义判断。词命中、现场可能的心理机制都不能替主播
   // 完成表达，更不能抹掉模型指出的具体缺口。只保留明确反证的向下纠错。
-  if (userReasonCheck && viewerReason.state === "invalid" && !humanDriverReason) {
+  if (!hasInteractionReview && userReasonCheck && viewerReason.state === "invalid" && !humanDriverReason) {
     if (userReasonCheck.status === "met") userReasonCheck.status = "partial";
     userReasonCheck.evidence = `${viewerReason.evidence}；还没有形成有事实支撑的人性参与支点`;
   }
@@ -1635,7 +1724,7 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
     ? report.structure_checks.find((item) => item && item.key === "vote_instruction")
     : null;
   const scenarioPhase = typeof scenario?.phase === "string" ? scenario.phase : "";
-  if (sourceScript && voteInstructionCheck) {
+  if (!hasInteractionReview && sourceScript && voteInstructionCheck) {
     if (hasCurrentPhaseInstruction(sourceScript, scenarioPhase)) {
       // 可执行动作是可以从原话确定性核验的事实：模型漏判时向上纠正，避免数字门槛借尸还魂。
       voteInstructionCheck.status = "met";
@@ -1808,6 +1897,19 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
         : "队伍已经组满，停止追加与提前催丢，把统一口令交还主持后再过关。";
   }
 
+  if (hasInteractionReview && report.interaction_review.judgment === "misread") {
+    const segments = splitHardSentences(sourceScript);
+    const conflicts = report.interaction_review.script_refs.map(i => segments[i].trim());
+    for (const line of report.line_reviews || []) {
+      if (conflicts.some(text => text.includes(line.original.trim()))) {
+        line.mark = "wrong";
+        line.comment = report.interaction_review.reading;
+      }
+    }
+    if (report.verdict === "passed") report.verdict = "almost";
+    report.verdict_reason = report.interaction_review.reading;
+  }
+
   const wrongCount = Array.isArray(report.line_reviews)
     ? report.line_reviews.filter((item) => item && item.mark === "wrong").length
     : 0;
@@ -1855,7 +1957,7 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
   // 两个现场核心都没形成，或缺用户理由且还有多句站错角度，才说明整体方向要重立。
   // 自我介绍、感谢、点名仍进入能力地图，但不再因为这些非核心项缺失把稿子打成 off。
   if (
-    report.verdict === "almost" &&
+    !hasInteractionReview && report.verdict === "almost" &&
     !hasSupportEvidence &&
     (coreGapCount >= 2 || wrongCount >= 2)
   ) {
@@ -1865,7 +1967,7 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
 
   // 安全闸门可以拦截错误通过，但不能靠状态位替教练宣布已经教会。
   // 对正确稿避免挑刺由模型按统一口径判断，不再把 almost 自动提升为 passed。
-  if (report.verdict === "passed" && ticketProgressSummary && humanDriverReason) {
+  if (!hasInteractionReview && report.verdict === "passed" && ticketProgressSummary && humanDriverReason) {
     report.one_thing =
       "先看哪种人性驱动已经让票差发生变化；票差停住时再换驱动、换对象或换角度，不要机械重复同一句。";
   }
@@ -1873,7 +1975,7 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
   // 同一份稿在不同票况下必须给新人不同策略锚点，避免模型偶尔输出通用点评。
   // 仅在模型漏掉对应语义时补一句，不覆盖它已经给出的具体判断。
   if (
-    report.direction &&
+    !hasInteractionReview && report.direction &&
     typeof report.direction.summary === "string" &&
     !["delivery", "awaiting_drop", "result", "post_round"].includes(scenarioPhase)
   ) {
@@ -2071,6 +2173,21 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
         action:"停止继续拉新，等主持口令再兑现。",example:"我们已经组齐，大家先别丢，等主持统一口令。",
         why:"组满是占位完成，还不是到账，更不等于已经过关。"};
       report.direction = {summary:report.coaching.action,examples:[report.coaching.example]};
+    }
+  }
+  if (report.optional_polish) {
+    const suggestion = report.optional_polish;
+    const advice = `${suggestion.example} ${suggestion.why}`;
+    const phaseConflict = scenarioPhase === "awaiting_drop"
+      ? hasAdditionalClaimPressure(suggestion.example) || hasPrematureDeliveryPressure(suggestion.example)
+      : scenarioPhase === "delivery"
+        ? hasNewClaimPressure(suggestion.example) || /(?:等|听).{0,6}主持.{0,6}口令/u.test(suggestion.example)
+        : ["result", "post_round"].includes(scenarioPhase) && hasExplicitVoteInstruction(suggestion.example);
+    if (report.verdict !== "passed" || detectRedline(suggestion.example).length ||
+        hasIntroducedContentAdvice(advice, observableContext) || guaranteesResult(advice) || phaseConflict ||
+        writtenTermsIn(suggestion.example).length || firstSelfAbasementSignal(suggestion.example) ||
+        firstUnnegatedSignal(suggestion.example, EXPLICIT_BEGGING_SIGNALS)) {
+      report.optional_polish = null;
     }
   }
   return report;
@@ -2468,16 +2585,51 @@ export function normalizeRevision(value) {
   return result;
 }
 
-export function applyRevisionFeedback(report, value, currentScript) {
+function revisionFocusState(report, key) {
+  const check = report.structure_checks?.find(item => item.key === key);
+  if (check) return check.status === "met" ? "resolved" : "still_open";
+  if (key === "line_angle") {
+    if (report.interaction_review?.judgment === "misread") return "still_open";
+    if (report.interaction_review?.judgment === "aligned" &&
+        !report.line_reviews?.some(item => item.mark === "wrong")) return "resolved";
+  }
+  if (key === "redline") return report.redline_note ? "still_open" : "resolved";
+  if (key === "persona") return report.card_type === "persona" ? "still_open" : "resolved";
+  return report.verdict === "passed" ? "resolved" : "unverified";
+}
+
+export function getRevisionConflict(report, value, currentScript, previousReport) {
+  const revision = normalizeRevision(value);
+  const lesson = previousReport?.coaching;
+  if (!revision || !lesson || previousReport.verdict === "passed" ||
+      !lesson.original || !lesson.example || lesson.original === lesson.example ||
+      revisionFocusState(report, lesson.focus_key) !== "still_open") return "";
+  const parts = revision.previousScript.split(lesson.original);
+  if (parts.length !== 2 || (parts[0] + lesson.example + parts[1]).trim() !== currentScript.trim()) return "";
+  return "你已经采用了上次的示范，但教练复查又否定了同一处，反馈发生冲突。本次不计闯关结果，请保留这版交给带教核对。";
+}
+
+export function applyRevisionFeedback(report, value, currentScript, previousReport = null) {
   const revision = normalizeRevision(value);
   if (!revision || revision.previousScript === currentScript.trim()) return report;
-  const labels = { user_reason: "参与理由", vote_instruction: "当下动作" };
-  const label = labels[revision.focusKey];
-  const check = report.structure_checks?.find(item => item.key === revision.focusKey);
-  // 只确认当前证据已达标，不声称理解了或已学会；客户端历史不能改变评分。
-  if (label && check?.status === "met") {
+  // 优先接续服务端实际发出的任务，客户端传来的建议不能改评分或冒充历史。
+  const key = previousReport?.coaching?.focus_key || revision.focusKey;
+  const labels = { self_intro: "自我介绍", gratitude: "接住参与", target_user: "喊话对象",
+    user_reason: "参与理由", vote_instruction: "当下动作", line_angle: "现场理解",
+    redline: "风险表达", persona: "模板表达" };
+  const label = labels[key];
+  if (!label) return report;
+  const state = revisionFocusState(report, key);
+  const evidence = report.structure_checks?.find(item => item.key === key)?.evidence ||
+    (key === "line_angle" ? report.interaction_review?.reading : "");
+  // 没有可核验旧报告时只保留原有的当前达标提示，不伪造逐版对照。
+  if (previousReport) report.revision_check = { focus_key: key, status: state, evidence: evidence || "" };
+  if (state === "resolved") {
     report.revision_note = `上次练的${label}，这版已经说清了。`;
-    if (report.coaching) report.coaching.keep = report.revision_note;
+    if (["redline", "persona"].includes(key)) report.revision_note = `上次指出的${label}问题，这版已消除。`;
+    if (!previousReport && report.coaching) report.coaching.keep = report.revision_note;
+  } else if (previousReport && state === "still_open") {
+    report.revision_note = `上次练的${label}还需要调整。${evidence || "请看这版原句对应的具体说明。"}`;
   }
   return report;
 }
@@ -2588,12 +2740,16 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
     }
     report.line_reviews = report.line_reviews.map((item, i) => ({original:segments[i],mark:item.mark,comment:item.comment}));
   }
+  const interactionIssue = getInteractionReviewIssue(report, script, scenario, voteGap);
+  if (interactionIssue) {
+    throw new HttpError(502, "教练没有核对清楚现场，这次未判分。原稿已保留，请重试。", interactionIssue);
+  }
   completeMissingEvidenceLabels(report);
-  reconcileExplicitInterest(report, script, scenario);
+  // 旧的“想看返场+再跳”词式晋级不能替代当前关系判断。
 
   const checked = normalizeReport(report, script);
   applyReportSafetyGates(checked, redlineHits, {sourceScript: script, scenario, voteGap});
-  const qualityIssue = getReportQualityIssue(checked, script);
+  const qualityIssue = getReportQualityIssue(checked, script, scenario);
   if (qualityIssue) {
     throw new HttpError(502, "教练这次判断不一致，未给你判分。原稿已保留，请重试。", qualityIssue);
   }
@@ -2650,7 +2806,38 @@ export function completeMissingEvidenceLabels(report) {
   return report;
 }
 
-export function getReportQualityIssue(report, sourceScript) {
+// 校验公开判断摘要引用的输入位置，不把“引用存在”伪装成语义必然正确。
+// 真实理解仍由场景对照样本和老师校准验证；无效摘要属于教练故障，不能扣学员分。
+export function getInteractionReviewIssue(report, script, scenario, voteGap) {
+  const value = report?.interaction_review;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "缺少现场关系判断";
+  if (!["aligned", "misread", "uncertain"].includes(value.judgment)) return "现场判断类型不合法";
+  for (const [key, limit] of Object.entries({reading:100, why:100, next_check:70})) {
+    if (typeof value[key] !== "string" || !value[key].trim() || Array.from(value[key]).length > limit) return `现场判断字段不完整：${key}`;
+  }
+  const segments = splitHardSentences(script);
+  if (!Array.isArray(value.script_refs) || !value.script_refs.length || value.script_refs.length > segments.length ||
+      new Set(value.script_refs).size !== value.script_refs.length ||
+      value.script_refs.some(i => !Number.isInteger(i) || i < 0 || i >= segments.length)) return "现场判断引用了不存在的原稿段落";
+  if (!Array.isArray(value.signal_refs) || !value.signal_refs.length || value.signal_refs.length > 6 ||
+      value.signal_refs.some(ref => typeof ref !== "string")) return "现场判断缺少可核对的事实位置";
+  const references = value.signal_refs.map(ref => ref.replace(/^scenario[.:]/u, ""));
+  if (new Set(references).size !== references.length) return "现场事实位置重复";
+  for (const ref of references) {
+    if (ref === "voteGap" && VOTE_GAP_ENUM.includes(voteGap)) continue;
+    const indexed = /^(script|timeline):(0|[1-9]\d*)$/u.exec(ref);
+    if (indexed) {
+      const items = indexed[1] === "script" ? segments : scenario?.timeline;
+      if (!Array.isArray(items) || Number(indexed[2]) >= items.length) return "现场判断引用了不存在的事实";
+    } else if (!SCENARIO_FIELD_ORDER.includes(ref) || ["id", "timeline"].includes(ref) ||
+        !scenario || !Object.hasOwn(scenario, ref) || scenario[ref] === null || scenario[ref] === "") {
+      return "现场判断引用了不存在的事实";
+    }
+  }
+  return "";
+}
+
+export function getReportQualityIssue(report, sourceScript, scenario = null) {
   for (const field of ["_lineReviewsContractValid", "_structureContractValid", "_safetyFieldsContractValid", "_roundDynamicsContractValid"]) {
     if (!report[field]) return `报告证据契约不完整：${field}`;
   }
@@ -2662,6 +2849,10 @@ export function getReportQualityIssue(report, sourceScript) {
   if (report.verdict !== "passed" && core.some(item => item.key === report.coaching?.focus_key && item.status === "met")) return "修改点要求重做已达标核心";
   const compact = text => String(text || "").replace(/\s+/gu, "");
   const source = compact(sourceScript);
+  const sceneQuotes = [
+    ...Object.keys(SCENARIO_TEXT_LIMITS).filter(key => key !== "id").map(key => scenario?.[key]),
+    ...(scenario?.timeline || []).map(event => event.text),
+  ].filter(value => typeof value === "string").map(compact);
   // 模型用引号指称原句时必须来自当前稿，旧句、案例句不可混入批评。
   // 但不能要求逐字：模型常写概括性引号——实测「身后没家人」指代
   // 「我身后没有别的家人」，逐字比对会误杀整份报告（真实请求约 18% 因此 502，
@@ -2680,7 +2871,10 @@ export function getReportQualityIssue(report, sourceScript) {
   const diagnoses = [report.verdict_reason, report.card_why, ...report.line_reviews.map(item => item.comment)];
   for (const text of diagnoses) {
     for (const match of String(text || "").matchAll(/[“「]([^”」]{4,})[”」]/gu)) {
-      if (!quotedFromSource(compact(match[1]))) return "点评引用了当前稿不存在的原句";
+      const quote = compact(match[1]);
+      // 指出“你把他的条件听成承诺”时必须允许引用真实现场；不能把
+      // 用户刚说的那句话要求也出现在主播稿里。只认单条事实中的原文。
+      if (!quotedFromSource(quote) && !sceneQuotes.some(fact => fact.includes(quote))) return "点评引用了当前稿或现场不存在的原句";
     }
   }
   return "";
@@ -2703,12 +2897,7 @@ export function normalizeReport(report, sourceScript) {
         .replace(/\s+/g, " ")
     ).slice(0, maxLength).join("");
   const compactWhitespace = (value) => String(value || "").replace(/\s+/g, "");
-  const splitSentences = (value) => {
-    const matches = String(value || "").match(
-      /[^。！？!?；;.]+(?:[。！？!?；;.]+[”’"'）】》]*)?|[。！？!?；;.]+[”’"'）】》]*/gu
-    );
-    return (matches || []).filter((item) => compactWhitespace(item).length > 0);
-  };
+  const splitSentences = splitHardSentences;
 
   // 在任何兜底归一化之前记录逐句契约是否真实有效。非法 mark 后面仍会转 partial
   // 供前端安全渲染，但内部标记保留失败事实，绝不允许因此误过关。
@@ -2991,6 +3180,19 @@ export function normalizeReport(report, sourceScript) {
     };
   });
 
+  // 明确的自报姓名是可直接核对的事实，不因模型是否要求“额外看点”漂移。
+  // 只识别专门的报姓名句式，不把“我是希望…”等一般陈述当成身份。
+  if (report.interaction_review && typeof sourceScript === "string") {
+    const introduction = withoutAttributedQuotedText(sourceScript).match(
+      /(?:^|[，,。！？!?\r\n])\s*((?:我叫|我的名字是|(?:现在)?(?:台上|场上)(?:的)?(?:就)?是)[\p{L}\p{N}·_-]{1,12})(?=[，,。！？!?\s]|$)/u
+    )?.[1];
+    if (introduction) {
+      const check = structureChecks.find(item => item.key === "self_intro");
+      check.status = "met";
+      check.evidence = `“${introduction}”已说明当前说话者。`;
+    }
+  }
+
   let normalizedAiFlavor = str(report.ai_flavor).trim();
   if (typeof sourceScript === "string" && (report.card_type === "persona" || normalizedAiFlavor)) {
     const sourcePhrases = AI_FLAVOR_SOURCE_PHRASES.filter((phrase) => sourceScript.includes(phrase));
@@ -3017,9 +3219,22 @@ export function normalizeReport(report, sourceScript) {
     })),
     one_thing: str(report.one_thing),
     direction,
+    optional_polish: null,
     ai_flavor: normalizedAiFlavor,
     redline_note: str(report.redline_note),
   };
+  // 主流程已校验原始摘要，按白名单复制，兼容不带该字段的历史报告。
+  const interaction = report.interaction_review;
+  if (interaction && typeof interaction === "object" && !Array.isArray(interaction)) {
+    normalized.interaction_review = {
+      signal_refs: Array.isArray(interaction.signal_refs) ? interaction.signal_refs.slice(0, 6).map(ref => typeof ref === "string" ? ref.replace(/^scenario[.:]/u, "") : ref) : [],
+      script_refs: Array.isArray(interaction.script_refs) ? interaction.script_refs.slice() : [],
+      judgment: str(interaction.judgment),
+      reading: str(interaction.reading),
+      why: str(interaction.why),
+      next_check: str(interaction.next_check),
+    };
+  }
 
   // 新版短带教是可选增量，旧客户端/旧报告继续可用。超长或伪造原句不截半句，
   // 整卡退回已有报告字段；原有完整拆解仍保留在展开区。
@@ -3031,6 +3246,26 @@ export function normalizeReport(report, sourceScript) {
       [...STRUCTURE_CHECK_KEYS, "logic", "expression", "mentality", "persona", "redline", "line_angle", "final_polish"].includes(coaching.focus_key) &&
       typeof sourceScript === "string" && compactWhitespace(sourceScript).includes(compactWhitespace(coaching.original))) {
     normalized.coaching = Object.fromEntries(Object.keys(coachingLimits).map((key) => [key, coaching[key].trim()]));
+  }
+
+  const polish = report.optional_polish;
+  if (report.verdict === "passed" && polish && typeof polish === "object" && !Array.isArray(polish) &&
+      ["original", "example", "why"].every(key => typeof polish[key] === "string" &&
+        polish[key].trim() && Array.from(polish[key]).length <= 100) &&
+      typeof sourceScript === "string" && compactWhitespace(sourceScript).includes(compactWhitespace(polish.original)) &&
+      compactWhitespace(polish.original) !== compactWhitespace(polish.example)) {
+    normalized.optional_polish = Object.fromEntries(["original", "example", "why"].map(key => [key, polish[key].trim()]));
+  }
+  if (report.verdict === "passed" && report.interaction_review && normalized.coaching) {
+    const keep = normalized.coaching.original;
+    if (Array.from(keep).length <= 55) {
+      normalized.coaching.action = "保留这版，开口练并观察回应";
+      normalized.coaching.example = keep;
+      normalized.direction = { summary: normalized.coaching.action, examples: [keep] };
+    } else {
+      delete normalized.coaching;
+      normalized.direction = { summary: "保留这版，开口练并观察回应", examples: [] };
+    }
   }
 
   // 内部安全元数据不进入 JSON 响应、不进入案例 value，也不增加前端契约字段。

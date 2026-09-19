@@ -1,0 +1,15 @@
+// Contrast pairs: identical words, different observed relationships or commitments.
+// Expectations are product hypotheses to review with the trainer, not proof of real conversion.
+const base = {phase:"pledging",roleContext:"你是台上正在组队复活的主播",targetUnits:28,pledgedUnits:18,openRemaining:10,deliveredUnits:0,hostCue:"主持尚未发出统一丢票口令。"};
+const knifeScript="乙哥，刚才把我刀下去的是你，这轮医药费你先认一个？";
+const conditionalScript="丙哥，你这五个我记下了，大家愿意就补一点，我继续组人报差距。";
+const interestScript="凯哥，这就给你来一下，满意的话补一票？";
+export const semanticFixtures = [
+  {id:"playful-correct-person",passed:true,script:knifeScript,scenario:{...base,id:"semantic-knife-true",targetUser:"乙哥",userSignal:"乙哥刚给主播上了下去票，随后问医药费怎么组。",timeline:[{at:0,role:"system",kind:"gift",speaker:"礼物",text:"乙哥给主播上了下去票。",effect:"down"},{at:1,role:"viewer",kind:"chat",speaker:"乙哥",text:"医药费怎么组？",effect:"neutral"}]}},
+  {id:"playful-wrong-person",passed:false,script:knifeScript,scenario:{...base,id:"semantic-knife-false",targetUser:"乙哥",userSignal:"给主播上下去票的是甲哥；乙哥刚进直播间，尚未参与。",timeline:[{at:0,role:"system",kind:"gift",speaker:"礼物",text:"甲哥给主播上了下去票。",effect:"down"},{at:1,role:"viewer",kind:"chat",speaker:"乙哥",text:"刚来，什么情况？",effect:"neutral"}]}},
+  {id:"conditional-not-accepted",passed:false,script:conditionalScript,scenario:{...base,id:"semantic-condition-open",targetUser:"丙哥",userSignal:"丙哥说乙哥给他才给五个；乙哥已离开，丙哥未作无条件认领。",timeline:[{at:0,role:"viewer",kind:"condition",speaker:"丙哥",text:"乙哥给我就给五个。",effect:"revive"},{at:1,role:"offstage_streamer",kind:"chat",speaker:"台下主播",text:"乙哥已经离场了。",effect:"neutral"}]}},
+  {id:"conditional-now-accepted",passed:true,script:conditionalScript,scenario:{...base,id:"semantic-condition-accepted",pledgedUnits:23,openRemaining:5,targetUser:"丙哥",userSignal:"乙哥离场后，丙哥主动取消条件，明确认领五个；尚未到账。",timeline:[{at:0,role:"viewer",kind:"condition",speaker:"丙哥",text:"乙哥给我就给五个。",effect:"revive"},{at:1,role:"offstage_streamer",kind:"chat",speaker:"台下主播",text:"乙哥已经离场了。",effect:"neutral"},{at:2,role:"viewer",kind:"pledge",speaker:"丙哥",text:"不等他了，五个算我的。",effect:"revive"}]}},
+  {id:"implicit-accept-interest",passed:true,script:interestScript,scenario:{phase:"revival_offer",id:"semantic-interest-yes",targetUser:"凯哥",userSignal:"凯哥说你撒个娇，我考虑一下。",hostCue:"主持把凯哥想看撒娇的要求递给主播。"}},
+  {id:"implicit-ignore-refusal",passed:false,script:interestScript,scenario:{phase:"revival_offer",id:"semantic-interest-no",targetUser:"凯哥",userSignal:"凯哥说别撒娇，我不看这个。",hostCue:"主持提醒主播凯哥不想看撒娇，换个话头。"}},
+  {id:"acknowledge-without-thanks",passed:true,gratitude:"met",script:"乙哥，四个变五个，你这一个把缺口压到最后一位了。谁来接最后这个位置，咱们凑齐等主持喊丢？",scenario:{...base,phase:"closing",id:"semantic-close-short",pledgedUnits:27,openRemaining:1,targetUser:"仍在场的观众",recentGift:"乙哥原认4个，现追加1个，累计认领5个；尚未到账。",userSignal:"乙哥追加1个后，目前只缺最后一个位置。"}},
+];

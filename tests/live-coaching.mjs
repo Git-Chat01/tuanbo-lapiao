@@ -60,7 +60,7 @@ for (let offset=0; offset<queue.length; offset+=4) {
       worker.applyReportSafetyGates(report,hits,{sourceScript:sample.script,voteGap:"close",scenario:sample.scenario||null});
       observedReport = report;
       assert.equal(report.verdict === "passed", sample.passed, sample.id);
-      assert.equal(worker.getReportQualityIssue(report, sample.script), "");
+      assert.equal(worker.getReportQualityIssue(report, sample.script, sample.scenario || null), "");
       assert.ok(Date.now()-start < 105000,"超出前端总等待预算");
       // 示范句是给主播照着说的：书面词（量力等）不能出现在教练给的句子里。
       const writtenLanguage = /(?:量力|承接|自愿|诉求|机制|支点|维度|赋能|闭环)/u;

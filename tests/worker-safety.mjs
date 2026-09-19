@@ -190,7 +190,7 @@ const makeReportForScript = (script, overrides = {}) =>
   const contradiction = makeReportForScript(script, {verdict:"almost"});
   assert.equal(index.getReportQualityIssue(contradiction,script), "核心已达标但结论仍卡关");
   const stale = makeReportForScript(script, {verdict_reason:"你还在说“这是已经删掉的旧句”。"});
-  assert.equal(index.getReportQualityIssue(stale,script), "点评引用了当前稿不存在的原句");
+  assert.equal(index.getReportQualityIssue(stale,script), "点评引用了当前稿或现场不存在的原句");
   const clean = makeReportForScript(script);
   assert.equal(index.getReportQualityIssue(clean,script), "");
 
@@ -571,8 +571,8 @@ index.applyReportSafetyGates(exactTwoTicketFeedback, [], {
 });
 assert.match(
   exactTwoTicketFeedback.round_dynamics.response_read,
-  /20.{0,24}18.{0,24}2个上票反馈/u,
-  "20→18 必须确定性读成期间收到2个上票反馈"
+  /20.{0,24}18.{0,24}缺口减少2个.*不能仅据此确认到账/u,
+  "20→18 只能确认稿内数字减少，不能据此证明到账"
 );
 
 const stalledTicketFeedbackScript =
@@ -588,8 +588,8 @@ index.applyReportSafetyGates(stalledTicketFeedback, [], {
 });
 assert.match(
   stalledTicketFeedback.round_dynamics.response_read,
-  /17.{0,24}15.{0,24}2个上票反馈.{0,40}仍是15.{0,24}暂未看到新的票差变化/u,
-  "17→15→15 只能确认一次减少2，随后应读成暂时没变化"
+  /17.{0,24}15.{0,24}缺口减少2个.{0,40}仍报15.{0,24}这两次报数相同/u,
+  "17→15→15 只确认报数变化，不断言最后的真实缺口"
 );
 assert.doesNotMatch(
   `${stalledTicketFeedback.round_dynamics.flow_read}${stalledTicketFeedback.round_dynamics.response_read}`,
@@ -2503,6 +2503,7 @@ assert.match(normalizedScriptedSpeechEvidence.ai_flavor, /努力到最后一刻/
 // 完整走一次 /api/coach：旧 body 仍 200；新 scenario 作为清洗后的第 5 参传给 prompt。
 const baseScript = "我是小夏，凯哥谢谢你刚才的小心心，凯哥你想看撒娇我现在来一个，你愿意就上几张，我还差十票，家人们一人补一点。";
 const upstreamReport = {
+  interaction_review: {signal_refs:["script:0"],script_refs:[0],judgment:"aligned",reading:"原稿递出当前参与邀请。",why:"依据原稿明示内容判断，未验证现场响应。",next_check:"看对方是否回应或认领。"},
   card_type: "logic",
   card_why: "结构与方向正确",
   audience: "榜一和散户",
@@ -3144,7 +3145,7 @@ for (const pureNarrationScript of ["凯哥说他想看返场。", "你说想看�
     const blocked = await index.default.fetch(coachRequest(), rateLimitEnv, rateLimitCtx);
     assert.equal(blocked.status, 429, "超过入口码每分钟上限应返回 429");
     assert.equal(blocked.headers.get("Retry-After"), "60", "429 应带 Retry-After 头");
-    assert.equal(modelCalls, 60, "被限流后不得再调 DeepSeek");
+    assert.equal(modelCalls, 1, "同稿复用一次有效检查；被限流后也不得再调 DeepSeek");
     await Promise.all(rateLimitPending);
   } finally {
     globalThis.fetch = originalFetch;
@@ -3379,4 +3380,173 @@ assert.match(
   );
 }
 
-console.log("PASS worker safety gates and case lifecycle");
+// Evidence-backed semantic reports must not be overwritten by legacy keyword rules.
+{
+  const script = "乙哥，四个变五个，你这一个把缺口压到最后一位了。谁来接最后这个位置，咱们凑齐等主持喊丢？";
+  const scenario = {phase:"closing",targetUser:"仍在场的观众",recentGift:"乙哥原认4个，现追加1个，累计认领5个；尚未到账。",userSignal:"只剩最后一个占位。"};
+  const interaction = {signal_refs:["recentGift","userSignal"],script_refs:[0,1],judgment:"aligned",reading:"主播接住乙哥追加，邀请最后一个位置。",why:"最后补位接上已经发生的共同组队。",next_check:"看谁接最后一位，确认后等主持。"};
+  const semanticReport=overrides=>makeReportForScript(script,{line_reviews:index.splitHardSentences(script).map(original=>({original,mark:"good",comment:"方向正确"})),...overrides});
+  const report=semanticReport({interaction_review:interaction});
+  index.applyReportSafetyGates(report,[],{sourceScript:script,scenario,voteGap:"close"});
+  assert.equal(report.verdict,"passed",`接最后位置是上下文明确的动作，不能因为词表漏掉而降级：${report.verdict_reason}`);
+  assert.equal(report.structure_checks.find(c=>c.key==="gratitude").status,"met","回应真实追加不需要含谢谢");
+  assert.equal(report.interaction_review.reading,interaction.reading);
+  assert.equal(index.getInteractionReviewIssue(report,script,scenario),"");
+  assert.equal(index.getInteractionReviewIssue({...report,interaction_review:{...interaction,signal_refs:["scenario.recentGift"]}},script,scenario),"","显式scenario路径与对应字段名是同一个事实，不应误报生成失败");
+  assert.equal(index.getInteractionReviewIssue({...report,interaction_review:{...interaction,signal_refs:["scenario:recentGift","voteGap"]}},script,scenario,"close"),"","合法顶层票况和路径别名均应指向实际输入");
+  assert.match(index.getInteractionReviewIssue({...report,interaction_review:{...interaction,signal_refs:["voteGap"]}},script,scenario),/不存在/);
+  assert.match(index.getInteractionReviewIssue({...report,interaction_review:{...interaction,signal_refs:["scenario.recentGift","recentGift"]}},script,scenario),/重复/);
+  assert.match(index.getInteractionReviewIssue({...report,interaction_review:{...interaction,signal_refs:["timeline:9"]}},script,scenario),/不存在/);
+  assert.match(index.getInteractionReviewIssue({...report,interaction_review:{...interaction,script_refs:[99]}},script,scenario),/不存在/);
+  assert.match(index.getInteractionReviewIssue({...report,interaction_review:{...interaction,judgment:"trusted"}},script,scenario),/不合法/);
+  assert.match(index.getInteractionReviewIssue({...report,interaction_review:{...interaction,signal_refs:[]}},script,scenario),/缺少/);
+  assert.match(index.getInteractionReviewIssue({},script,scenario),/缺少/);
+
+  const missingAction=semanticReport({verdict:"almost",interaction_review:interaction,structure_checks:allMetChecks().map(c=>c.key==="vote_instruction"?{...c,status:"partial"}:c)});
+  index.applyReportSafetyGates(missingAction,[],{sourceScript:script,scenario});
+  assert.equal(missingAction.structure_checks.find(c=>c.key==="vote_instruction").status,"partial","存在语义摘要不代表自动提升某项评分");
+
+  const wrong=semanticReport({interaction_review:{...interaction,judgment:"misread",script_refs:[0],reading:"误把尚未确认的追加算成已认领。"}});
+  index.applyReportSafetyGates(wrong,[],{sourceScript:script,scenario});
+  assert.notEqual(wrong.verdict,"passed","关系误读不能被两个met洗掉");
+  assert.equal(wrong.line_reviews[0].mark,"wrong");
+  assert.equal(wrong.line_reviews[1].mark,"good","只标记发生误读的原句");
+
+  const quote=semanticReport({interaction_review:interaction,card_why:"现场说“乙哥原认4个”，原话承接了这次追加。"});
+  assert.equal(index.getReportQualityIssue(quote,script,scenario),"","允许引用实际存在的现场事实");
+  assert.match(index.getReportQualityIssue(quote,script,null),/不存在/);
+  const invented=semanticReport({card_why:"现场说“乙哥已经到账十个”，原话承接了这次追加。"});
+  assert.match(index.getReportQualityIssue(invented,script,scenario),/不存在/);
+
+  const stageScript="已经组满了，大家现在再认一个，马上丢，不用等主持。";
+  const stage=makeReportForScript(stageScript,{interaction_review:{...interaction,signal_refs:["phase"],script_refs:[0]}});
+  index.applyReportSafetyGates(stage,[],{sourceScript:stageScript,scenario:{phase:"awaiting_drop"}});
+  assert.notEqual(stage.verdict,"passed","语义摘要不能绕过已组满后的阶段冲突");
+  const redline=semanticReport({interaction_review:interaction});
+  index.applyReportSafetyGates(redline,["红线测试"],{sourceScript:script,scenario});
+  assert.equal(redline.verdict,"off","语义摘要不能绕过红线");
+}
+
+// Stable review records: isolate same-flight merging, persistence, isolation, expiry and failures.
+{
+  const env = {CASES:new MemoryKV()};
+  const key = await index.reviewRecordKey("one", "close", baseScript, null);
+  assert.notEqual(key, await index.reviewRecordKey("two", "close", baseScript, null));
+  assert.notEqual(key, await index.reviewRecordKey("one", "far", baseScript, null));
+  assert.notEqual(key, await index.reviewRecordKey("one", "close", baseScript + "新句", null));
+  assert.notEqual(key, await index.reviewRecordKey("one", "close", baseScript, {phase:"delivery"}));
+  assert.doesNotMatch(key, /凯哥|one/);
+  let calls = 0;
+  const generate = async () => {calls++; await new Promise(resolve => setTimeout(resolve, 5)); return {ok:true,report:structuredClone(upstreamReport),usage:{}};};
+  const [first, second] = await Promise.all([index.reuseReview(env,key,generate),index.reuseReview(env,key,generate)]);
+  assert.equal(calls,1,"同一实例的同时提交只能生成一次");
+  assert.deepEqual(first,second);
+  first.report.revision_note = "不得污染基础结果";
+  assert.equal((await index.reuseReview(env,key,generate)).report.revision_note,undefined);
+  const restarted = {CASES:new MemoryKV([...env.CASES.values].map(([k,v])=>[k,JSON.parse(v)]))};
+  assert.deepEqual(await index.reuseReview(restarted,key,generate),second,"新实例读取持久化结果");
+  assert.equal(calls,1);
+  const expired = JSON.parse(env.CASES.values.get(key)); expired.expiresAt = 1;
+  await index.reuseReview({CASES:new MemoryKV([[key,expired]])},key,generate);
+  assert.equal(calls,2,"到期后重新检查");
+  const oldVersion = {...expired,expiresAt:Date.now()+100000,version:"obsolete"};
+  await index.reuseReview({CASES:new MemoryKV([[key,oldVersion]])},key,generate);
+  assert.equal(calls,3,"旧评分版本不能沿用");
+  await assert.rejects(index.reuseReview(env,"failed",async()=>{throw new Error("upstream");}),/upstream/);
+  assert.equal(await index.readReviewRecord(env,"failed"),null);
+  await index.reuseReview(env,"failed",generate);
+  assert.equal(calls,4,"失败后允许恢复，不能保存故障");
+  const broken = {CASES:{async get(){throw new Error("offline");},async put(){throw new Error("offline");}}};
+  await index.reuseReview(broken,key,generate);
+  await index.reuseReview(broken,key,generate);
+  assert.equal(calls,5,"KV故障时同实例仍复用已完成结果");
+}
+{
+  const oldScript="凯哥，你这五个已经到账了。大家再帮我组一下。";
+  const oldReport={verdict:"almost",coaching:{focus_key:"line_angle",original:"你这五个已经到账了",example:"你认的五个我记好了，等主持喊再丢"}};
+  const revision={previousScript:oldScript,focusKey:"user_reason",instruction:"客户端伪造的方向"};
+  const fixedScript=oldScript.replace(oldReport.coaching.original,oldReport.coaching.example);
+  const fixed={verdict:"passed",interaction_review:{judgment:"aligned",reading:"已把认领与到账分开。"},line_reviews:[{mark:"good"}],coaching:{keep:"保留原有优点"}};
+  index.applyRevisionFeedback(fixed,revision,fixedScript,oldReport);
+  assert.equal(fixed.revision_check.focus_key,"line_angle","按服务端真实修改任务对照");
+  assert.equal(fixed.revision_check.status,"resolved");
+  assert.match(fixed.revision_note,/现场理解.*已经说清/);
+  assert.equal(fixed.coaching.keep,"保留原有优点");
+  const conflict={verdict:"almost",interaction_review:{judgment:"misread",reading:"仍然认错到账。"},line_reviews:[{mark:"wrong"}]};
+  assert.match(index.getRevisionConflict(conflict,revision,fixedScript,oldReport),/本次不计闯关/);
+  assert.equal(index.getRevisionConflict(conflict,revision,fixedScript+"另外改了内容。",oldReport),"");
+  assert.equal(index.getRevisionConflict(conflict,revision,fixedScript,null),"","不能相信客户端自报的示范");
+  index.applyRevisionFeedback(conflict,revision,fixedScript,oldReport);
+  assert.equal(conflict.revision_check.status,"still_open");
+  assert.match(conflict.revision_note,/还需要调整/);
+  assert.equal(conflict.verdict,"almost","复练对照不能直接抬高评分");
+}
+
+// Both JSON and streaming routes surface teacher contradictions as non-scoring business errors.
+{
+  const env={ACCESS_CODE:"route-revision",CASES:new MemoryKV()};
+  const oldScript=baseScript.replace("我还差十票","我还差二十票");
+  const previous={verdict:"almost",coaching:{focus_key:"user_reason",original:"我还差二十票",example:"我还差十票"}};
+  const current={verdict:"almost",structure_checks:[{key:"user_reason",status:"partial",evidence:"仍未接上理由"}]};
+  for(const [script,report] of [[oldScript,previous],[baseScript,current]]){
+    await index.reuseReview(env,await index.reviewRecordKey(env.ACCESS_CODE,"close",script,null),async()=>({ok:true,report,usage:{}}));
+  }
+  for(const streaming of [false,true]){
+    const response=await index.default.fetch(new Request("https://local.test/api/coach",{
+      method:"POST",headers:{"Content-Type":"application/json",Accept:streaming?"application/x-ndjson":"application/json"},
+      body:JSON.stringify({accessCode:env.ACCESS_CODE,voteGap:"close",script:baseScript,
+        revision:{previousScript:oldScript,focusKey:"user_reason",instruction:"示范替换"}}),
+    }),env,{waitUntil(){}});
+    const payload=JSON.parse((await response.text()).trim().split("\n").at(-1));
+    assert.equal(streaming?payload.status:response.status,409);
+    assert.match(payload.message,/反馈发生冲突/);
+    assert.equal(payload.report,undefined,"教练冲突不得伪装成学员失败报告");
+  }
+}
+
+// Real-draft regressions: facts remain bounded, introductions stay objective, optional edits never gate.
+{
+  const script="大家好，现在台上的就是小禾，咱们还差十个。\n谢谢星星姐刚送的两个。\n想一起守住这轮的，方便就补一个。";
+  const interaction={signal_refs:["script:0"],script_refs:[0],judgment:"aligned",reading:"原稿自报姓名、感谢并邀请补位。",why:"仅按稿内表达判断。",next_check:"看真实回应和到账。"};
+  const raw=()=>makeReportForScript(script,{interaction_review:interaction,
+    line_reviews:index.splitHardSentences(script).map(original=>({original,mark:"good",comment:"原话方向成立。"})),
+    round_dynamics:validRoundDynamics({response_read:"稿内提到收到两个，未见独立到账确认。"}),
+  });
+  const source=await readFile(new URL("../worker/current-review.js",import.meta.url),"utf8");
+  const knowledge=toDataUrl(await readFile(new URL("../worker/prompt.js",import.meta.url),"utf8"));
+  const current=await import(toDataUrl(source.replace('from "./prompt.js";',`from "${knowledge}";`)));
+  for(const text of [script,"还差3.5个\r\n刚才又认了0.5个。现在还差3个。","第一句。\n\n第二句没有句号\n第三句？"]){
+    const input=JSON.parse(current.buildUserPrompt("close",text,[],[],null));
+    assert.deepEqual(input.segments,index.splitHardSentences(text),"模型编号与服务端逐句核对必须一致");
+    assert.deepEqual(input.requiredSegmentIndexes,input.segments.map((_,i)=>i));
+    assert.equal(input.segments.join("").replace(/\s/g,""),text.replace(/\s/g,""),"换行切分不丢字");
+  }
+  for(const status of ["met","partial","missing"]){
+    const report=raw();report.structure_checks[0].status=status;
+    const normalized=index.normalizeReport(report,script);
+    assert.equal(normalized.structure_checks[0].status,"met","自报姓名不因模型额外要求看点而漂移");
+  }
+  const report=raw();
+  report.optional_polish={original:"咱们还差十个",example:"这轮还差十个，方便的补一个",why:"把缺口接到一个可选择的动作。"};
+  const normalized=index.normalizeReport(report,script);
+  index.applyReportSafetyGates(normalized,[],{sourceScript:script,voteGap:"close"});
+  assert.equal(normalized.verdict,"passed");
+  assert.ok(normalized.optional_polish);
+  assert.match(normalized.round_dynamics.response_read,/未见独立到账确认/);
+  assert.doesNotMatch(normalized.round_dynamics.response_read,/确认这期间收到/);
+  assert.match(normalized.round_dynamics.response_read,/仅依据稿内描述/);
+  index.applyReportSafetyGates(normalized,[],{sourceScript:script,voteGap:"close"});
+  assert.equal(normalized.round_dynamics.response_read.match(/仅依据稿内描述/g).length,1,"重复闸门不叠加前缀");
+  assert.equal(index.normalizeReport({...report,optional_polish:{...report.optional_polish,original:"不存在的原话"}},script).optional_polish,null);
+  assert.equal(index.normalizeReport({...report,optional_polish:{...report.optional_polish,why:"长".repeat(101)}},script).optional_polish,null);
+  assert.equal(index.normalizeReport({...report,verdict:"almost"},script).optional_polish,null);
+  const invented=index.normalizeReport({...report,optional_polish:{...report.optional_polish,example:"再送一个我给你跳个新舞"}},script);
+  index.applyReportSafetyGates(invented,[],{sourceScript:script,voteGap:"close"});
+  assert.equal(invented.optional_polish,null,"可选建议不能凭空添加节目交换");
+  assert.equal(invented.verdict,"passed","教练的可选建议无效不能扣新人分");
+  const risky=index.normalizeReport(report,script);
+  index.applyReportSafetyGates(risky,["测试红线"],{sourceScript:script,voteGap:"close"});
+  assert.equal(risky.optional_polish,null,"被安全闸门挡下时不能显示通过后的建议");
+}
+
+console.log("PASS worker safety gates, review continuity and case lifecycle");

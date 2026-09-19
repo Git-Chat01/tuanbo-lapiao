@@ -23,7 +23,7 @@ var Api = {
    * @param {Promise} timeoutPromise - 与初次请求共享的总超时预算
    */
   _attempt: function (requestOptions, timeoutPromise) {
-    return Promise.race([fetch(API_BASE + "/api/coach", requestOptions), timeoutPromise]).then(function (res) {
+    return Promise.race([fetch(API_BASE + "/api/coach", requestOptions).then(function (res) {
       return res.text().then(function (text) {
         var lines = String(text || "").split("\n");
         var lastLine = "";
@@ -52,7 +52,7 @@ var Api = {
         }
         return data;
       });
-    });
+    }), timeoutPromise]);
   },
 
   /**
@@ -129,7 +129,6 @@ var Api = {
 
     var retried = false;
     var handleError = function (err) {
-      clearTimeout(timer);
       if (requestId !== Api._requestId) return;
       var status = err.status || 0;
 
@@ -140,13 +139,14 @@ var Api = {
       var remainingBudget = Api._timeoutMs - (Date.now() - submittedAt);
       if ((status === 502 || status === 503 || status === 504) && !retried && remainingBudget >= Api._retryMinBudgetMs) {
         retried = true;
-        return new Promise(function (resolve) {
+        return Promise.race([new Promise(function (resolve) {
           setTimeout(resolve, 1500);
-        })
+        }), timeoutPromise])
           .then(attempt)
           .catch(handleError);
       }
 
+      clearTimeout(timer);
       var message;
       if (err.name === "AbortError" || err.name === "TimeoutError") {
         // 旧 WebView 没有 AbortController 时，超时只是“假中断”：fetch 还在跑，

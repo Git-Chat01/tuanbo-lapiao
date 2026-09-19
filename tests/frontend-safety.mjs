@@ -541,7 +541,7 @@ function testChallengeSolutionCannotDriftToAnotherProblem() {
   assert.doesNotMatch(structureSolution, /退缩|请求/, "不能把模型对另一卡点的方向塞进当前结构关");
   assert.deepEqual(
     Array.from(context.Report._helpItemsFor(report, structureFocus)),
-    ["在名字后补：这一轮你具体有什么看点？", "只补一句，不要重新介绍一遍。"],
+    ["看原话有没有说清自己的名字或当前身份。", "已经介绍过就保留，不必为了这一项再加看点。"],
     "结构关扶助也必须与当前关一致"
   );
 
@@ -1183,6 +1183,7 @@ async function testGatewayFailureDoesNotRetryBusinessErrors() {
   // 401/429/500 都是业务语义，重试只会放大问题（尤其 429 会让限流更糟）
   const cases = [
     { status: 401, json: { message: "入口码无效" }, expectMessage: "入口码不对" },
+    { status: 409, json: { message: "教练反馈冲突，本次不计闯关结果" }, expectMessage: "教练反馈冲突，本次不计闯关结果" },
     { status: 429, json: { message: "请求太频繁，休息一分钟再试" }, expectMessage: "请求太频繁，休息一分钟再试" },
     { status: 500, json: { message: "教练内部出错了" }, expectMessage: "教练内部出错了" },
   ];
@@ -1582,6 +1583,65 @@ async function testRevisionContextFollowsOnlyTheSameScene() {
   assert.deepEqual(wire.revision, JSON.parse(JSON.stringify(revision)), "API 只传上一版、同一修改点和方向，不传整段历史或多余字段");
 }
 
+async function testRetryAndResponseBodyKeepDeadline() {
+  for (const stalledBody of [false,true]) {
+    const timers=[];let count=0,finished=false,error;
+    const context=createBrowserContext({API_BASE:"https://coach.example.test",App:{getAccessCode:()=>"fake",toast(){}},
+      setTimeout(fn,ms){timers.push({fn,ms,cleared:false});return timers.length;},
+      clearTimeout(id){if(timers[id-1])timers[id-1].cleared=true;},
+      fetch(){count++;if(count===1)return Promise.resolve(fakeResponse(502,{error:true,message:"gateway"}));
+        return stalledBody?Promise.resolve({ok:true,status:200,text:()=>new Promise(()=>{})}):new Promise(()=>{});},
+    });
+    loadScript(context,"site/js/api.js");
+    context.Api.submit({script:"一段完整的测试话术，等待真实回应。",voteGap:"close"},{onFinish(){finished=true;},onError(_status,message){error=message;}});
+    const flush=async()=>{for(let i=0;i<20;i++)await Promise.resolve();};
+    await flush();
+    const delay=timers.find(t=>t.ms===1500);assert.ok(delay);delay.fn();
+    await flush();
+    assert.equal(count,2);
+    const deadline=timers.find(t=>t.ms===105000);
+    assert.equal(deadline.cleared,false,"重试期间总时限必须仍有效");
+    deadline.fn();await flush();
+    assert.equal(finished,true,"请求或正文挂起均须结束等待");
+    assert.equal(context.Api._inFlight,false);
+    assert.match(error,/等太久/);
+  }
+}
+
+function testSemanticFeedbackAndVisibleHelp() {
+  const element=tag=>({tagName:tag,children:[],textContent:"",style:{},dataset:{},appendChild(n){this.children.push(n);return n;},setAttribute(){}});
+  const root=element("div"),nodes={"report-content":root};
+  const context=createBrowserContext({App:{state:{lastRequest:{script:"丙哥，你这五个我记上了。",scenario:{userSignal:"只是条件认领"}}},showView(){}},
+    document:{createElement:element,getElementById(id){return nodes[id]||(nodes[id]=element("div"));}},
+  });
+  loadScript(context,"site/js/report.js");
+  const report=makeChallengeReport(["missing","partial","met","partial","met"],{verdict:"off",card_type:"logic",
+    interaction_review:{judgment:"misread",reading:"丙哥只说别人给他才给，这五个还没确定。",why:"不能把条件认领当已经承诺。",next_check:"问条件还算不算，确认后再记。"},
+    coaching:{focus_key:"line_angle",keep:"你在及时记进度。",original:"你这五个我记上了",action:"先问这五个是否确定。",example:"这五个现在算不算？",why:"先确认再记录。"},
+  });
+  const focus=context.Report._focusCheck(context.Report._checks(report),report);
+  assert.equal(focus.key,"line_angle");
+  const card=context.Report._focusPaper(report,focus,{});
+  assert.equal(card.children[0].children[1].textContent,report.interaction_review.reading);
+  assert.deepEqual(Array.from(context.Report._helpItemsFor(report,focus)),[report.coaching.action,report.interaction_review.why],"卡关提示跟随实际误读，不再复述认领模板");
+  const help=element("section");help.isHelp=true;
+  context.Report._recordResult=()=>({focus,checks:[],focusAttempts:2});
+  context.Report._heading=()=>element("header");context.Report._revisionDesk=()=>element("section");
+  context.Report._helpPanel=()=>help;context.Report._challengeMap=()=>element("section");
+  context.Report._roundDynamics=()=>null;context.Report._fullReview=()=>element("details");
+  report.revision_note = "上次练的现场理解还需要调整。条件尚未确认。";
+  context.Report.showContent(report);
+  assert.ok(root.children.includes(help),"连续卡关帮助必须直接显示在外层页面，不藏在details内");
+  assert.ok(root.children.some(node=>node.textContent===report.revision_note),"改稿核对结果必须直接显示");
+  const passed={...report,verdict:"passed",optional_polish:{original:"你这五个我记上了",example:"你这五个确认后我再记",why:"先确认条件是否成立。"}};
+  const optional=context.Report._optionalPolish(passed);
+  assert.ok(optional,"通过后的建议可单独渲染");
+  assert.match(optional.children[1].textContent,/不影响过关.*不用.*重新提交/);
+  assert.equal(optional.children[3].children[1].textContent,passed.optional_polish.example);
+  assert.equal(context.Report._optionalPolish({...passed,verdict:"almost"}),null);
+  assert.equal(context.Report._optionalPolish({...passed,optional_polish:{...passed.optional_polish,original:"伪造的原句"}}),null);
+}
+
 try {
   testApiOverrideCannotExfiltrateCodes();
   testAccessCodeSurvivesStorageFailure();
@@ -1618,6 +1678,8 @@ try {
   testShortCoachingUsesTheActualSentence();
   testLoadingShowsHonestElapsedTime();
   await testRevisionContextFollowsOnlyTheSameScene();
+  await testRetryAndResponseBodyKeepDeadline();
+  testSemanticFeedbackAndVisibleHelp();
   console.log("PASS");
 } catch (error) {
   console.error(error && error.stack ? error.stack : error);
