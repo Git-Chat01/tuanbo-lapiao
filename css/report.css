@@ -594,6 +594,17 @@
 .presenter-page #view-passed .training-primary { margin-top: 18px; }
 .presenter-page #view-passed .training-secondary { margin-top: 8px; }
 
+.optional-polish {
+  margin-top: 20px;
+  padding: 18px;
+  border: 1px solid var(--stage-line, #ded8ce);
+  border-radius: 12px;
+  background: var(--stage-paper, #faf7f1);
+  overflow-wrap: anywhere;
+}
+.optional-polish h2 { margin: 0 0 8px; font-size: 17px; line-height: 1.5; }
+.optional-polish__note { margin-bottom: 16px; font-size: 13px; color: var(--text-muted, #666); }
+
 @keyframes challenge-reveal {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
