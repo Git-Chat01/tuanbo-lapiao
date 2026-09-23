@@ -286,6 +286,9 @@ const shortCoaching = {
   const quoteScript = "现在还差十个星辰，欢迎新来的朋友，我们继续组队，现在还差两个星辰。";
   const quoted = makeReportForScript(quoteScript, {coaching: {...shortCoaching, original: "现在还差十个星辰……现在还差两个星辰"}});
   assert.equal(quoted.coaching.original, quoteScript.slice(0, -1), "唯一顺序匹配的省略引用还原原文，不截断或改写");
+  const spacedScript = "欢迎新来的朋友，今 天还差两手，\n大家帮我补一票。";
+  const spaced = makeReportForScript(spacedScript, {coaching: {...shortCoaching, original: "今天还差两手，大家帮我补一票"}});
+  assert.equal(spaced.coaching.original, "今 天还差两手，\n大家帮我补一票", "忽略空白接受的引用应锚回可直接替换的原文");
   for (const original of ["现在还差十个星辰……不存在的送礼", "现在还差两个星辰……现在还差十个星辰"]) {
     assert.equal(makeReportForScript(quoteScript, {coaching: {...shortCoaching, original}}).coaching, undefined, "伪造或倒序引用仍拒绝");
   }
@@ -3403,6 +3406,14 @@ assert.match(
   assert.equal(report.structure_checks.find(c=>c.key==="gratitude").status,"met","回应真实追加不需要含谢谢");
   assert.equal(report.interaction_review.reading,interaction.reading);
   assert.equal(index.getInteractionReviewIssue(report,script,scenario),"");
+  const oneBased={interaction_review:{...interaction,script_refs:[1,2],signal_refs:["recentGift","script:2"]}};
+  index.normalizeOneBasedScriptRefs(oneBased,script);
+  assert.deepEqual(oneBased.interaction_review.script_refs,[0,1],"明确 1 起始的原稿编号应还原为 0 起始");
+  assert.deepEqual(oneBased.interaction_review.signal_refs,["recentGift","script:1"]);
+  assert.equal(index.getInteractionReviewIssue(oneBased,script,scenario),"");
+  const ambiguous={interaction_review:{...interaction,script_refs:[1],signal_refs:["script:1"]}};
+  index.normalizeOneBasedScriptRefs(ambiguous,script);
+  assert.deepEqual(ambiguous.interaction_review.script_refs,[1],"未超界的编号不可擅自改动");
   assert.equal(index.getInteractionReviewIssue({...report,interaction_review:{...interaction,signal_refs:["scenario.recentGift"]}},script,scenario),"","显式scenario路径与对应字段名是同一个事实，不应误报生成失败");
   assert.equal(index.getInteractionReviewIssue({...report,interaction_review:{...interaction,signal_refs:["scenario:recentGift","voteGap"]}},script,scenario,"close"),"","合法顶层票况和路径别名均应指向实际输入");
   assert.match(index.getInteractionReviewIssue({...report,interaction_review:{...interaction,signal_refs:["voteGap"]}},script,scenario),/不存在/);
@@ -3526,6 +3537,21 @@ assert.match(
   assert.equal(conflict.revision_check.status,"still_open");
   assert.match(conflict.revision_note,/还需要调整/);
   assert.equal(conflict.verdict,"almost","复练对照不能直接抬高评分");
+}
+{
+  const oldScript="刚来的辰哥，你救我一定爽。大家也快帮我。";
+  const lesson={focus_key:"user_reason",original:"你救我一定爽",example:"你想看哪段跟我说",action:"先问他想看什么，等他回应再递票。"};
+  const previous={verdict:"almost",coaching:lesson};
+  const revised=oldScript.replace(lesson.original,lesson.example);
+  const revision={previousScript:oldScript,focusKey:"user_reason",instruction:lesson.action};
+  const waiting={verdict:"almost",structure_checks:[{key:"user_reason",status:"partial",evidence:"观众尚未回复"}],coaching:{original:lesson.example}};
+  assert.equal(index.getRevisionConflict(waiting,revision,revised,previous),"","询问兴趣只是取得线索的第一步，不能因仍待回复报 409");
+  index.applyRevisionFeedback(waiting,revision,revised,previous);
+  assert.match(waiting.revision_note,/等观众真实回应/);
+  const elsewhere={verdict:"almost",structure_checks:[{key:"user_reason",status:"partial",evidence:"最后仍在泛喊"}],coaching:{original:"大家也快帮我"}};
+  assert.equal(index.getRevisionConflict(elsewhere,revision,revised,previous),"","改好上一句后，另一处同类缺口不构成教练否定自己");
+  index.applyRevisionFeedback(elsewhere,revision,revised,previous);
+  assert.match(elsewhere.revision_note,/还有另一处/);
 }
 
 // Both JSON and streaming routes surface teacher contradictions as non-scoring business errors.

@@ -192,7 +192,7 @@ const DEEPSEEK_CONFIG = {
 
 // 修改评分、安全闸门或案例标准时递增；提示词和模型配置也参与指纹。
 // 只复用已完成的检查，不用缓存把一个未经验证的模型输出变成标准答案。
-const REVIEW_VERSION = "2026-09-23-coaching-3";
+const REVIEW_VERSION = "2026-09-23-coaching-4";
 const REVIEW_TTL_SECONDS = 7 * 24 * 60 * 60;
 const reviewStores = new WeakMap();
 
@@ -2598,14 +2598,34 @@ function revisionFocusState(report, key) {
   return report.verdict === "passed" ? "resolved" : "unverified";
 }
 
+function adoptedCoachExample(value, currentScript, lesson) {
+  const revision = normalizeRevision(value);
+  if (!revision || !lesson?.original || !lesson?.example || lesson.original === lesson.example) return false;
+  const parts = revision.previousScript.split(lesson.original);
+  return parts.length === 2 && (parts[0] + lesson.example + parts[1]).trim() === currentScript.trim();
+}
+
+function provisionalAudienceProbe(lesson) {
+  if (lesson?.focus_key !== "user_reason") return false;
+  // 上一步只教主播询问兴趣、等待反馈时，没有观众回复就不可能验证完整参与理由。
+  // 这里仅影响复练冲突提示，不改变这版稿的实际评分。
+  return /(?:先问|先看|等.{0,8}(?:回应|回话|回复|反馈)|拿到.{0,8}(?:意愿|线索)).{0,30}/u.test(`${lesson.action || ""} ${lesson.why || ""}`) &&
+    /(?:想看|想听|想玩|想怎么|想要|哪支|哪段|喜欢).{0,18}(?:吗|么|呢|？|\?|说|告诉)/u.test(lesson.example || "");
+}
+
+function newCoachingTargetsAdoptedExample(report, lesson) {
+  const nextOriginal = String(report.coaching?.original || "").replace(/\s+/gu, "");
+  return !nextOriginal || String(lesson.example || "").replace(/\s+/gu, "").includes(nextOriginal);
+}
+
 export function getRevisionConflict(report, value, currentScript, previousReport) {
   const revision = normalizeRevision(value);
   const lesson = previousReport?.coaching;
   if (!revision || !lesson || previousReport.verdict === "passed" ||
       !lesson.original || !lesson.example || lesson.original === lesson.example ||
-      revisionFocusState(report, lesson.focus_key) !== "still_open") return "";
-  const parts = revision.previousScript.split(lesson.original);
-  if (parts.length !== 2 || (parts[0] + lesson.example + parts[1]).trim() !== currentScript.trim()) return "";
+      revisionFocusState(report, lesson.focus_key) !== "still_open" ||
+      !adoptedCoachExample(revision, currentScript, lesson)) return "";
+  if (provisionalAudienceProbe(lesson) || !newCoachingTargetsAdoptedExample(report, lesson)) return "";
   return "你已经采用了上次的示范，但教练复查又否定了同一处，反馈发生冲突。本次不计闯关结果，请保留这版交给带教核对。";
 }
 
@@ -2629,7 +2649,14 @@ export function applyRevisionFeedback(report, value, currentScript, previousRepo
     if (["redline", "persona"].includes(key)) report.revision_note = `上次指出的${label}问题，这版已消除。`;
     if (!previousReport && report.coaching) report.coaching.keep = report.revision_note;
   } else if (previousReport && state === "still_open") {
-    report.revision_note = `上次练的${label}还需要调整。${evidence || "请看这版原句对应的具体说明。"}`;
+    const lesson = previousReport.coaching;
+    if (adoptedCoachExample(revision, currentScript, lesson) && !newCoachingTargetsAdoptedExample(report, lesson)) {
+      report.revision_note = `上次示范的那句已改；这版还有另一处${label}问题，接着看本次指出的原句。`;
+    } else if (adoptedCoachExample(revision, currentScript, lesson) && provisionalAudienceProbe(lesson)) {
+      report.revision_note = "上次示范已改成询问；还要等观众真实回应，再决定怎么递下一步。";
+    } else {
+      report.revision_note = `上次练的${label}还需要调整。${evidence || "请看这版原句对应的具体说明。"}`;
+    }
   }
   return report;
 }
@@ -2770,6 +2797,7 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
     }
     report.line_reviews = report.line_reviews.map((item, i) => ({original:segments[i],mark:item.mark,comment:item.comment}));
   }
+  normalizeOneBasedScriptRefs(report, script);
   const interactionIssue = getInteractionReviewIssue(report, script, scenario, voteGap);
   if (interactionIssue) {
     return repairOrFail(interactionIssue, "教练没有核对清楚现场，这次未判分。原稿已保留，请重试。");
@@ -2832,6 +2860,28 @@ export function completeMissingEvidenceLabels(report) {
   for (const item of report.structure_checks || []) {
     if (item?.status === "missing" && typeof item.evidence === "string" && !item.evidence.trim()) {
       item.evidence = "当前稿未出现这一项";
+    }
+  }
+  return report;
+}
+
+export function normalizeOneBasedScriptRefs(report, script) {
+  // 模型偶尔把原稿段落从 1 编起。只有出现超界的末位 N，且整组都符合
+  // 1..N 时才可确定是整体偏移；其余情况仍交给引用校验和一次修复。
+  const count = splitHardSentences(script).length;
+  const review = report?.interaction_review;
+  if (!review || !count) return report;
+  const refs = review.script_refs;
+  if (Array.isArray(refs) && refs.length && refs.every(i => Number.isInteger(i) && i >= 1 && i <= count) && refs.includes(count)) {
+    review.script_refs = refs.map(i => i - 1);
+  }
+  const signals = review.signal_refs;
+  if (Array.isArray(signals)) {
+    const scriptPositions = signals.map((ref, i) => ({ref,i})).filter(({ref}) => /^script:\d+$/u.test(ref));
+    const numbers = scriptPositions.map(({ref}) => Number(ref.slice(7)));
+    if (numbers.length && numbers.every(i => Number.isInteger(i) && i >= 1 && i <= count) && numbers.includes(count)) {
+      review.signal_refs = signals.slice();
+      for (const {i,ref} of scriptPositions) review.signal_refs[i] = `script:${Number(ref.slice(7)) - 1}`;
     }
   }
   return report;
@@ -3287,6 +3337,26 @@ export function normalizeReport(report, sourceScript) {
         const original = source.slice(positions[0], positions.at(-1) + parts.at(-1).length);
         if (Array.from(original).length <= 200) coaching = {...coaching, original};
       }
+    }
+  }
+  // 模型有时会省略原句中的空格或换行。校验允许这种引用时，也要把短卡
+  // 锚回原稿的连续原文，否则新人按示范替换时找不到要改的句子。
+  if (typeof coaching?.original === "string" && typeof sourceScript === "string" &&
+      !sourceScript.includes(coaching.original)) {
+    const target = compactWhitespace(coaching.original);
+    const sourceChars = [];
+    const sourceOffsets = [];
+    for (let i = 0; i < sourceScript.length; i++) {
+      if (/\s/u.test(sourceScript[i])) continue;
+      sourceChars.push(sourceScript[i]);
+      sourceOffsets.push(i);
+    }
+    const compactSource = sourceChars.join("");
+    const at = compactSource.indexOf(target);
+    if (at >= 0 && compactSource.lastIndexOf(target) === at && target.length > 0) {
+      const from = sourceOffsets[at];
+      const through = sourceOffsets[at + target.length - 1] + 1;
+      coaching = {...coaching, original:sourceScript.slice(from, through)};
     }
   }
   const coachingLimits = { focus_key: 32, keep: 120, original: 200, action: 120, example: 160, why: 160 };
