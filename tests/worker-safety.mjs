@@ -275,8 +275,19 @@ const shortCoaching = {
   const script = "大家帮我补一票，我想留下来。";
   const report = makeReportForScript(script, {coaching: {...shortCoaching, extra: "discard"}});
   assert.deepEqual(report.coaching, shortCoaching);
-  for (const bad of [{...shortCoaching, original: "不存在的原句"}, {...shortCoaching, why: "长".repeat(51)}, {...shortCoaching, focus_key: "invented"}]) {
+  for (const bad of [{...shortCoaching, original: "不存在的原句"}, {...shortCoaching, why: "长".repeat(161)}, {...shortCoaching, focus_key: "invented"}]) {
     assert.equal(makeReportForScript(script, {coaching: bad}).coaching, undefined, "非法短卡应退回旧报告，不截断误导新人");
+  }
+  const slightlyLong = {...shortCoaching, example: "例".repeat(56), why: "说明".repeat(26)};
+  const tolerated = makeReportForScript(script, {coaching: slightlyLong, direction: {summary: slightlyLong.action, examples: [slightlyLong.example]}});
+  assert.deepEqual(tolerated.coaching, slightlyLong, "写作目标少量超字不得丢掉有效短带教");
+  assert.equal(tolerated.direction.examples[0], slightlyLong.example, "短卡和展开示范都保留完整句子");
+  assert.equal(makeReportForScript(script, {coaching: {...shortCoaching, example: "例".repeat(161)}}).coaching, undefined, "防滥用上限仍有效");
+  const quoteScript = "现在还差十个星辰，欢迎新来的朋友，我们继续组队，现在还差两个星辰。";
+  const quoted = makeReportForScript(quoteScript, {coaching: {...shortCoaching, original: "现在还差十个星辰……现在还差两个星辰"}});
+  assert.equal(quoted.coaching.original, quoteScript.slice(0, -1), "唯一顺序匹配的省略引用还原原文，不截断或改写");
+  for (const original of ["现在还差十个星辰……不存在的送礼", "现在还差两个星辰……现在还差十个星辰"]) {
+    assert.equal(makeReportForScript(quoteScript, {coaching: {...shortCoaching, original}}).coaching, undefined, "伪造或倒序引用仍拒绝");
   }
   for (const example of ["你刚说想看新舞，补一手我就跳。", "你补一手就稳了。"] ) {
     const unsafe = makeReportForScript(script, {coaching: {...shortCoaching, example}});
@@ -3425,6 +3436,41 @@ assert.match(
   const redline=semanticReport({interaction_review:interaction});
   index.applyReportSafetyGates(redline,["红线测试"],{sourceScript:script,scenario});
   assert.equal(redline.verdict,"off","语义摘要不能绕过红线");
+}
+
+// Report repair is targeted, revalidated and bounded; a failed repair must not trigger browser retries.
+{
+  const savedFetch=globalThis.fetch;
+  try {
+    for(const streaming of [false,true]) for(const repairSucceeds of [false,true]) {
+      const requests=[];
+      const invalid={...structuredClone(upstreamReport),card_why:"你说了“完全不存在的另一段话”"};
+      globalThis.fetch=async(_url,options)=>{
+        requests.push(JSON.parse(options.body));
+        const report=requests.length===2&&repairSucceeds?upstreamReport:invalid;
+        return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify(report)}}],usage:{prompt_tokens:10,completion_tokens:20}}));
+      };
+      const env={ACCESS_CODE:"repair-test",DEEPSEEK_API_KEY:"test-key"};
+      const response=await index.default.fetch(new Request("https://local.test/api/coach",{
+        method:"POST",headers:{"Content-Type":"application/json",Accept:streaming?"application/x-ndjson":"application/json"},
+        body:JSON.stringify({accessCode:env.ACCESS_CODE,voteGap:"close",script:baseScript}),
+      }),env,{waitUntil(){}});
+      const payload=JSON.parse((await response.text()).trim().split("\n").at(-1));
+      assert.equal(requests.length,2,"最多一次针对报告的修正，不能无限重抽");
+      assert.equal(requests[1].messages[1].content,requests[0].messages[1].content,"修正不改变原稿与现场");
+      assert.match(requests[1].messages.at(-1).content,/点评引用了当前稿或现场不存在的原句/);
+      assert.deepEqual(JSON.parse(requests[1].messages.at(-1).content).invalidFields.map(item=>[item.field,item.quote]),[["card_why","完全不存在的另一段话"]],"修正必须定位到具体字段和错误引用");
+      if(repairSucceeds){
+        assert.equal(payload.ok,true);
+        assert.equal(payload.report.verdict,"passed");
+        assert.equal(payload.usage.prompt_tokens,20,"两次模型用量必须累计");
+      }else{
+        assert.equal(streaming?payload.status:response.status,502);
+        assert.equal(payload.retryable,false,"修正失败不能再让前端完整重跑");
+        assert.equal(payload.report,undefined,"无效报告不能降级冒充有效分数");
+      }
+    }
+  }finally{globalThis.fetch=savedFetch;}
 }
 
 // Stable review records: isolate same-flight merging, persistence, isolation, expiry and failures.

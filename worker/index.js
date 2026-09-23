@@ -192,7 +192,7 @@ const DEEPSEEK_CONFIG = {
 
 // 修改评分、安全闸门或案例标准时递增；提示词和模型配置也参与指纹。
 // 只复用已完成的检查，不用缓存把一个未经验证的模型输出变成标准答案。
-const REVIEW_VERSION = "2026-09-19-coaching-2";
+const REVIEW_VERSION = "2026-09-23-coaching-3";
 const REVIEW_TTL_SECONDS = 7 * 24 * 60 * 60;
 const reviewStores = new WeakMap();
 
@@ -424,7 +424,7 @@ export default {
       const status = err.status || 500;
       console.log(`coach error: ${Date.now() - startedAt}ms, status=${status}, ${err.message}`);
       return jsonResponse(
-        { error: true, message: err.publicMessage || "出错了，请重试" },
+        { error: true, message: err.publicMessage || "出错了，请重试", ...(err.retryable === false ? {retryable:false} : {}) },
         status,
         corsHeaders
       );
@@ -2675,13 +2675,27 @@ function validateManual(body) {
  * @param {{voteGap:string, script:string, cases:object[], redlineHits:string[], scenario:object|null}} params
  * @returns {Promise<{report:object, usage:{prompt_tokens:number, completion_tokens:number}}>}
  */
-async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario, revision = null }) {
+async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario, revision = null }, repair = null) {
   if (!env.DEEPSEEK_API_KEY) {
     throw new HttpError(503, "服务未配置", "DeepSeek key 未配置");
   }
 
   // 评分只看当前稿。旧稿与旧建议会造成模型沿用已删除的错误，不能进入评分上下文。
   const userPrompt = buildUserPrompt(voteGap, script, cases, redlineHits, scenario, null);
+  const deadline = repair?.deadline || Date.now() + DEEPSEEK_CONFIG.timeoutMs;
+  const messages = [
+    {role:"system", content:SYSTEM_PROMPT},
+    {role:"user", content:userPrompt},
+  ];
+  if (repair) {
+    messages.push({role:"assistant", content:JSON.stringify(repair.report)});
+    messages.push({role:"user", content:JSON.stringify({
+      task:"修正上一份报告的校验错误，返回完整JSON。原稿和现场未改变；不是要求改判通过。保持有证据的判断，重新核对相互矛盾之处。",
+      validationIssue:repair.issue,
+      invalidFields:repair.details || [],
+      rules:"引用必须逐字来自原稿或现场，概括表达不要加引号伪装成原话；coaching.original 选连续原文，不拼接。所有逐句编号完整保留，结论和核心状态一致。不要添加原稿未有的事实、示范承诺或通过门槛。",
+    })});
+  }
 
   let resp;
   try {
@@ -2699,12 +2713,9 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
         thinking: { type: "enabled" },
         reasoning_effort: "low",
         response_format: { type: "json_object" }, // 结构化输出，前端逐字段 textContent 渲染
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userPrompt },
-        ],
+        messages,
       }),
-      signal: AbortSignal.timeout(DEEPSEEK_CONFIG.timeoutMs),
+      signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
     });
   } catch (err) {
     if (err.name === "TimeoutError" || err.name === "AbortError") {
@@ -2732,26 +2743,46 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
   if (!report || typeof report !== "object" || !Array.isArray(report.line_reviews)) {
     throw new HttpError(502, "报告格式出错，请重试", "报告字段缺失");
   }
+  const rawReport = structuredClone(report);
+  const repairOrFail = async (issue, message, details = []) => {
+    // 单次请求最多修正一次，共用原来的90秒预算；不把冲突报告交给新人。
+    if (!repair && deadline - Date.now() >= 20000) {
+      console.log(`coach report repair: ${issue}`);
+      try {
+        const corrected = await callDeepSeek(env, {voteGap, script, cases, redlineHits, scenario}, {report:rawReport, issue, details, deadline});
+        corrected.usage.prompt_tokens += data?.usage?.prompt_tokens || 0;
+        corrected.usage.completion_tokens += data?.usage?.completion_tokens || 0;
+        return corrected;
+      } catch (err) {
+        err.retryable = false;
+        throw err;
+      }
+    }
+    const err = new HttpError(502, message, issue);
+    err.retryable = false;
+    throw err;
+  };
   if (report.line_reviews.some(item => item && Object.hasOwn(item, "segment"))) {
     const segments = JSON.parse(userPrompt).segments;
     if (!Array.isArray(segments) || report.line_reviews.length !== segments.length ||
         report.line_reviews.some((item, i) => item?.segment !== i)) {
-      throw new HttpError(502, "教练漏看了一句，原稿已保留，请重试。", "逐句编号不完整");
+      return repairOrFail("逐句编号不完整", "教练漏看了一句，原稿已保留，请重试。");
     }
     report.line_reviews = report.line_reviews.map((item, i) => ({original:segments[i],mark:item.mark,comment:item.comment}));
   }
   const interactionIssue = getInteractionReviewIssue(report, script, scenario, voteGap);
   if (interactionIssue) {
-    throw new HttpError(502, "教练没有核对清楚现场，这次未判分。原稿已保留，请重试。", interactionIssue);
+    return repairOrFail(interactionIssue, "教练没有核对清楚现场，这次未判分。原稿已保留，请重试。");
   }
   completeMissingEvidenceLabels(report);
   // 旧的“想看返场+再跳”词式晋级不能替代当前关系判断。
 
   const checked = normalizeReport(report, script);
   applyReportSafetyGates(checked, redlineHits, {sourceScript: script, scenario, voteGap});
-  const qualityIssue = getReportQualityIssue(checked, script, scenario);
+  const qualityDetails = [];
+  const qualityIssue = getReportQualityIssue(checked, script, scenario, qualityDetails);
   if (qualityIssue) {
-    throw new HttpError(502, "教练这次判断不一致，未给你判分。原稿已保留，请重试。", qualityIssue);
+    return repairOrFail(qualityIssue, "教练这次判断不一致，未给你判分。原稿已保留，请重试。", qualityDetails);
   }
 
   return {
@@ -2837,7 +2868,7 @@ export function getInteractionReviewIssue(report, script, scenario, voteGap) {
   return "";
 }
 
-export function getReportQualityIssue(report, sourceScript, scenario = null) {
+export function getReportQualityIssue(report, sourceScript, scenario = null, details = []) {
   for (const field of ["_lineReviewsContractValid", "_structureContractValid", "_safetyFieldsContractValid", "_roundDynamicsContractValid"]) {
     if (!report[field]) return `报告证据契约不完整：${field}`;
   }
@@ -2868,16 +2899,20 @@ export function getReportQualityIssue(report, sourceScript, scenario = null) {
     }
     return true;
   };
-  const diagnoses = [report.verdict_reason, report.card_why, ...report.line_reviews.map(item => item.comment)];
-  for (const text of diagnoses) {
+  const diagnoses = [["verdict_reason", report.verdict_reason], ["card_why", report.card_why], ...report.line_reviews.map((item,i) => [`line_reviews[${i}].comment`, item.comment])];
+  let invalidQuote = false;
+  for (const [field, text] of diagnoses) {
     for (const match of String(text || "").matchAll(/[“「]([^”」]{4,})[”」]/gu)) {
       const quote = compact(match[1]);
       // 指出“你把他的条件听成承诺”时必须允许引用真实现场；不能把
       // 用户刚说的那句话要求也出现在主播稿里。只认单条事实中的原文。
-      if (!quotedFromSource(quote) && !sceneQuotes.some(fact => fact.includes(quote))) return "点评引用了当前稿或现场不存在的原句";
+      if (!quotedFromSource(quote) && !sceneQuotes.some(fact => fact.includes(quote))) {
+        invalidQuote = true;
+        details.push({field, quote, correction:"此引号内容在原稿及现场找不到。改为真实逐字引用；若只是概括，移除引号并准确说明含义，不假称原话。"});
+      }
     }
   }
-  return "";
+  return invalidQuote ? "点评引用了当前稿或现场不存在的原句" : "";
 }
 
 /**
@@ -3149,7 +3184,7 @@ export function normalizeReport(report, sourceScript) {
       ? rawDirection.examples
           .filter((x) => typeof x === "string")
           .map((x) => x.trim())
-          .filter(x => x && Array.from(x).length <= 55)
+          .filter(x => x && Array.from(x).length <= 160)
           .slice(0, 1)
       : [],
   };
@@ -3236,10 +3271,25 @@ export function normalizeReport(report, sourceScript) {
     };
   }
 
-  // 新版短带教是可选增量，旧客户端/旧报告继续可用。超长或伪造原句不截半句，
-  // 整卡退回已有报告字段；原有完整拆解仍保留在展开区。
-  const coaching = report.coaching;
-  const coachingLimits = { focus_key: 32, keep: 40, original: 60, action: 45, example: 55, why: 50 };
+  // 提示词字数是写作目标，不是正确性边界。少量超字不能丢掉整份有效批改；
+  // 独立设置较宽的防滥用上限，保留完整句子，伪造引用仍拒绝。
+  let coaching = report.coaching;
+  // 只展开能在原稿中唯一、顺序匹配的省略引用；不做同义改写或猜测匹配。
+  // 展开后仍经过原文、长度及示范安全校验，不能用省略号隐藏虚构片段。
+  if (typeof coaching?.original === "string" && typeof sourceScript === "string" &&
+      /…|\.{3}/u.test(coaching.original) && !compactWhitespace(sourceScript).includes(compactWhitespace(coaching.original))) {
+    const source = compactWhitespace(sourceScript);
+    const parts = compactWhitespace(coaching.original).split(/…+|\.{3,}/u);
+    if (parts.length >= 2 && parts.every(part => Array.from(part).length >= 4 &&
+        source.indexOf(part) !== -1 && source.indexOf(part) === source.lastIndexOf(part))) {
+      const positions = parts.map(part => source.indexOf(part));
+      if (positions.every((position, i) => i === 0 || position >= positions[i - 1] + parts[i - 1].length)) {
+        const original = source.slice(positions[0], positions.at(-1) + parts.at(-1).length);
+        if (Array.from(original).length <= 200) coaching = {...coaching, original};
+      }
+    }
+  }
+  const coachingLimits = { focus_key: 32, keep: 120, original: 200, action: 120, example: 160, why: 160 };
   if (coaching && typeof coaching === "object" && !Array.isArray(coaching) &&
       Object.entries(coachingLimits).every(([key, max]) =>
         typeof coaching[key] === "string" && coaching[key].trim().length > 0 && Array.from(coaching[key]).length <= max) &&
@@ -3258,7 +3308,7 @@ export function normalizeReport(report, sourceScript) {
   }
   if (report.verdict === "passed" && report.interaction_review && normalized.coaching) {
     const keep = normalized.coaching.original;
-    if (Array.from(keep).length <= 55) {
+    if (Array.from(keep).length <= 160) {
       normalized.coaching.action = "保留这版，开口练并观察回应";
       normalized.coaching.example = keep;
       normalized.direction = { summary: normalized.coaching.action, examples: [keep] };
@@ -3354,7 +3404,7 @@ function streamCoachResponse(run, corsHeaders, startedAt) {
       } catch (err) {
         const status = err.status || 500;
         console.log(`coach error: ${Date.now() - startedAt}ms, status=${status}, ${err.message}`);
-        payload = { error: true, status, message: err.publicMessage || "出错了，请重试" };
+        payload = { error: true, status, message: err.publicMessage || "出错了，请重试", ...(err.retryable === false ? {retryable:false} : {}) };
       }
       clearInterval(heartbeat);
       send(JSON.stringify(payload));

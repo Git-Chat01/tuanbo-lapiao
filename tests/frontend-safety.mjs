@@ -1325,6 +1325,20 @@ async function testStreamedErrorPayloadKeepsBusinessStatus() {
     );
   });
   assert.deepEqual(secondError, { status: 503, message: "教练这会儿忙不过来，稍后再试。" });
+  for (const httpStatus of [200,502]) {
+    let count=0, caught=null;
+    const repairedContext=createBrowserContext({
+      API_BASE:"https://coach.example.test",App:{getAccessCode(){return "code-1";},toast(){}},
+      fetch(){count++;return Promise.resolve(fakeResponse(httpStatus,{error:true,status:502,retryable:false,message:"报告修正后仍不一致"}));},
+    });
+    loadScript(repairedContext,"site/js/api.js");
+    await new Promise(resolve=>repairedContext.Api.submit({voteGap:"close",script:"这是一段足够长的测试话术"},{
+      onError(status,message){caught={status,message};},onFinish:resolve,
+    }));
+    assert.equal(count,1,"服务端已修正一次的失败不可再次自动重跑");
+    assert.deepEqual(caught,{status:502,message:"报告修正后仍不一致"});
+    assert.equal(repairedContext.Api._inFlight,false);
+  }
 }
 
 async function testTimeoutWithoutAbortControllerInvalidatesLateResponse() {

@@ -48,6 +48,7 @@ var Api = {
         if (!res.ok || (data && data.error)) {
           var apiError = new Error(data && data.message ? data.message : "请求失败");
           apiError.status = status;
+          apiError.retryable = data && data.retryable;
           throw apiError;
         }
         return data;
@@ -137,7 +138,7 @@ var Api = {
       // 预算不够就别重试：90 秒超时后只剩十几秒，第二次注定跑不完，
       // 用户却要多等一轮（实测“等了两分钟”就是这么来的）。
       var remainingBudget = Api._timeoutMs - (Date.now() - submittedAt);
-      if ((status === 502 || status === 503 || status === 504) && !retried && remainingBudget >= Api._retryMinBudgetMs) {
+      if (err.retryable !== false && (status === 502 || status === 503 || status === 504) && !retried && remainingBudget >= Api._retryMinBudgetMs) {
         retried = true;
         return Promise.race([new Promise(function (resolve) {
           setTimeout(resolve, 1500);
