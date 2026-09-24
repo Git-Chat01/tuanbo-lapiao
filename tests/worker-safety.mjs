@@ -23,7 +23,7 @@ async function loadIndexModule() {
     )
     .replace(
       /import \{\s*retrieveCases,\s*tryAbsorb,\s*addManualCase,\s*publishCase,\s*listAdminCases,\s*softDeleteCase,?\s*\} from "\.\/cases\.js";/,
-      "const retrieveCases = async (...args) => { globalThis.__retrieveCasesArgs = args; return []; }; const tryAbsorb = async (...args) => { globalThis.__tryAbsorbArgs = args; return null; }; const addManualCase = async () => ''; const publishCase = async (...args) => { globalThis.__publishCaseArgs = args; return globalThis.__publishCaseResult || { ok: true, alreadyPublished: false, publishedAt: 1 }; }; const listAdminCases = async () => ({ items: [] }); const softDeleteCase = async () => false;"
+      "const retrieveCases = async (...args) => { globalThis.__retrieveCasesArgs = args; if (globalThis.__retrieveCasesError) throw new Error('case lookup unavailable'); return globalThis.__retrievedCases || []; }; const tryAbsorb = async (...args) => { globalThis.__tryAbsorbArgs = args; return null; }; const addManualCase = async () => ''; const publishCase = async (...args) => { globalThis.__publishCaseArgs = args; return globalThis.__publishCaseResult || { ok: true, alreadyPublished: false, publishedAt: 1 }; }; const listAdminCases = async () => ({ items: [] }); const softDeleteCase = async () => false;"
     )
     .replace(
       'import { detectRedline } from "./redlines.js";',
@@ -35,6 +35,7 @@ async function loadIndexModule() {
 class MemoryKV {
   constructor(entries = []) {
     this.values = new Map(entries.map(([key, value]) => [key, JSON.stringify(value)]));
+    this.putKeys = [];
   }
 
   async list({ prefix = "" } = {}) {
@@ -51,6 +52,7 @@ class MemoryKV {
   }
 
   async put(key, value) {
+    this.putKeys.push(key);
     this.values.set(key, value);
   }
 }
@@ -58,6 +60,7 @@ class MemoryKV {
 const cases = await loadCasesModule();
 const prompt = await loadPromptModule();
 const index = await loadIndexModule();
+const currentReviewSource = await readFile(new URL("../worker/current-review.js", import.meta.url), "utf8");
 
 assert.match(prompt.SYSTEM_PROMPT, /姿态判断与用户支点判断是两条独立轴/u);
 assert.match(prompt.SYSTEM_PROMPT, /“?帮我组一组“?.{0,80}不是求情/u);
@@ -117,6 +120,8 @@ assert.match(prompt.SYSTEM_PROMPT, /现场拉票自然口径说“多少个 \/ �
 assert.match(prompt.SYSTEM_PROMPT, /“医药费”.{0,120}不是真实债务/u);
 assert.match(prompt.SYSTEM_PROMPT, /phase=awaiting_drop.{0,180}等主持统一口令/u);
 assert.match(prompt.SYSTEM_PROMPT, /phase=delivery.{0,180}实际到账.{0,80}不再继续等/u);
+assert.match(currentReviewSource, /长期没有实质表演或互动.{0,80}密集重复/u);
+assert.match(currentReviewSource, /表演后一次按真实进度邀请.{0,50}不能按这些词单独判违规/u);
 assert.match(prompt.SYSTEM_PROMPT, /复活倒计时由主持.{0,100}动态把控/u);
 assert.match(prompt.SYSTEM_PROMPT, /rank\/TOP 公告只是榜单结果播报/u);
 assert.match(prompt.SYSTEM_PROMPT, /(?:多个用户|切换用户|人名切换|轮流点名).{0,160}(?:不能|不得).{0,80}(?:错人|不匹配|降级)/u);
@@ -2144,6 +2149,32 @@ assert.equal(
 );
 assert.doesNotMatch(activeDeliveryGood.round_dynamics.next_move, /继续等.{0,8}主持/u);
 
+for (const [phase, cheerScript] of [
+  ["awaiting_drop", "我们组齐了，等主持统一喊，大家继续加油。"],
+  ["delivery", "谢谢大家，礼物都到账了，咱们继续加油。"],
+  ["awaiting_drop", "我们组齐了，等主持统一喊，稍后再上一段舞。"],
+  ["delivery", "谢谢大家，礼物都到账了，稍后再上一段舞。"],
+]) {
+  const cheer = makeReportForScript(cheerScript, {line_reviews:index.splitHardSentences(cheerScript)
+    .map(original=>({original,mark:"good",comment:"当前表达成立。"}))});
+  index.applyReportSafetyGates(cheer, [], {sourceScript:cheerScript,scenario:{phase}});
+  assert.equal(cheer.structure_checks.find(item => item.key === "vote_instruction").status,"met",
+    `${phase} 阶段的鼓劲或下一段表演不能误判为继续找人认领`);
+  assert.equal(cheer.verdict,"passed",`${phase} 阶段没有新增票请求时仍应通过`);
+  assert.ok(cheer.line_reviews.every(item => item.mark !== "wrong"));
+}
+for (const [phase, renewedAskScript] of [
+  ["awaiting_drop", "我们组齐了，等主持统一喊。大家继续加油，再送一手。"],
+  ["delivery", "谢谢大家，礼物都到账了。大家继续加油，再送一手。"],
+]) {
+  const renewedAsk=makeReportForScript(renewedAskScript, {line_reviews:index.splitHardSentences(renewedAskScript)
+    .map(original=>({original,mark:"good",comment:"当前表达成立。"}))});
+  index.applyReportSafetyGates(renewedAsk, [], {sourceScript:renewedAskScript,scenario:{phase}});
+  assert.notEqual(renewedAsk.verdict,"passed",
+    `${phase} 阶段的“再送一手”是新请求，不能被前面的“继续加油”掩盖`);
+  assert.ok(renewedAsk.line_reviews.some(item => item.mark === "wrong"));
+}
+
 const activeDeliveryStillWaiting = makeRawReport({
   round_dynamics: validRoundDynamics({ next_move: "继续等主持口令。" }),
   direction: { summary: "大家继续等主持口令。", examples: [] },
@@ -3484,6 +3515,49 @@ assert.match(
   }finally{globalThis.fetch=savedFetch;}
 }
 
+// Out-of-range semantic references need the exact 0-based map in the repair turn.
+{
+  const script="阿沐，你刚说想看后半段，我接着跳给你看。现在还差最后一手，你愿意搭一把吗？";
+  const segments=index.splitHardSentences(script);
+  assert.equal(segments.length,2);
+  const good={...structuredClone(upstreamReport),
+    interaction_review:{signal_refs:["script:0"],script_refs:[0,1],judgment:"aligned",
+      reading:"原稿先接住观看兴趣，再邀请对方选择。",why:"按稿内表达试探，仍要观察回应。",next_check:"看阿沐是否接话。"},
+    line_reviews:segments.map(original=>({original,mark:"good",comment:"原句有明确回应。"})),
+  };
+  const savedFetch=globalThis.fetch;
+  const requests=[];
+  globalThis.fetch=async(_url,options)=>{
+    requests.push(JSON.parse(options.body));
+    const report=structuredClone(good);
+    if(requests.length===1) report.interaction_review.script_refs=[0,4];
+    return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify(report)}}],
+      usage:{prompt_tokens:10,completion_tokens:20}}),{status:200});
+  };
+  try{
+    const env={ACCESS_CODE:"reference-repair-test",DEEPSEEK_API_KEY:"test-key"};
+    const response=await index.default.fetch(new Request("https://local.test/api/coach",{
+      method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({accessCode:env.ACCESS_CODE,voteGap:"close",script}),
+    }),env,{waitUntil(){}});
+    assert.equal(response.status,200);
+    const payload=await response.json();
+    assert.equal(payload.report.interaction_review.judgment,"aligned");
+    assert.deepEqual(payload.report.interaction_review.script_refs,[0,1]);
+    assert.equal(requests.length,2,"越界引用只允许一次有针对性的报告修正");
+    assert.equal(requests[1].messages[1].content,requests[0].messages[1].content,
+      "修正时原稿与现场不得改变");
+    const repair=JSON.parse(requests[1].messages.at(-1).content);
+    assert.equal(repair.validationIssue,"现场判断引用了不存在的原稿段落");
+    assert.deepEqual(repair.invalidFields,[{
+      field:"interaction_review.script_refs",originalScriptRefs:[0,4],originalSignalRefs:["script:0"],
+      validScriptRefRange:"0..1 (0-based)",indexedSegments:segments.map((text,index)=>({index,text})),
+      correction:"按上面的原稿分句重新选择实际引用的编号；不要猜测或沿用越界编号。",
+    }],"修正请求须给出原始错误引用、合法索引范围和逐句原文");
+    assert.equal(payload.usage.prompt_tokens,20,"修正轮模型用量应累计");
+  }finally{globalThis.fetch=savedFetch;}
+}
+
 // Stable review records: isolate same-flight merging, persistence, isolation, expiry and failures.
 {
   const env = {CASES:new MemoryKV()};
@@ -3492,7 +3566,18 @@ assert.match(
   assert.notEqual(key, await index.reviewRecordKey("one", "far", baseScript, null));
   assert.notEqual(key, await index.reviewRecordKey("one", "close", baseScript + "新句", null));
   assert.notEqual(key, await index.reviewRecordKey("one", "close", baseScript, {phase:"delivery"}));
+  const firstLesson = [{whyGood:"公开经验甲"}];
+  const secondLesson = [{whyGood:"公开经验乙"}];
+  const lessonKey = await index.reviewRecordKey("one", "close", baseScript, null, firstLesson);
+  assert.notEqual(key, lessonKey,"当前报告必须区别于供复练查找的稳定历史键");
+  assert.notEqual(lessonKey, await index.reviewRecordKey("one", "close", baseScript, null, secondLesson),"已选案例经验改变必须刷新评分缓存");
+  const threeLessons=[...firstLesson,{whyGood:"经验二"},{whyGood:"经验三"}];
+  assert.equal(await index.reviewRecordKey("one", "close", baseScript, null, threeLessons),
+    await index.reviewRecordKey("one", "close", baseScript, null,
+      [...firstLesson,{whyGood:""},{whyGood:"经验二"},{whyGood:"经验三"},{whyGood:"第四条不进入提示词"}]),
+    "只有真正进入提示词的前三条经验参与指纹");
   assert.doesNotMatch(key, /凯哥|one/);
+  assert.doesNotMatch(lessonKey, /公开经验甲|凯哥|one/,"键只存摘要，不暴露案例或话术");
   let calls = 0;
   const generate = async () => {calls++; await new Promise(resolve => setTimeout(resolve, 5)); return {ok:true,report:structuredClone(upstreamReport),usage:{}};};
   const [first, second] = await Promise.all([index.reuseReview(env,key,generate),index.reuseReview(env,key,generate)]);
@@ -3517,6 +3602,66 @@ assert.match(
   await index.reuseReview(broken,key,generate);
   await index.reuseReview(broken,key,generate);
   assert.equal(calls,5,"KV故障时同实例仍复用已完成结果");
+}
+
+// A newly published or edited reference lesson refreshes the actual coach route,
+// while revision lookup still finds the latest report through the stable key.
+{
+  const env={ACCESS_CODE:"lesson-cache-test",DEEPSEEK_API_KEY:"test-key",CASES:new MemoryKV()};
+  const savedFetch=globalThis.fetch;
+  let modelCalls=0;
+  globalThis.fetch=async()=>{
+    modelCalls++;
+    const report=structuredClone(upstreamReport);
+    report.verdict_reason=`本次批改 ${modelCalls}`;
+    report.line_reviews=[{original:globalThis.__lastBuildUserPromptArgs[1],mark:"good",comment:"当前邀请成立。"}];
+    return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify(report)}}],usage:{prompt_tokens:1,completion_tokens:1}}),{status:200});
+  };
+  const submit=async(script,revision)=>{
+    const response=await index.default.fetch(new Request("https://local.test/api/coach",{
+      method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({accessCode:env.ACCESS_CODE,voteGap:"close",script,...(revision?{revision}:{})}),
+    }),env,{waitUntil(){}});
+    assert.equal(response.status,200);
+    return response.json();
+  };
+  try{
+    globalThis.__retrievedCases=[{source:"manual",whyGood:"公开经验甲"}];
+    const initial=await submit(baseScript);
+    assert.equal(initial.report.verdict_reason,"本次批改 1");
+    assert.equal(modelCalls,1);
+    globalThis.__retrievedCases=[{source:"manual",whyGood:"公开经验乙"}];
+    const refreshed=await submit(baseScript);
+    assert.equal(refreshed.report.verdict_reason,"本次批改 2","新发布经验须得到新报告");
+    assert.equal(modelCalls,2);
+    const aliasKey=await index.reviewRecordKey(env.ACCESS_CODE,"close",baseScript,null);
+    const selectedKey=await index.reviewRecordKey(env.ACCESS_CODE,"close",baseScript,null,globalThis.__retrievedCases);
+    assert.equal(JSON.parse(env.CASES.values.get(aliasKey)).sourceKey,selectedKey,"历史别名应记录当前案例指纹");
+    const aliasWritesAfterRefresh=env.CASES.putKeys.filter(key=>key===aliasKey).length;
+    assert.equal((await submit(baseScript)).report.verdict_reason,"本次批改 2");
+    assert.equal(modelCalls,2,"经验未变时同稿仍复用缓存");
+    assert.equal(env.CASES.putKeys.filter(key=>key===aliasKey).length,aliasWritesAfterRefresh,
+      "同一版本的缓存命中不应反复写历史别名");
+    const savedAlias=env.CASES.values.get(aliasKey);
+    globalThis.__retrieveCasesError=true;
+    const degraded=await submit(baseScript);
+    assert.deepEqual(degraded.report,refreshed.report,
+      "案例检索暂时失败时应返回同稿同现场已服务报告，而非空案例重判");
+    assert.equal(modelCalls,2,"有历史报告时检索故障不得再次调用模型");
+    assert.equal(env.CASES.values.get(aliasKey),savedAlias,
+      "检索故障不应把历史别名覆盖成空案例报告");
+    const unseenScript=baseScript.replace("我还差十票","我还差九票");
+    const unseen=await submit(unseenScript);
+    assert.equal(unseen.ok,true,"没有历史报告时仍应允许空案例降级批改");
+    assert.equal(modelCalls,3,"新稿检索故障应进行一次新判断");
+    globalThis.__retrieveCasesError=false;
+    const historyKey=await index.reviewRecordKey(env.ACCESS_CODE,"close",baseScript,null);
+    assert.equal((await index.readReviewRecord(env,historyKey)).report.verdict_reason,"本次批改 2","复练历史指向用户最近看到的报告");
+    const revisedScript=baseScript.replace("我还差十票","我现在还差十票");
+    const revised=await submit(revisedScript,{previousScript:baseScript,focusKey:"user_reason",instruction:"接住观众兴趣"});
+    assert.deepEqual(revised.report.revision_check?.focus_key,"user_reason");
+    assert.equal(revised.report.revision_check?.status,"resolved","案例变化后仍能读取上一版用于复练");
+  }finally{globalThis.fetch=savedFetch;delete globalThis.__retrievedCases;delete globalThis.__retrieveCasesError;}
 }
 {
   const oldScript="凯哥，你这五个已经到账了。大家再帮我组一下。";
@@ -3561,7 +3706,10 @@ assert.match(
   const previous={verdict:"almost",coaching:{focus_key:"user_reason",original:"我还差二十票",example:"我还差十票"}};
   const current={verdict:"almost",structure_checks:[{key:"user_reason",status:"partial",evidence:"仍未接上理由"}]};
   for(const [script,report] of [[oldScript,previous],[baseScript,current]]){
-    await index.reuseReview(env,await index.reviewRecordKey(env.ACCESS_CODE,"close",script,null),async()=>({ok:true,report,usage:{}}));
+    const key=await index.reviewRecordKey(env.ACCESS_CODE,"close",script,null,[]);
+    await index.reuseReview(env,key,async()=>({ok:true,report,usage:{}}));
+    if(script===oldScript) await index.reuseReview(env,
+      await index.reviewRecordKey(env.ACCESS_CODE,"close",script,null),async()=>({ok:true,report,usage:{}}));
   }
   for(const streaming of [false,true]){
     const response=await index.default.fetch(new Request("https://local.test/api/coach",{

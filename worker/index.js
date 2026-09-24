@@ -192,13 +192,27 @@ const DEEPSEEK_CONFIG = {
 
 // 修改评分、安全闸门或案例标准时递增；提示词和模型配置也参与指纹。
 // 只复用已完成的检查，不用缓存把一个未经验证的模型输出变成标准答案。
-const REVIEW_VERSION = "2026-09-23-coaching-4";
+const REVIEW_VERSION = "2026-09-24-independent-1";
 const REVIEW_TTL_SECONDS = 7 * 24 * 60 * 60;
 const reviewStores = new WeakMap();
 
-export async function reviewRecordKey(accessCode, voteGap, script, scenario) {
-  const input = JSON.stringify([REVIEW_VERSION, SYSTEM_PROMPT, DEEPSEEK_CONFIG,
-    accessCode, voteGap, script, scenario]);
+// Match buildUserPrompt's actual referenceLessons projection. Only the selected,
+// published lesson text can change the model input; case metadata cannot.
+function selectedReferenceLessons(cases) {
+  return (Array.isArray(cases) ? cases : [])
+    .map((item) => item?.whyGood)
+    .filter((item) => typeof item === "string" && item.trim())
+    .slice(0, 3);
+}
+
+export async function reviewRecordKey(accessCode, voteGap, script, scenario, cases = null) {
+  const inputParts = [REVIEW_VERSION, SYSTEM_PROMPT, DEEPSEEK_CONFIG,
+    accessCode, voteGap, script, scenario];
+  // Omitted cases retain the stable history key used by revision.previousScript.
+  // Current reviews always pass cases (including []), so a newly published or
+  // edited lesson gets a fresh cache key without putting its text in the key.
+  if (cases !== null) inputParts.push(selectedReferenceLessons(cases));
+  const input = JSON.stringify(inputParts);
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
   return "review:" + Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
 }
@@ -233,6 +247,26 @@ export async function readReviewRecord(env, key) {
   return structuredClone(record.result);
 }
 
+async function writeReviewRecord(env, key, result, sourceKey = null) {
+  const store = reviewStore(env);
+  if (!store) return;
+  const record = { version: REVIEW_VERSION, expiresAt: Date.now() + REVIEW_TTL_SECONDS * 1000,
+    result: structuredClone(result), ...(sourceKey ? {sourceKey} : {}) };
+  rememberReview(store, key, record);
+  try { await env.CASES.put(key, JSON.stringify(record), { expirationTtl: REVIEW_TTL_SECONDS }); }
+  catch { console.log("review write degraded"); }
+}
+
+async function keepLatestReviewForRevision(env, historyKey, recordKey, result) {
+  const store = reviewStore(env);
+  if (!store) return;
+  // Same selected lessons and same script: don't rewrite the alias on every
+  // cached request. A newly selected lesson gets a new recordKey and refreshes it.
+  await readReviewRecord(env, historyKey);
+  if (store.records.get(historyKey)?.sourceKey === recordKey) return;
+  await writeReviewRecord(env, historyKey, result, recordKey);
+}
+
 export async function reuseReview(env, key, generate) {
   const store = reviewStore(env);
   if (!store) return generate();
@@ -241,11 +275,7 @@ export async function reuseReview(env, key, generate) {
       const saved = await readReviewRecord(env, key);
       if (saved) return saved;
       const result = await generate(); // 错误绝不保存；复练反馈不写入基础报告。
-      const record = { version: REVIEW_VERSION, expiresAt: Date.now() + REVIEW_TTL_SECONDS * 1000,
-        result: structuredClone(result) };
-      rememberReview(store, key, record);
-      try { await env.CASES.put(key, JSON.stringify(record), { expirationTtl: REVIEW_TTL_SECONDS }); }
-      catch { console.log("review write degraded"); }
+      await writeReviewRecord(env, key, result);
       return result;
     })();
     store.pending.set(key, pending);
@@ -337,8 +367,13 @@ export default {
       // 红线检测（纯词表，不调模型）——命中不拒批，作用在判定与吸收两个闸门
       const redlineHits = detectRedline(body.script);
 
-      // 检索参照案例：失败降级 cases=[] 继续批（批改是主价值，案例是增量）
+      // 复练历史键只跟当前稿和现场有关；案例检索短暂故障时也能找回
+      // 同版本已交给学员的报告，避免退回空案例再判出另一套结果。
+      const historyKey = await reviewRecordKey(body.accessCode, body.voteGap, body.script, scenario);
+
+      // 案例检索失败时先复用同稿已服务报告；冷启动才用 cases=[] 继续批。
       let cases = [];
+      let savedOnCaseFailure = null;
       try {
         cases = await retrieveCases(env, {
           voteGap: body.voteGap,
@@ -347,12 +382,14 @@ export default {
         });
       } catch (err) {
         console.log(`cases retrieve fail (degraded): ${err.message}`);
+        savedOnCaseFailure = await readReviewRecord(env, historyKey);
       }
 
       // 生成阶段包成一个函数：非流式走原来的 jsonResponse，流式交给 streamCoachResponse。
       // 两种路径跑的是同一份逻辑与同一套安全闸门，不会分叉。
       const revision = normalizeRevision(body.revision);
-      const recordKey = await reviewRecordKey(body.accessCode, body.voteGap, body.script, scenario);
+      const recordKey = savedOnCaseFailure ? null
+        : await reviewRecordKey(body.accessCode, body.voteGap, body.script, scenario, cases);
       const previous = revision && revision.previousScript !== body.script.trim()
         ? await readReviewRecord(env, await reviewRecordKey(body.accessCode, body.voteGap, revision.previousScript, scenario))
         : null;
@@ -408,9 +445,14 @@ export default {
       };
 
       const generate = async () => {
-        const result = await reuseReview(env, recordKey, evaluate);
+        const result = savedOnCaseFailure
+          ? structuredClone(savedOnCaseFailure)
+          : await reuseReview(env, recordKey, evaluate);
         const conflict = getRevisionConflict(result.report, revision, body.script, previous?.report);
         if (conflict) throw new HttpError(409, conflict, "coach example and recheck conflict");
+        // Preserve the latest report actually served to the user for revisions,
+        // even if published reference lessons changed after the prior request.
+        if (!savedOnCaseFailure) await keepLatestReviewForRevision(env, historyKey, recordKey, result);
         applyRevisionFeedback(result.report, revision, body.script, previous?.report);
         return result;
       };
@@ -1390,9 +1432,13 @@ function hasResultConnectionInstruction(sourceScript) {
 function hasNewClaimPressure(sourceScript) {
   const extraClaim =
     /(?:还差.{0,12}(?:谁|有没有|再)|(?:谁来|谁能|有没有人|(?:还有|有)?谁(?:愿意|可以|想|能|来)?).{0,12})(?:补|组|认领|认一|抓|加|上|投|抹|接)|(?:继续|再来|还要).{0,8}(?:拉|要|组|认领|认一|抓|补|加|抹|接)|(?:愿不愿意|是否愿意|要不要|能不能).{0,12}(?:补位|再补|认领|认一|抓|加一个|加一手|再上|抹零|接一半)|(?:我|那我)(?:来|再|也)?(?:认一(?:个|手|份)|抓一下|抓最后一(?:个|手|份)|加一(?:个|手|份)|抹(?:个)?零|接一半)|(?:再|继续)(?:认一(?:个|手|份)|抓一下|抓最后一(?:个|手|份)|加一(?:个|手|份)|抹(?:个)?零|接一半)|(?:帮我|麻烦|来)(?:补|组|认|抓|加|抹|接).{0,8}|(?:加一(?:个|手|份)|认一(?:个|手|份)|抓一下|抹(?:个)?零|接一半)(?:吧|呀|啊)?$/u;
+  // Require a gift unit or gift noun. “再上一段舞”是节目，不是新增上票。
+  const renewedDelivery = /(?:再|继续|还要).{0,4}(?:送|丢|投|上)(?:(?:一|两|几|\d+)(?:手|票|份|张|个(?:票|礼物))|(?:票|礼物)|(?:些|点)(?:票|礼物))/u;
   return splitHardSentences(withoutAttributedQuotedText(String(sourceScript || ""))).some((sentence) => {
-    const compact = stripNegatedCurrentActions(sentence.replace(/\s+/g, ""));
-    return Boolean(compact && extraClaim.test(compact));
+    // “大家继续加油”是鼓劲，不是重新找人加占位；礼物名“加油票”等仍保留原词。
+    const compact = stripNegatedCurrentActions(sentence.replace(/\s+/g, ""))
+      .replace(/加油(?!票|礼物|卡)/gu, "打气");
+    return Boolean(compact && (extraClaim.test(compact) || renewedDelivery.test(compact)));
   });
 }
 
@@ -2800,7 +2846,19 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
   normalizeOneBasedScriptRefs(report, script);
   const interactionIssue = getInteractionReviewIssue(report, script, scenario, voteGap);
   if (interactionIssue) {
-    return repairOrFail(interactionIssue, "教练没有核对清楚现场，这次未判分。原稿已保留，请重试。");
+    const details = [];
+    if (interactionIssue === "现场判断引用了不存在的原稿段落") {
+      const segments = splitHardSentences(script);
+      details.push({
+        field:"interaction_review.script_refs",
+        originalScriptRefs:rawReport.interaction_review?.script_refs ?? null,
+        originalSignalRefs:rawReport.interaction_review?.signal_refs ?? null,
+        validScriptRefRange:`0..${segments.length - 1} (0-based)`,
+        indexedSegments:segments.map((text,index)=>({index,text})),
+        correction:"按上面的原稿分句重新选择实际引用的编号；不要猜测或沿用越界编号。",
+      });
+    }
+    return repairOrFail(interactionIssue, "教练没有核对清楚现场，这次未判分。原稿已保留，请重试。", details);
   }
   completeMissingEvidenceLabels(report);
   // 旧的“想看返场+再跳”词式晋级不能替代当前关系判断。

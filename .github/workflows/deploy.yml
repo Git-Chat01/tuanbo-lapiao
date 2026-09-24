@@ -1,4 +1,4 @@
-# CI：push master → 跑两套安全测试；只有 site/ 真的变了才发布到 gh-pages
+# CI：push master → 跑 Worker、前端和独立对照矩阵三套静态检查；只有 site/ 真的变了才发布到 gh-pages
 # 也可以手动触发（workflow_dispatch）强制重发前端，见下方 on: 处的说明
 # 沿用 expense-tracker 的模式（peaceiris 直接推分支，绕过官方部署 API）
 # ⚠️ 关键差异：publish_dir 是 ./site 而不是 . —— 保证 worker/ 与 .dev.vars 绝不进公开的 gh-pages 分支
@@ -40,6 +40,7 @@ jobs:
         run: |
           node tests/worker-safety.mjs
           node tests/frontend-safety.mjs
+          node tests/independent-matrix.mjs
 
   deploy:
     needs: test

@@ -1,6 +1,6 @@
 # 批改质量发布门槛（v4）
 
-这套用例检查的不是接口“能不能返回”，而是真实模型是否理解团播复活场里的主播、主持和用户博弈。部署前必须跑完 **12 类、18 次请求**；任一机器硬断言失败，或人工检查出现关键误读，都先迭代 `worker/prompt.js`，再全量重跑。
+这份文档保留 v4 的 12 类、18 次请求历史验收设计，用于核对团播复活场里的主播、主持和用户博弈。当前评审逻辑在 `worker/current-review.js`，独立的九组对照在 `tests/independent-fixtures.mjs`；当前发布应运行 `node tests/worker-safety.mjs`、`node tests/frontend-safety.mjs`、`node tests/independent-matrix.mjs`，并在配置真实模型的本地环境运行 `node tests/semantic-live.mjs --live --suite=independent --label=independent-check`，人工复核关键误读。下文的 v4 数字门槛不直接代表当前报告契约。
 
 > 安全边界：通过稿会生成学习候选。质量跑批只能连接本机 Worker 和本地/测试 KV，严禁连接生产 Worker。`tests/model-quality.mjs` 会拒绝所有非 loopback `BASE`。
 
@@ -214,7 +214,7 @@ node tests/model-quality.mjs
 |------|------------------|----------|----------|------------|----------|
 | 2026-08-24 | Worker `53e8eafd-2c5a-4e1f-b3fb-e349166f41f3` | deepseek-chat | 10/10 PASS | Codex 语义复核 + P0/P1 门禁复审 | 22/22 接口烟测通过，案例 4/5/8 语义通过，无阻断 |
 
-当前发布门槛：18/18 机器通过，案例 1 两轮均 passed，并且案例 4、5、8、9、10、11、12 的人工语义检查通过。上表 2026-08-24 记录是 v4 动态闭环上线前的历史发布结果。
+当时的 v4 发布门槛：18/18 机器通过，案例 1 两轮均 passed，并且案例 4、5、8、9、10、11、12 的人工语义检查通过。上表 2026-08-24 记录是 v4 动态闭环上线前的历史发布结果；当前独立对照的通过情况应以对应真实模型跑批结果为准。
 
 ## v2/v3 历史基线（仅供 prompt 迭代参考，不代表 v4 已通过）
 
