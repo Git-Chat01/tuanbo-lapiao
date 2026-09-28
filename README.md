@@ -113,7 +113,7 @@ tests/
 {
   "accessCode": "...",
   "voteGap": "far|close|secured",
-  "script": "20~500 字",
+  "script": "非空，最多 500 字",
   "scenario": {
     "id": "可选",
     "roleContext": "你是台上正在拉票复活的新人主播",
@@ -268,3 +268,20 @@ BASE=http://127.0.0.1:8787 CODE=... ADMIN=... bash tests/smoke.sh
 - 线上入口：`https://git-chat01.github.io/tuanbo-lapiao/`
 - 教练后台：`https://git-chat01.github.io/tuanbo-lapiao/coach.html`
 - API：`https://lapiao.aivar.cc`
+
+## 2026-09-28 现场接话修正
+
+红线硬检测按每次提及及相邻动作区分风险与劝阻，不再把“未成年人不要刷礼物”“留好生活费”仅凭名词命中判错；词表外的风险仍由语义评审检查。组满阶段的检测保留主持口令条件，并区分上节目与上票。
+
+话术提交改为非空至 500 字，允许“组满了，谢谢大家，等主持口令”这样的短句；表达是否完整仍由教练结合现场判断。
+
+报告新增可选 practice_status: awaiting_response：原稿已正确询问兴趣、尚待观众回应时，显示独立等待页，不计失败次数，允许先开口练。它不代表付费理由已经成立，也不进入过关候选。页面提供愿意互动、明确不消费、暂无回应三条标注为模拟的分支，接着练下一拍。派生现场使用 interaction 阶段，不沿用原场景 id，因此不会进入自动学习或冒充原场景经验。该阶段只评是否接住回应和给出合适的当下动作，不要求补付费邀请。
+
+回归：
+
+```powershell
+node tests/context-response-safety.mjs
+node tests/context-response-live.mjs --live
+```
+
+第二项使用虚构样本访问已配置模型并消耗额度；结果保存在忽略目录 tests/tmp_results/。

@@ -375,13 +375,13 @@ var Form = {
       voteGap: App.state.freeMode ? Form._selectedVoteGap() : (Form._scenario ? Form._scenario.voteGap : "close"),
       script: document.getElementById("input-script").value.trim(),
       scenario: Form._scenarioPayload(),
-      mode: App.state.freeMode ? "free" : "guided",
+      mode: App.state.freeMode ? "free" : (Form._scenario && Form._scenario.phase === "interaction" ? "response" : "guided"),
     };
   },
 
   validate: function (data) {
     if (!data.voteGap) return "先点一下现在票数什么情况";
-    if (data.script.length < LIMITS.scriptMin) return "至少写一句完整的话，教练才看得准";
+    if (!data.script.trim()) return "先写下这一拍准备说的话";
     if (data.script.length > LIMITS.scriptMax) return "话术太长，精简到 500 字以内";
     return null;
   },
@@ -390,12 +390,21 @@ var Form = {
     return request && request.scenario && typeof request.scenario.id === "string" ? request.scenario.id : "";
   },
 
+  _scenarioKey: function (scenario) {
+    return JSON.stringify(scenario || null, function (_key, value) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+      var sorted = {};
+      Object.keys(value).sort().forEach(function (key) { sorted[key] = value[key]; });
+      return sorted;
+    });
+  },
+
   _isSameAsLast: function (data) {
     if (!App.state.lastReport || !App.state.lastRequest || !data) return false;
     var previous = App.state.lastRequest;
     return data.script === previous.script &&
       (data.mode || "guided") === (previous.mode || "guided") &&
-      Form._requestScenarioId(data) === Form._requestScenarioId(previous) &&
+      Form._scenarioKey(data.scenario) === Form._scenarioKey(previous.scenario) &&
       (data.voteGap || "") === (previous.voteGap || "");
   },
 
@@ -446,7 +455,7 @@ var Form = {
     delete data.revision;
     if (previous && previousReport && previousReport.verdict !== "passed" && previous.script !== data.script &&
         previous.voteGap === data.voteGap &&
-        JSON.stringify(previous.scenario || null) === JSON.stringify(data.scenario || null) &&
+        Form._scenarioKey(previous.scenario) === Form._scenarioKey(data.scenario) &&
         (previous.mode || "guided") === (data.mode || "guided")) {
       var focus = Report._focusCheck(Report._checks(previousReport), previousReport);
       var coaching = Report._coachingFor(previousReport, focus);
@@ -488,6 +497,45 @@ var Form = {
     });
   },
 
+  RESPONSE_BRANCHES: [
+    { label: "愿意互动：我想听你介绍一下自己", text: "我想听你介绍一下自己。", role: "viewer" },
+    { label: "明确边界：我先看着，不送礼物", text: "我先看着，不送礼物。", role: "viewer" },
+    { label: "暂时没有回应", text: "观众暂时没有回应，兴趣与付费意愿仍未知。", role: "system" },
+  ],
+
+  responseRequest: function (base, script, branchIndex) {
+    var branch = Form.RESPONSE_BRANCHES[branchIndex];
+    if (!base || !branch) return null;
+    var scenario = JSON.parse(JSON.stringify(base.scenario || {}));
+    // 派生练习不沿用原场景身份，避免把模拟反馈吸收成真实场景经验。
+    delete scenario.id;
+    scenario.phase = "interaction";
+    scenario.roleContext = "你是台上新人主播，正在做模拟接话练习";
+    scenario.trainingGoal = "模拟下一拍：尊重观众的回应或沉默，接住互动，不把模拟反馈当作真实转化。";
+    scenario.targetUser = scenario.targetUser || "刚才被询问的观众";
+    scenario.userSignal = "【模拟反馈】" + branch.text;
+    var timeline = (scenario.timeline || []).slice(-19);
+    // 仅保留有完整上下文的最近一轮，不累计无限长模拟对话。
+    var speech = String(base.script || "");
+    for (var i = 0; i < speech.length; i += 200) {
+      timeline.push({role:"active_streamer", kind:"chat", effect:"neutral", speaker:"你（上一拍）", text:speech.slice(i, i + 200)});
+    }
+    timeline.push({role:branch.role, kind:branch.role === "system" ? "status" : "chat", effect:"neutral", speaker:branch.role === "system" ? "模拟场况" : scenario.targetUser, text:"【模拟反馈】" + branch.text});
+    // 请求体还有 10KB 上限，保留最新上下文，给本稿和其他现场字段留余量。
+    while (timeline.length > 4 && timeline.reduce(function (sum, event) { return sum + event.text.length + event.speaker.length + 2; }, 0) > 1200) timeline.shift();
+    scenario.timeline = timeline.map(function (event, index) { event.at = index; return event; });
+    return {voteGap:base.voteGap, script:String(script || "").trim(), scenario:scenario, mode:"response"};
+  },
+
+  submitResponse: function (script, branchIndex) {
+    if (!App.state.lastReport || App.state.lastReport.practice_status !== "awaiting_response") return;
+    var next = Form.responseRequest(App.state.lastRequest, script, branchIndex);
+    if (!next) return;
+    var error = Form.validate(next);
+    if (error) { App.toast(error); return; }
+    Form._submitData(next);
+  },
+
   submitRevision: function (script) {
     var base = App.state.lastRequest;
     if (!base) return;
@@ -512,6 +560,15 @@ var Form = {
     if (!data) return;
     if (data.scenario && data.scenario.id && Form._findScenario(data.scenario.id)) {
       Form._selectScenario(data.scenario.id, { skipCapture: true, skipSave: true });
+    }
+    if (data.mode === "response" && data.scenario) {
+      Form._scenario = JSON.parse(JSON.stringify(data.scenario));
+      Form._scenario.voteGap = data.voteGap || "close";
+      Form._scenario.title = "模拟接话练习";
+      Form._scenario.phaseLabel = "互动回应";
+      Form._scenario.unitShort = "个";
+      Form._renderScenarioPicker();
+      Form._renderScenario();
     }
     Form._setFreeMode(data.mode === "free" || !data.scenario);
     document.getElementById("input-script").value = data.script || "";

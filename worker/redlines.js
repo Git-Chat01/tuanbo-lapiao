@@ -26,5 +26,24 @@ export const REDLINE_TERMS = [
  */
 export function detectRedline(script) {
   const s = String(script || "");
-  return REDLINE_TERMS.filter((t) => s.includes(t));
+  // 名词本身不是违规行为。这里只拦有明确风险的表达，其余交给语义评审。
+  const contextual = new Set(["床上", "上床", "贷款", "信用卡", "网贷", "领导人", "国徽", "党旗", "未成年", "学生党", "压岁钱", "生活费"]);
+  const clauses = s.split(/[，,。！？!?；;\r\n]/u);
+  return REDLINE_TERMS.filter(term => clauses.some(clause => {
+    for (const match of clause.matchAll(new RegExp(term, "gu"))) {
+      const before = clause.slice(0, match.index);
+      const after = clause.slice(match.index + term.length);
+      // 只消除本次提及；后半句再次诱导仍单独检测，不用整稿“有不要就放行”。
+      if (/(?:不要|不能|不许|不准|别|禁止|拒绝|远离|杜绝)(?:去|再|用|拿|靠|搞|说|讲|提倡|鼓励|诱导|让大家)?[“「"']?$/u.test(before)) continue;
+      if (/^(?:人|的观众|的朋友|们)?(?:千万)?(?:不要|不能|不许|别|禁止)(?:再|去)?(?:刷|送|打赏|消费|上票)/u.test(after)) continue;
+      if (["压岁钱", "生活费"].includes(term) && /(?:留好|留着|保管好|保留|别动|不要动)(?:自己的|你的|好自己的)?$/u.test(before)) continue;
+      if (contextual.has(term)) {
+        // 只有词与消费/色情动作明确相连才触发硬闸门；普通叙述不作裁决。
+        const risky = /(?:贷款|信用卡|网贷|压岁钱|生活费).{0,12}(?:刷|送礼|打赏|上票)|(?:刷|送礼|打赏|上票).{0,12}(?:贷款|信用卡|网贷|压岁钱|生活费)|(?:未成年|学生党).{0,12}(?:也来|也能|也要|快|都来|给我|帮我).{0,8}(?:刷|送|打赏|上票)|(?:陪你|陪我|一起|跟我|跟你)(?:在)?(?:床上|上床)/u;
+        if (!risky.test(clause)) continue;
+      }
+      return true;
+    }
+    return false;
+  }));
 }

@@ -30,7 +30,7 @@ const VOTE_GAP_ENUM = ["far", "close", "secured"];
 
 // 文本长度限制（前后端双重限制，后端兜底）
 const LIMITS = {
-  scriptMin: 20, // 话术最短 20 字（少于这个没法批）
+  scriptMin: 1, // 不用字数代替表达完整性；短句是否接得住现场交给评审。
   scriptMax: 500, // 批改话术上限：500 字逐句点评已逼近 max_tokens 3000，再长 JSON 会截断（502）
   feedScriptMax: 800, // 投喂话术上限（1.6×）：投喂只存 KV 不调模型，可以更长
   whyGoodMin: 1, // 投喂理由必填——"为什么好"是 manual 案例的灵魂（给 AI 的判断尺子）
@@ -106,6 +106,7 @@ const SCENARIO_TEXT_LIMITS = {
   trainingGoal: 120,
 };
 const SCENARIO_PHASE_ENUM = [
+  "interaction",
   "elimination",
   "revival_offer",
   "pledging",
@@ -192,7 +193,7 @@ const DEEPSEEK_CONFIG = {
 
 // 修改评分、安全闸门或案例标准时递增；提示词和模型配置也参与指纹。
 // 只复用已完成的检查，不用缓存把一个未经验证的模型输出变成标准答案。
-const REVIEW_VERSION = "2026-09-24-independent-1";
+const REVIEW_VERSION = "2026-09-28-context-and-response-1";
 const REVIEW_TTL_SECONDS = 7 * 24 * 60 * 60;
 const reviewStores = new WeakMap();
 
@@ -1452,7 +1453,18 @@ function hasPrematureDeliveryPressure(sourceScript) {
     let compact = stripNegatedCurrentActions(sentence.replace(/\s+/g, ""));
     if (!compact) return false;
     compact = compact.replace(completedPastAction, "");
-    return prematureDelivery.test(compact);
+    // “上节目”不是“上票”；条件动作须等口令生效，不能截掉条件再判抢令。
+    compact = compact.replace(/上(?:一|两|几|这|那)?(?:段|支|首|个)(?:舞(?:蹈)?|歌(?:曲)?|节目|才艺)/gu, "表演");
+    let waitingForHost = false;
+    return compact.split(/[，,]/u).some(clause => {
+      const hostCondition = /(?:等|听|按).{0,8}主持.{0,10}(?:口令|喊|说|发令)|(?:口令|主持).{0,6}(?:一到|到了|喊完|发令后)/u.test(clause);
+      const immediate = /(?:不用|不要|别).{0,8}(?:等|听|按).{0,8}主持|(?:现在|赶紧|马上|直接|提前).{0,8}(?:丢|送|上)|(?:我来|听我的|我喊|我说).{0,8}(?:那就丢|一起丢|统一丢)/u.test(clause);
+      const explicitlyBypassHost = /(?:不用|不要|别).{0,8}(?:等|听|按).{0,8}主持|(?:我来|听我的|我喊|我说).{0,8}(?:那就丢|一起丢|统一丢)/u.test(clause);
+      const conditionedAction = /^(?:等|听|按).{0,8}主持.{0,10}(?:口令|喊完|发令)|^(?:口令|主持).{0,6}(?:一到|到了|喊完|发令后)/u.test(clause);
+      if (hostCondition) waitingForHost = true;
+      if (waitingForHost && !explicitlyBypassHost && (!immediate || conditionedAction)) return false;
+      return prematureDelivery.test(clause);
+    });
   });
 }
 
@@ -1585,11 +1597,11 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
   if (hasDetectedRedline) {
     // 红线是一票否决，不只拦 passed；almost 同样不能保留。
     report.verdict = "off";
-    report.verdict_reason = `里面有踩红线的词，先改掉。${report.verdict_reason || ""}`.trim();
+    report.verdict_reason = `里面有明确风险表达，先调整这一处。${report.verdict_reason || ""}`.trim();
 
     // 实测模型会漏写 redline_note——横幅是主播唯一能看到哪句不能播的通道，硬兜底。
     if (!report.redline_note) {
-      report.redline_note = `稿子里出现了不能播的词：${redlineHits.join("、")}，先改掉再谈过关。`;
+      report.redline_note = `稿子里有涉及${redlineHits.join("、")}的风险表达，请调整具体说法后再检查。`;
     }
   }
 
@@ -2236,6 +2248,21 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
       report.optional_polish = null;
     }
   }
+  // 等回应是有效的中间练习状态，不替代付费理由达标，也不能绕过安全检查。
+  if (report.practice_status === "awaiting_response") {
+    const valid = report.verdict !== "off" && report.verdict !== "passed" &&
+      hasInteractionReview && report.interaction_review.judgment !== "misread" &&
+      lineReviewsContractValid && structureContractValid && safetyFieldsContractValid && roundDynamicsContractValid &&
+      !hasWrong && !hasLowPosture && !hasPersonaIssue && !hasDetectedRedline && !hasReportedRedline &&
+      !phaseActionConflict && !["awaiting_drop", "delivery", "result", "post_round"].includes(scenarioPhase) &&
+      !hasExplicitVoteInstruction(sourceScript) && Boolean(report.coaching);
+    if (!valid) report.practice_status = null;
+    else {
+      report.verdict_reason = "这一拍的询问可以先说，等观众回应后再决定下一步；尚未确认上票意愿。";
+      report.coaching.action = "保留这一拍，先听观众怎么回应。";
+      report.direction = {summary:report.coaching.action, examples:[]};
+    }
+  }
   return report;
 }
 
@@ -2686,6 +2713,11 @@ export function applyRevisionFeedback(report, value, currentScript, previousRepo
   const label = labels[key];
   if (!label) return report;
   const state = revisionFocusState(report, key);
+  if (report.practice_status === "awaiting_response") {
+    report.revision_check = {focus_key:key, status:"awaiting_response", evidence:"当前询问已可开口，下一步需要观众回应。"};
+    report.revision_note = "这一拍先保留，不用继续改同一句；接下来听回应。";
+    return report;
+  }
   const evidence = report.structure_checks?.find(item => item.key === key)?.evidence ||
     (key === "line_angle" ? report.interaction_review?.reading : "");
   // 没有可核验旧报告时只保留原有的当前达标提示，不伪造逐版对照。
@@ -2985,7 +3017,7 @@ export function getReportQualityIssue(report, sourceScript, scenario = null, det
     !report.line_reviews.some(item => item.mark === "wrong");
   if (report.verdict !== "passed" && noRisk && core.every(item => item.status === "met")) return "核心已达标但结论仍卡关";
   if (report.verdict !== "passed" && !report.coaching) return "缺少有效的短带教";
-  if (report.verdict !== "passed" && core.some(item => item.key === report.coaching?.focus_key && item.status === "met")) return "修改点要求重做已达标核心";
+  if (report.verdict !== "passed" && report.practice_status !== "awaiting_response" && core.some(item => item.key === report.coaching?.focus_key && item.status === "met")) return "修改点要求重做已达标核心";
   const compact = text => String(text || "").replace(/\s+/gu, "");
   const source = compact(sourceScript);
   const sceneQuotes = [
@@ -3353,6 +3385,7 @@ export function normalizeReport(report, sourceScript) {
     round_dynamics: roundDynamics,
     structure_checks: structureChecks,
     verdict: report.verdict,
+    practice_status: report.practice_status === "awaiting_response" ? "awaiting_response" : null,
     verdict_reason: str(report.verdict_reason),
     echo: str(report.echo),
     line_reviews: effectiveLineReviews.map((r) => ({

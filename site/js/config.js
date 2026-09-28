@@ -212,7 +212,7 @@ var DEFAULT_TRAINING_SCENARIO_ID = "revival-closing-last-two";
 
 // 文本长度限制（与 worker/index.js 的 LIMITS 保持一致）
 // scriptMax=500 只约束主播端批改（DeepSeek 输出边界）；教练后台投喂不调模型，上限更宽
-var LIMITS = { scriptMin: 20, scriptMax: 500, feedScriptMax: 800, feedWhyGoodMax: 320 };
+var LIMITS = { scriptMin: 1, scriptMax: 500, feedScriptMax: 800, feedWhyGoodMax: 320 };
 
 // localStorage 键名
 var STORAGE_KEYS = {
