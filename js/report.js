@@ -86,7 +86,7 @@ var Report = {
     redline: {
       number: 0,
       title: "换成能安全播的表达",
-      standard: "去掉不能播的词，同时保留你原本想表达的现场意思。",
+      standard: "调整实际有风险的表达，保留保护观众的提醒和原本正确的现场意思。",
       method: "只替换踩线的那一处，不需要把整段推翻。",
     },
     persona: {
@@ -590,6 +590,7 @@ var Report = {
     var incoming = Array.isArray(report.structure_checks) ? report.structure_checks : [];
     var phase = Report._scenario().phase || "";
     var applicableByPhase = {
+      interaction: ["user_reason", "vote_instruction"],
       pledging: ["gratitude", "target_user", "user_reason", "vote_instruction"],
       closing: ["gratitude", "user_reason", "vote_instruction"],
       awaiting_drop: ["gratitude", "user_reason", "vote_instruction"],
@@ -612,7 +613,7 @@ var Report = {
       var applicable = !applicableKeys || applicableKeys.indexOf(definition.key) >= 0;
       return {
         key: definition.key,
-        label: definition.label,
+        label: phase === "interaction" && definition.key === "user_reason" ? "接住观众选择" : definition.label,
         status: applicable ? status : "na",
         evidence: applicable
           ? (found && typeof found.evidence === "string" ? found.evidence : "这一项还没说清楚")
@@ -1229,6 +1230,11 @@ var Report = {
     Report._clear(content);
     content.hidden = false;
 
+    if (report.practice_status === "awaiting_response") {
+      Report._showWaitingResponse(report, content);
+      App.showView("report");
+      return;
+    }
     var progress = Report._recordResult(report);
     var checks = progress.checks;
     var focus = progress.focus;
@@ -1250,6 +1256,53 @@ var Report = {
     App.showView("report");
   },
 
+  _showWaitingResponse: function (report, content) {
+    var panel = Report._el("section", "response-practice");
+    content.appendChild(panel);
+    content = panel;
+    content.appendChild(Report._el("h1", null, "这一拍可以先说，接下来听回应"));
+    content.appendChild(Report._el("p", "review-heading__progress", "不计失败次数，也不用继续改同一句。这还不代表观众已经愿意上票。"));
+    content.appendChild(Report._el("p", null, report.interaction_review.reading));
+    content.appendChild(Report._el("blockquote", null, App.state.lastRequest.script));
+    var voice = Report._el("button", "training-primary", "先练这句怎么说");
+    voice.type = "button";
+    voice.addEventListener("click", Report._onStartVoice);
+    content.appendChild(voice);
+    var desk = Report._el("section", "revision-desk");
+    desk.appendChild(Report._el("h2", null, "接一条模拟反馈，练下一拍"));
+    desk.appendChild(Report._el("p", "revision-desk__hint", "以下都是练习假设，不是真实观众回应。选择一个分支，再写你接下来会说的话。"));
+    var label = Report._el("label", null, "模拟观众回应");
+    label.setAttribute("for", "response-choice");
+    desk.appendChild(label);
+    var choices = Report._el("select", "revision-input");
+    choices.id = "response-choice";
+    Form.RESPONSE_BRANCHES.forEach(function (branch, index) {
+      var option = Report._el("option", null, branch.label);
+      option.value = String(index);
+      choices.appendChild(option);
+    });
+    choices.value = "0";
+    desk.appendChild(choices);
+    var inputLabel = Report._el("label", null, "你接下来怎么说");
+    inputLabel.setAttribute("for", "response-script");
+    desk.appendChild(inputLabel);
+    var input = Report._el("textarea", "revision-input");
+    input.id = "response-script";
+    input.maxLength = LIMITS.scriptMax;
+    input.rows = 4;
+    desk.appendChild(input);
+    var submit = Report._el("button", "training-primary", "检查我接的这一拍");
+    submit.type = "button";
+    submit.disabled = true;
+    input.addEventListener("input", function () {
+      submit.disabled = !input.value.trim() || input.value.trim().length > LIMITS.scriptMax;
+    });
+    choices.addEventListener("change", function () { input.value = ""; submit.disabled = true; });
+    submit.addEventListener("click", function () { Form.submitResponse(input.value, Number(choices.value)); });
+    desk.appendChild(submit);
+    content.appendChild(desk);
+  },
+
   showPassed: function (report) {
     Report._stopLoadingMessages();
     var progress = Report._recordResult(report);
@@ -1262,7 +1315,7 @@ var Report = {
     if (passedGoal) {
       var passedEyebrow = passedGoal.querySelector("span");
       var passedTitle = passedGoal.querySelector("h1");
-      if (passedEyebrow) passedEyebrow.textContent = "核心逻辑已过关";
+      if (passedEyebrow) passedEyebrow.textContent = Report._scenario().phase === "interaction" ? "这一拍接话已完成" : "核心逻辑已过关";
       if (passedTitle) passedTitle.textContent = "第 " + progress.totalAttempts + " 次挑战，这一轮可以开口练";
     }
     Report._renderPassedStructure(progress);
@@ -1387,7 +1440,8 @@ var Report = {
   },
 
   _onStartVoice: function () {
-    var script = document.getElementById("passed-script").textContent;
+    var waiting = App.state.lastReport && App.state.lastReport.practice_status === "awaiting_response";
+    var script = waiting ? App.state.lastRequest.script : document.getElementById("passed-script").textContent;
     if (!script || !window.VoiceCoach) {
       App.toast("开口教练还没准备好，先复制这版话术");
       return;
@@ -1395,7 +1449,7 @@ var Report = {
     App.unlockStage("voice");
     VoiceCoach.open({
       script: script,
-      onBack: function () { App.showView("passed"); },
+      onBack: function () { App.showView(waiting ? "report" : "passed"); },
     });
     App.showView("voice");
   },

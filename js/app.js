@@ -123,6 +123,7 @@ var App = {
       return;
     }
     if (stage === "form") {
+      if (App.state.lastRequest && App.state.lastRequest.mode === "response") Form.restore(App.state.lastRequest);
       App.showView("form");
       return;
     }

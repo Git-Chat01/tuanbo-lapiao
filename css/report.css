@@ -632,3 +632,10 @@
   .presenter-page .challenge-map__head { align-items: flex-start; flex-direction: column; gap: 2px; }
   .presenter-page .round-dynamics { --round-inset: 13px; }
 }
+
+/* 等回应页沿用排练台样式，选择反馈的控件不继承稿件输入框高度。 */
+.response-practice > h1 { margin-bottom: 14px; line-height: 1.4; }
+.response-practice > p { margin: 12px 0; line-height: 1.7; }
+.response-practice > blockquote { margin: 16px 0; padding: 14px; border-left: 3px solid var(--stage-amber); background: var(--stage-paper); line-height: 1.7; }
+.response-practice .revision-desk h2 { margin-bottom: 10px; line-height: 1.5; }
+.response-practice select.revision-input { min-height: 48px; height: auto; padding: 12px; margin-bottom: 16px; }
