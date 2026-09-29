@@ -16,7 +16,7 @@
   <div class="training-shell">
     <header class="training-topbar">
       <div class="training-brand"><span class="live-dot" aria-hidden="true"></span><span>场练</span></div>
-      <span class="training-round">新手带练 · 第 1 轮</span>
+      <span class="training-round">新手现场带练</span>
       <button type="button" id="btn-access-code" class="training-top-action">入口码</button>
     </header>
 
@@ -46,7 +46,6 @@
             <h2 id="scenario-picker-title">选择练习现场</h2>
             <span id="scenario-picker-status">当前 1 / 4</span>
           </div>
-          <p class="scenario-picker__note">来自真实团播逻辑，昵称已匿名；每一关都停在需要你接话的那一拍。</p>
           <div id="scenario-tabs" class="scenario-tabs" role="tablist" aria-label="模拟现场训练切片"></div>
         </section>
 
@@ -59,10 +58,16 @@
             <h2 id="scene-title"><span class="live-dot" aria-hidden="true"></span>模拟现场</h2>
             <p><span id="scene-phase">复活拉票</span><span aria-hidden="true"> · </span><strong id="scene-time">00:38</strong></p>
           </div>
+          <button type="button" id="btn-play-scene" class="scene-replay">
+            <span class="scene-replay__icon" aria-hidden="true">▶</span><span>看现场回放</span>
+          </button>
           <div class="scene-role" aria-label="你在本场的位置">
             <span>你的位置</span>
             <strong id="scene-role-context">台上复活主播</strong>
           </div>
+          <details class="scene-rules">
+            <summary>查看单位与主持规则</summary>
+            <p class="scenario-picker__note">模拟练习，昵称已匿名；先看事件，再接下一拍。</p>
           <div class="scene-unit">
             <span>本场目标单位</span>
             <strong id="scene-goal-unit">票（按直播间实时票数）</strong>
@@ -71,17 +76,18 @@
             <span>主持状态</span>
             <strong id="scene-host-state">按当前进度控场</strong>
           </div>
+          </details>
           <dl id="scene-progress" class="scene-progress" aria-label="当前复活进度">
             <div><dt>目标</dt><dd id="scene-target-units">320 票</dd></div>
             <div><dt>已占位</dt><dd id="scene-pledged-units">不组队</dd></div>
             <div><dt>待占位</dt><dd id="scene-open-remaining">不组队</dd></div>
             <div><dt>已到账</dt><dd id="scene-delivered-units">待换算</dd></div>
           </dl>
-          <p id="scene-feed-status" class="scene-feed-status" role="status">点击下方按钮，弹幕会按现场顺序出现。</p>
+          <p id="scene-feed-status" class="scene-feed-status" role="status">点击“看现场回放”，留意谁说了什么。</p>
+          <button type="button" id="btn-scene-pause" class="scene-history-toggle" hidden>暂停回放，读这一条</button>
           <ol id="scene-feed" class="scene-feed" role="log" aria-live="polite" aria-relevant="additions" aria-label="按时间出现的现场信息"></ol>
-          <button type="button" id="btn-play-scene" class="scene-replay">
-            <span class="scene-replay__icon" aria-hidden="true">▶</span><span>看现场回放</span>
-          </button>
+          <button type="button" id="btn-scene-history" class="scene-history-toggle" hidden aria-expanded="false" aria-controls="scene-feed">展开完整回放记录</button>
+          <button type="button" id="btn-scene-ready" class="training-primary scene-ready" hidden>看懂了，我来接一句 →</button>
         </section>
 
         <aside id="coach-cue" class="coach-cue" aria-label="带练提示">
@@ -103,7 +109,7 @@
           <div class="structure-prompt" aria-label="现场话术动态链路">
             <span>看现场</span><span>抓人性</span><span>递动作</span><span>看反馈</span><span>接下一拍</span>
           </div>
-          <textarea id="input-script" class="script-input" maxlength="500" rows="8"
+          <textarea id="input-script" class="script-input" maxlength="500" rows="5"
                     placeholder="把你现场真的会说的话写下来。不用先写对，教练会陪你只改一处。"></textarea>
           <div class="writing-desk__foot"><span id="draft-status">草稿会自动保存</span><span id="script-count">0 / 500</span></div>
         </section>
@@ -119,7 +125,10 @@
           <span class="coach-thinking__line"></span>
           <h1>教练正在对现场</h1>
           <p id="loading-message">先看你接住了谁，再看上票理由有没有落到人身上。</p>
-          <p id="loading-elapsed" class="coach-thinking__elapsed"></p>
+          <p id="loading-elapsed" class="coach-thinking__elapsed" role="timer" aria-live="off"></p>
+          <p id="loading-draft-status" class="coach-thinking__elapsed"></p>
+          <button type="button" id="btn-cancel-wait" class="training-secondary">取消等待，返回编辑</button>
+          <p class="coach-thinking__elapsed">取消会停止本页等待，服务端可能仍在处理本次请求。</p>
           <div class="coach-thinking__steps" aria-hidden="true"><span></span><span></span><span></span></div>
         </div>
         <div id="report-error" class="report-error" hidden role="alert"></div>
@@ -137,6 +146,12 @@
           <h1 id="passed-title">这一轮可以开口练</h1>
         </div>
 
+        <p id="passed-summary" class="passed-summary"></p>
+        <button type="button" id="btn-start-voice" class="training-primary">
+          <span>拿这版开口练</span><span aria-hidden="true">→</span>
+        </button>
+        <details id="passed-details" class="review-details">
+          <summary>查看本轮能力与详细分析</summary>
         <div id="passed-round-dynamics" hidden></div>
 
         <div id="passed-structure-track" class="passed-structure-summary"></div>
@@ -146,6 +161,7 @@
           <div id="passed-learn"></div>
         </section>
 
+        </details>
         <section class="passed-script-section">
           <div class="passed-script-section__head">
             <h2>拿这一版开口练</h2>
@@ -156,9 +172,7 @@
           <div id="passed-script" class="passed-script"></div>
         </section>
 
-        <button type="button" id="btn-start-voice" class="training-primary">
-          <span>拿这版开口练</span><span aria-hidden="true">→</span>
-        </button>
+
         <button type="button" id="btn-new-round" class="training-secondary-link">换一轮重新练</button>
       </section>
 

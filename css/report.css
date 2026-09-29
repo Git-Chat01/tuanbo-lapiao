@@ -639,3 +639,16 @@
 .response-practice > blockquote { margin: 16px 0; padding: 14px; border-left: 3px solid var(--stage-amber); background: var(--stage-paper); line-height: 1.7; }
 .response-practice .revision-desk h2 { margin-bottom: 10px; line-height: 1.5; }
 .response-practice select.revision-input { min-height: 48px; height: auto; padding: 12px; margin-bottom: 16px; }
+
+/* 把下一步练习放在分析之前，保持各结果页同一字号体系。 */
+.presenter-page .response-practice > h1 { font-size: var(--font-size-xl); line-height: 1.4; }
+.presenter-page .response-practice h2 { font-size: var(--font-size-lg); }
+.presenter-page .response-practice select { min-height: 48px; font: inherit; width: 100%; }
+.presenter-page .response-practice .revision-desk__hint { margin: 12px 0; }
+.presenter-page .revision-excerpt { margin: 12px 0; font-size: var(--font-size-sm); overflow-wrap: anywhere; }
+.presenter-page .revision-excerpt mark { color: var(--stage-text); background: #ffe2a6; padding: 2px; }
+.presenter-page .revision-locate { margin-bottom: 10px; min-height: 44px; font-size: var(--font-size-sm); }
+.presenter-page .passed-summary { margin: 0 0 16px; }
+.presenter-page #passed-details { margin-top: 20px; }
+.presenter-page .coach-thinking .training-secondary { margin: 18px 0 10px; }
+.presenter-page .review-details > summary { min-height: 44px; padding-block: 12px; }

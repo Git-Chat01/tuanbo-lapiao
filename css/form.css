@@ -13,6 +13,7 @@
   margin: 2px 0 0;
   font-size: var(--font-size-xl);
   line-height: 1.38;
+  text-wrap: balance;
 }
 
 .presenter-page .scenario-picker { margin: 0 0 12px; }
@@ -49,7 +50,7 @@
 }
 .presenter-page .scenario-tab {
   flex: 0 0 auto;
-  min-height: 38px;
+  min-height: 44px;
   padding: 8px 12px;
   border: 1px solid var(--stage-line);
   border-radius: 999px;
@@ -188,15 +189,14 @@
   list-style: none;
   margin: 0;
   padding: 6px 0;
-  max-height: 338px;
+  max-height: none;
   min-height: 54px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  overflow: visible;
 }
 
 .presenter-page .scene-feed__item {
   display: grid;
-  grid-template-columns: 26px minmax(72px, 92px) minmax(0, 1fr);
+  grid-template-columns: 26px minmax(0, 1fr);
   align-items: start;
   gap: 8px;
   padding: 9px 14px;
@@ -219,18 +219,20 @@
 .presenter-page .scene-feed__who {
   display: flex;
   min-width: 0;
-  flex-direction: column;
-  gap: 2px;
+  flex-direction: row;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .presenter-page .scene-feed__role {
   color: #aa9ba0;
-  font-size: 10px;
+  font-size: var(--font-size-xs);
   line-height: 1.2;
 }
 .presenter-page .scene-feed__who strong {
   overflow-wrap: anywhere;
   color: #f0e7ea;
-  font-size: var(--font-size-xs);
+  font-size: var(--font-size-sm);
   line-height: 1.35;
 }
 .presenter-page .scene-feed__who--host strong { color: #91c2ff; }
@@ -239,6 +241,8 @@
 .presenter-page .scene-feed__who--viewer strong { color: #ff96ac; }
 .presenter-page .scene-feed__who--system strong { color: var(--stage-amber); }
 .presenter-page .scene-feed__content {
+  grid-column: 1 / -1;
+  font-size: var(--font-size-md);
   min-width: 0;
   overflow-wrap: anywhere;
   line-height: 1.55;
@@ -250,7 +254,7 @@
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 999px;
   color: #cdbfc4;
-  font-size: 10px;
+  font-size: var(--font-size-xs);
 }
 .presenter-page .scene-feed__effect--down { color: #ffb0be; }
 .presenter-page .scene-feed__effect--revive { color: #8de0be; }
@@ -376,7 +380,7 @@
 
 @media (max-width: 350px) {
   .presenter-page .scene-feed__item {
-    grid-template-columns: 22px 66px minmax(0, 1fr);
+    grid-template-columns: 22px minmax(0, 1fr);
     gap: 6px;
     padding-inline: 10px;
   }
@@ -390,3 +394,22 @@
 @media (prefers-reduced-motion: reduce) {
   .presenter-page .scene-feed__item { animation: none; transition: none; }
 }
+
+/* 首屏先给开始动作，补充规则按需阅读。 */
+.presenter-page .scene-rules summary,
+.presenter-page .scene-history-toggle {
+  min-height: 44px;
+  padding: 10px 14px;
+  color: #e4d5db;
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+.presenter-page .scene-rules .scenario-picker__note { margin: 0; padding: 0 14px 10px; color: #cdbfc4; }
+.presenter-page .scene-replay { background: var(--stage-red-dark); font-size: var(--font-size-md); }
+.presenter-page .scene-replay:disabled { color: #e4d5db; background: #50323e; }
+.presenter-page .scene-ready { border-radius: 0; box-shadow: none; }
+.presenter-page .scene-history-toggle { width: 100%; text-align: left; border-top: 1px solid #503c44; }
+.presenter-page .scene-feed-status { font-size: var(--font-size-sm); }
+.presenter-page .scene-progress dt { font-size: var(--font-size-sm); }
+.presenter-page .scene-feed__item:last-child { border-left: 3px solid var(--stage-amber); }
+.presenter-page .scene-feed__item.is-playing { transform: none; }

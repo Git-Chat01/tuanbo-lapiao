@@ -118,6 +118,70 @@ var Report = {
     document.getElementById("btn-copy").addEventListener("click", Report._onCopy);
     document.getElementById("btn-new-round").addEventListener("click", Report._onNewRound);
     document.getElementById("btn-start-voice").addEventListener("click", Report._onStartVoice);
+    document.getElementById("btn-cancel-wait").addEventListener("click", Report._cancelWait);
+    Report._restoreWorkspace();
+  },
+
+  // 只保存练习内容，不保存入口码。刷新可恢复未提交修改和已提交原稿。
+  _workspace: null,
+  _workspaceKey: "tuanbo-coaching-workspace-v1",
+  _saveWorkspace: function (value) {
+    value.coaching = App.state.coaching || null;
+    Report._workspace = value;
+    try { localStorage.setItem(Report._workspaceKey, JSON.stringify(value)); return true; }
+    catch (error) { return false; }
+  },
+  _clearWorkspace: function () {
+    Report._workspace = null;
+    try { localStorage.removeItem(Report._workspaceKey); } catch (error) {}
+  },
+  _draftFor: function () {
+    var request = App.state.lastRequest;
+    var saved = Report._workspace;
+    if (!saved || saved.type !== "edit" || JSON.stringify(saved.request) !== JSON.stringify(request)) {
+      saved = {type:"edit", request:request, report:App.state.lastReport, revision:request ? request.script : "", branch:"0", responses:{}};
+      Report._workspace = saved;
+    }
+    return saved;
+  },
+  _restoreWorkspace: function () {
+    try {
+      var saved = JSON.parse(localStorage.getItem(Report._workspaceKey) || "null");
+      if (!saved || !saved.request || typeof saved.request.script !== "string" || saved.request.script.length > LIMITS.scriptMax) return;
+      Report._workspace = saved;
+      App.state.form = saved.request;
+      App.state.lastRequest = saved.request;
+      if (saved.coaching && typeof saved.coaching.totalAttempts === "number") App.state.coaching = saved.coaching;
+      Form.restore(saved.request);
+      if (saved.type === "edit" && saved.report && typeof saved.report === "object") {
+        App.state.lastReport = saved.report;
+        if (saved.report.practice_status !== "awaiting_response" && App.state.coaching && App.state.coaching.lastProgress) App.state.coaching.currentReport = saved.report;
+        App.unlockStage("report");
+        Report.showContent(saved.report);
+      }
+    } catch (error) { Report._clearWorkspace(); }
+  },
+  _cancelWait: function () {
+    Api.cancel();
+    Report._stopLoadingMessages();
+    document.getElementById("report-loading").hidden = true;
+    document.getElementById("btn-back-edit").disabled = false;
+    App.lockStage("report");
+    Form.restore(App.state.lastRequest);
+    App.showView("form");
+    App.toast("已取消等待，原稿仍在，可以继续修改");
+  },
+  // 按原文字符建立索引；模型引用只忽略空白，不猜测或自动替换原句。
+  _quoteRange: function (source, quote) {
+    if (!quote || !String(quote).trim()) return null;
+    var positions = [], compact = "";
+    for (var i = 0; i < source.length; i++) {
+      if (!/\s/.test(source[i])) { positions.push(i); compact += source[i]; }
+    }
+    var needle = String(quote).replace(/\s/g, "");
+    var start = compact.indexOf(needle);
+    if (start < 0) return null;
+    return {start:positions[start], end:positions[start + needle.length - 1] + 1};
   },
 
   _el: function (tag, className, text) {
@@ -931,10 +995,33 @@ var Report = {
     input.setAttribute("aria-describedby", "revision-state");
     input.maxLength = LIMITS.scriptMax;
     input.rows = 7;
-    input.value = App.state.lastRequest ? App.state.lastRequest.script : "";
+    var draft = Report._draftFor();
+    input.value = typeof draft.revision === "string" ? draft.revision : App.state.lastRequest.script;
     section.appendChild(input);
 
-    var original = input.value.trim();
+    var original = App.state.lastRequest ? App.state.lastRequest.script.trim() : "";
+    var coaching = Report._coachingFor(App.state.lastReport, focus);
+    var quote = coaching ? coaching.original : (focus.evidence || "");
+    if (!Report._quoteRange(original, quote)) {
+      var reviews = App.state.lastReport && App.state.lastReport.line_reviews || [];
+      var quotedLine = reviews.find(function (line) { return line.mark !== "good" && Report._quoteRange(original, line.original); });
+      if (quotedLine) quote = quotedLine.original;
+    }
+    var range = Report._quoteRange(original, quote);
+    if (range) {
+      var excerpt = Report._el("p", "revision-excerpt", "本次定位：");
+      excerpt.appendChild(Report._el("mark", null, original.slice(range.start, range.end)));
+      section.insertBefore(excerpt, input);
+      var locate = Report._el("button", "training-secondary revision-locate", "定位原句，开始修改");
+      locate.type = "button";
+      locate.addEventListener("click", function () {
+        var current = Report._quoteRange(input.value, quote);
+        input.focus();
+        if (current) input.setSelectionRange(current.start, current.end);
+        else App.toast("这句已经改过了，可以继续编辑当前稿子");
+      });
+      section.insertBefore(locate, input);
+    }
     var foot = Report._el("div", "revision-desk__foot");
     var state = Report._el("span", "revision-state", "先按上面的解题方法动一处");
     state.id = "revision-state";
@@ -961,7 +1048,11 @@ var Report = {
       else if (!valid) state.textContent = "至少保留一句完整的话";
       else state.textContent = "已经改动，可以继续挑战";
     };
-    input.addEventListener("input", syncCount);
+    input.addEventListener("input", function () {
+      syncCount();
+      draft.revision = input.value;
+      state.textContent += Report._saveWorkspace(draft) ? " · 已自动保存" : " · 本机无法保存，请保留页面";
+    });
     syncCount();
     button.addEventListener("click", function () {
       Form.submitRevision(input.value);
@@ -1264,12 +1355,12 @@ var Report = {
     content.appendChild(Report._el("p", "review-heading__progress", "不计失败次数，也不用继续改同一句。这还不代表观众已经愿意上票。"));
     content.appendChild(Report._el("p", null, report.interaction_review.reading));
     content.appendChild(Report._el("blockquote", null, App.state.lastRequest.script));
-    var voice = Report._el("button", "training-primary", "先练这句怎么说");
+    var voice = Report._el("button", "training-secondary", "也可以：先练这句的语气");
     voice.type = "button";
     voice.addEventListener("click", Report._onStartVoice);
-    content.appendChild(voice);
+
     var desk = Report._el("section", "revision-desk");
-    desk.appendChild(Report._el("h2", null, "接一条模拟反馈，练下一拍"));
+    desk.appendChild(Report._el("h2", null, "下一步：接一条模拟反馈"));
     desk.appendChild(Report._el("p", "revision-desk__hint", "以下都是练习假设，不是真实观众回应。选择一个分支，再写你接下来会说的话。"));
     var label = Report._el("label", null, "模拟观众回应");
     label.setAttribute("for", "response-choice");
@@ -1281,29 +1372,49 @@ var Report = {
       option.value = String(index);
       choices.appendChild(option);
     });
-    choices.value = "0";
+    var draft = Report._draftFor();
+    choices.value = Form.RESPONSE_BRANCHES[Number(draft.branch)] ? draft.branch : "0";
+    if (!draft.responses) draft.responses = {};
     desk.appendChild(choices);
     var inputLabel = Report._el("label", null, "你接下来怎么说");
     inputLabel.setAttribute("for", "response-script");
     desk.appendChild(inputLabel);
     var input = Report._el("textarea", "revision-input");
     input.id = "response-script";
+    input.value = draft.responses[choices.value] || "";
     input.maxLength = LIMITS.scriptMax;
     input.rows = 4;
     desk.appendChild(input);
     var submit = Report._el("button", "training-primary", "检查我接的这一拍");
     submit.type = "button";
     submit.disabled = true;
-    input.addEventListener("input", function () {
+    var saveState = Report._el("p", "revision-desk__hint", "各分支分别保存，切换不会清空已写内容。");
+    desk.appendChild(saveState);
+    var updateResponse = function (save) {
       submit.disabled = !input.value.trim() || input.value.trim().length > LIMITS.scriptMax;
+      if (save) {
+        draft.branch = choices.value;
+        draft.responses[choices.value] = input.value;
+        saveState.textContent = Report._saveWorkspace(draft) ? "已自动保存 · 各分支独立保留" : "本机无法保存，请保留页面";
+      }
+    };
+    input.addEventListener("input", function () { updateResponse(true); });
+    choices.addEventListener("change", function () {
+      input.value = draft.responses[choices.value] || "";
+      updateResponse(true);
     });
-    choices.addEventListener("change", function () { input.value = ""; submit.disabled = true; });
+    updateResponse(false);
     submit.addEventListener("click", function () { Form.submitResponse(input.value, Number(choices.value)); });
     desk.appendChild(submit);
     content.appendChild(desk);
+    content.appendChild(Report._el("p", "revision-desk__hint", "接话练习练临场回应；开口练习练上一句的停顿和语气。"));
+    content.appendChild(voice);
   },
 
   showPassed: function (report) {
+    Report._clearWorkspace();
+    var detailPanel = document.getElementById("passed-details");
+    if (detailPanel) detailPanel.open = false;
     Report._stopLoadingMessages();
     var progress = Report._recordResult(report);
     Report._showRedlineBanner("");
@@ -1316,13 +1427,15 @@ var Report = {
       var passedEyebrow = passedGoal.querySelector("span");
       var passedTitle = passedGoal.querySelector("h1");
       if (passedEyebrow) passedEyebrow.textContent = Report._scenario().phase === "interaction" ? "这一拍接话已完成" : "核心逻辑已过关";
-      if (passedTitle) passedTitle.textContent = "第 " + progress.totalAttempts + " 次挑战，这一轮可以开口练";
+      if (passedTitle) passedTitle.textContent = "这一轮可以开口练";
     }
     Report._renderPassedStructure(progress);
 
     var learn = document.getElementById("passed-learn");
     Report._clear(learn);
     var main = report.verdict_reason || "参与理由和上票动作已经站稳，这一轮可以拿去练开口。";
+    var summary = document.getElementById("passed-summary");
+    if (summary) summary.textContent = Report._shortFeedback(main, 80, "这版文字已经达到本轮要求，可以开口练。");
     learn.appendChild(Report._el("p", null, Report._shortFeedback(main, 80, "这版文字已经达到本轮要求，可以开口练。")));
     if (report.revision_note) learn.appendChild(Report._el("p", "passed-new-skill", report.revision_note));
     var achievement = Report._passAchievement(progress);
@@ -1341,6 +1454,9 @@ var Report = {
   },
 
   showLoading: function () {
+    var saved = Report._saveWorkspace({type:"pending", request:App.state.lastRequest});
+    var draftStatus = document.getElementById("loading-draft-status");
+    if (draftStatus) draftStatus.textContent = saved ? "本次原稿已保存在这台设备，取消或刷新后可继续编辑。" : "本机无法保存草稿，取消可返回编辑；请暂时保留页面。";
     Report._showRedlineBanner("");
     document.getElementById("report-content").hidden = true;
     document.getElementById("report-error").hidden = true;
@@ -1357,28 +1473,13 @@ var Report = {
 
   _startLoadingMessages: function () {
     Report._stopLoadingMessages();
-    var messages = [
-      "先找已经拿下的能力，再定位这一轮真正卡住的一关。",
-      "只给一个清楚的过关标准，不会一次塞给你一堆问题。",
-      "不会替你重写整篇，教练只陪你把自己的原话改到能用。",
-    ];
-    var index = 0;
-    var node = document.getElementById("loading-message");
-    node.textContent = messages[index];
-    Report._loadingTimer = setInterval(function () {
-      index = (index + 1) % messages.length;
-      node.textContent = messages[index];
-    }, 4200);
-    // 长等待不该是黑盒：手机端这一轮最长要等一两分钟，主播得知道自己在等什么、还要不要等。
-    // 秒数单独走 1 秒一跳的定时器（和 4.2 秒轮播文案分开），超过 20 秒补一句安抚，
-    // 否则屏幕上一直没动静，主播会以为卡死而反复刷新——刷新就要从头再等一次。
+    document.getElementById("loading-message").textContent = "正在等待教练返回结果。你可以留在这里，或取消等待后继续修改。";
     var startedAt = Date.now();
     var elapsedNode = document.getElementById("loading-elapsed");
     var paintElapsed = function () {
       if (!elapsedNode) return;
       var seconds = Math.floor((Date.now() - startedAt) / 1000);
-      elapsedNode.textContent = seconds < 5 ? "" : "已经等了 " + seconds + " 秒，" +
-        (seconds >= 20 ? "教练还在写，先别关页面，刷新要重新排一次队。" : "教练还在写。");
+      elapsedNode.textContent = "已等待 " + seconds + " 秒" + (seconds >= 20 ? " · 仍未收到结果" : "");
     };
     paintElapsed();
     Report._loadingClockTimer = setInterval(paintElapsed, 1000);
@@ -1408,7 +1509,14 @@ var Report = {
 
   _onBackEdit: function () {
     Report._stopLoadingMessages();
-    Form.restore(App.state.form || App.state.lastRequest);
+    var base = App.state.form || App.state.lastRequest;
+    var input = document.getElementById("revision-script");
+    if (input && App.state.lastReport && App.state.lastReport.verdict !== "passed" && App.state.lastReport.practice_status !== "awaiting_response") {
+      base = Object.assign({}, App.state.lastRequest, {script:input.value});
+      App.state.form = base;
+      Report._saveWorkspace({type:"pending", request:base});
+    }
+    Form.restore(base);
     App.showView("form");
   },
 
@@ -1422,6 +1530,7 @@ var Report = {
     Report.showLoading();
     Api.submit(request, {
       onSuccess: function (report) {
+        Report._clearWorkspace();
         App.state.lastReport = report;
         if (report.verdict === "passed") Report.showPassed(report);
         else Report.showContent(report);
@@ -1490,6 +1599,7 @@ var Report = {
   },
 
   _onNewRound: function () {
+    Report._clearWorkspace();
     Report._stopLoadingMessages();
     if (window.VoiceCoach && VoiceCoach.reset) VoiceCoach.reset();
     App.state.form = null;
