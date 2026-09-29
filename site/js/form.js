@@ -9,6 +9,8 @@ var Form = {
   _freeDraft: { script: "", voteGap: "close" },
   _replayCompleted: false,
   _replayInProgress: false,
+  _sceneAdvance: null,
+  _scenePaused: false,
 
   ROLE_LABELS: {
     host: "主持",
@@ -38,6 +40,17 @@ var Form = {
       voteButtons[i].addEventListener("click", Form._onVoteClick);
     }
 
+    document.getElementById("btn-scene-pause").addEventListener("click", Form._toggleScenePause);
+    document.getElementById("btn-scene-ready").addEventListener("click", function () {
+      document.getElementById("input-script").focus();
+    });
+    document.getElementById("btn-scene-history").addEventListener("click", function (event) {
+      var expanded = event.currentTarget.getAttribute("aria-expanded") !== "true";
+      Form._showSceneHistory(expanded);
+    });
+    window.addEventListener("pagehide", function () {
+      if (App.state.currentView === "form") { clearTimeout(Form._draftTimer); Form._saveDraft(); }
+    });
     Form._restoreDraft();
     Form._updateInputState();
   },
@@ -129,6 +142,9 @@ var Form = {
     if (!Form._scenario) return;
     var scenario = Form._scenario;
     var timeline = Array.isArray(scenario.timeline) ? scenario.timeline : [];
+    document.getElementById("btn-scene-ready").hidden = timeline.length > 0;
+    document.getElementById("btn-scene-history").hidden = true;
+    document.querySelector(".scene-rules").open = false;
     Form._replayCompleted = timeline.length === 0;
     Form._replayInProgress = false;
     Form._renderSceneGuidance(Form._replayCompleted);
@@ -182,7 +198,7 @@ var Form = {
 
     var status = document.getElementById("scene-feed-status");
     status.textContent = timeline.length
-      ? "点击下方按钮，弹幕会按现场顺序出现。"
+      ? "点击“看现场回放”，留意谁说了什么。"
       : "这个切片没有可回放的现场信息。";
     var replay = document.getElementById("btn-play-scene");
     replay.disabled = timeline.length === 0;
@@ -235,6 +251,8 @@ var Form = {
 
   _playScene: function (event) {
     Form.stopSceneReplay();
+    document.getElementById("btn-scene-ready").hidden = true;
+    document.getElementById("btn-scene-history").hidden = true;
     Form._replayCompleted = false;
     Form._replayInProgress = true;
     Form._renderSceneGuidance(false);
@@ -255,38 +273,78 @@ var Form = {
     button.disabled = true;
     document.getElementById("scene-feed-status").textContent = "现场开始，留意每条信息是谁发的。";
 
-    Array.prototype.forEach.call(items, function (item, index) {
-      var delay = (Number(item.dataset.at) || 0) * 700;
-      Form._sceneTimers.push(setTimeout(function () {
+    var nextIndex = 0;
+    Form._scenePaused = false;
+    var pause = document.getElementById("btn-scene-pause");
+    pause.hidden = false;
+    pause.textContent = "暂停回放，读这一条";
+    var advance = function () {
+      Form._sceneTimers = [];
+      if (nextIndex === items.length) {
         for (var k = 0; k < items.length; k++) items[k].classList.remove("is-playing");
-        item.hidden = false;
-        item.classList.remove("is-pending");
-        item.classList.add("is-playing");
-        var timelineEvent = timeline[index] || {};
-        if (timelineEvent.progress) Form._applyProgress(timelineEvent.progress);
-        document.getElementById("scene-feed-status").textContent = "现场回放 " + (index + 1) + " / " + items.length;
-        var feed = document.getElementById("scene-feed");
-        feed.scrollTop = feed.scrollHeight;
+        Form._applyProgress(Form._scenario);
+        Form._replayInProgress = false;
+        Form._replayCompleted = true;
+        Form._sceneAdvance = null;
+        Form._renderSceneGuidance(true);
+        label.textContent = "再看一遍现场回放";
+        button.disabled = false;
+        pause.hidden = true;
+        document.getElementById("scene-feed-status").textContent = "现场停在这里：现在轮到你写下一拍。";
+        Form._updateInputState();
+        document.getElementById("btn-scene-ready").hidden = false;
+        document.getElementById("btn-scene-history").hidden = false;
+        Form._showSceneHistory(false);
+        return;
+      }
+      for (var i = 0; i < items.length; i++) {
+        items[i].hidden = i !== nextIndex;
+        items[i].classList.remove("is-playing");
+      }
+      var item = items[nextIndex];
+      item.classList.remove("is-pending");
+      item.classList.add("is-playing");
+      var timelineEvent = timeline[nextIndex] || {};
+      if (timelineEvent.progress) Form._applyProgress(timelineEvent.progress);
+      nextIndex += 1;
+      document.getElementById("scene-feed-status").textContent = "现场回放 " + nextIndex + " / " + items.length;
+      // 长句留出阅读时间；需要细看时可暂停，完成后仍可展开完整记录。
+      var readTime = Math.max(2200, Math.min(6500, String(timelineEvent.text || "").length * 160));
+      Form._sceneTimers.push(setTimeout(advance, readTime));
+    };
+    Form._sceneAdvance = advance;
+    advance();
+    var progress = document.getElementById("scene-progress");
+    if (progress.scrollIntoView) progress.scrollIntoView({block:"start", behavior:"auto"});
+  },
 
-        if (index === items.length - 1) {
-          Form._sceneTimers.push(setTimeout(function () {
-            item.classList.remove("is-playing");
-            Form._applyProgress(Form._scenario);
-            Form._replayInProgress = false;
-            Form._replayCompleted = true;
-            Form._renderSceneGuidance(true);
-            label.textContent = "再看一遍现场回放";
-            button.disabled = false;
-            document.getElementById("scene-feed-status").textContent = "现场停在这里：现在轮到你写下一拍。";
-            Form._updateInputState();
-            document.getElementById("input-script").focus();
-          }, 850));
-        }
-      }, delay));
-    });
+  _toggleScenePause: function () {
+    if (!Form._replayInProgress || !Form._sceneAdvance) return;
+    Form._scenePaused = !Form._scenePaused;
+    var button = document.getElementById("btn-scene-pause");
+    button.textContent = Form._scenePaused ? "继续回放 →" : "暂停回放，读这一条";
+    if (Form._scenePaused) {
+      Form._sceneTimers.forEach(clearTimeout);
+      Form._sceneTimers = [];
+      document.getElementById("scene-feed-status").textContent += " · 已暂停";
+    } else {
+      Form._sceneAdvance();
+    }
+  },
+
+  _showSceneHistory: function (expanded) {
+    var items = document.querySelectorAll(".scene-feed__item");
+    for (var i = 0; i < items.length; i++) items[i].hidden = !expanded && i !== items.length - 1;
+    var button = document.getElementById("btn-scene-history");
+    button.setAttribute("aria-expanded", String(expanded));
+    button.textContent = expanded ? "收起记录，只看最后一条" : "展开完整回放记录 · " + items.length + "条";
   },
 
   stopSceneReplay: function () {
+    Form._sceneAdvance = null;
+    Form._scenePaused = false;
+    var pause = document.getElementById("btn-scene-pause");
+    if (pause) pause.hidden = true;
     for (var i = 0; i < Form._sceneTimers.length; i++) clearTimeout(Form._sceneTimers[i]);
     Form._sceneTimers = [];
     Form._replayInProgress = false;
@@ -480,6 +538,7 @@ var Form = {
 
     Api.submit(data, {
       onSuccess: function (report) {
+        Report._clearWorkspace();
         App.state.lastReport = report;
         if (report.verdict === "passed") Report.showPassed(report);
         else Report.showContent(report);
@@ -573,10 +632,20 @@ var Form = {
     Form._setFreeMode(data.mode === "free" || !data.scenario);
     document.getElementById("input-script").value = data.script || "";
     if (data.voteGap) Form._setVoteGap(data.voteGap);
+    if (data.scenario && !App.state.freeMode) {
+      Form._replayCompleted = true;
+      Form._renderSceneGuidance(true);
+      Form._applyProgress(Form._scenario);
+      Form._showSceneHistory(false);
+      document.getElementById("btn-scene-history").hidden = !(Form._scenario.timeline || []).length;
+      document.getElementById("btn-scene-ready").hidden = false;
+      document.getElementById("scene-feed-status").textContent = "已恢复这次练习的现场与原稿，可以继续修改。";
+    }
     Form._updateInputState();
   },
 
   reset: function () {
+    clearTimeout(Form._draftTimer);
     Form.stopSceneReplay();
     Form._draftsByScenario = {};
     Form._freeDraft = { script: "", voteGap: "close" };
@@ -620,6 +689,9 @@ var Form = {
 
   _saveDraft: function () {
     Form._captureCurrentDraft();
+    if (window.Report && Report._workspace && App.state.currentView === "form") {
+      Report._saveWorkspace({type:"pending", request:Form.collect()});
+    }
     try {
       localStorage.setItem(STORAGE_KEYS.draft, JSON.stringify({
         version: 2,

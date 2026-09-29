@@ -123,8 +123,8 @@ var App = {
       return;
     }
     if (stage === "form") {
-      if (App.state.lastRequest && App.state.lastRequest.mode === "response") Form.restore(App.state.lastRequest);
-      App.showView("form");
+      if (App.state.currentView !== "form" && window.Report) Report._onBackEdit();
+      else App.showView("form");
       return;
     }
     if (stage === "report") {
@@ -193,8 +193,17 @@ var App = {
     clearButton.hidden = !App.getAccessCode();
     error.textContent = options.invalid ? "入口码不对，重新输入" : "先输入入口码";
     error.hidden = !options.invalid;
+    App._modalReturnFocus = document.activeElement;
     overlay.hidden = false;
-    setTimeout(function () { input.focus(); }, 50);
+    overlay.onkeydown = function (event) {
+      if (event.key === "Escape") { event.preventDefault(); App.hideAccessModal(); }
+      if (event.key !== "Tab") return;
+      var controls = Array.prototype.filter.call(overlay.querySelectorAll("button, input"), function (node) { return !node.hidden && !node.disabled; });
+      var first = controls[0], last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    input.focus();
 
     var confirm = function () {
       var code = input.value.trim();
@@ -216,6 +225,7 @@ var App = {
 
   hideAccessModal: function () {
     document.getElementById("access-modal").hidden = true;
+    if (App._modalReturnFocus && App._modalReturnFocus.isConnected) App._modalReturnFocus.focus();
   },
 
   init: function () {

@@ -7,6 +7,17 @@ var Api = {
   _timeoutMs: 105000, // Worker 思考与正文最多 90s，另留 15s 网络余量
   _retryMinBudgetMs: 45000, // 重试至少要留得下一次生成；预算不够就直说，别让用户白等
 
+  _active: null,
+
+  cancel: function () {
+    var active = Api._active;
+    if (!active) return;
+    Api._requestId += 1;
+    Api._active = null;
+    Api._inFlight = false;
+    active.cancel();
+  },
+
   init: function () {},
 
   /**
@@ -102,6 +113,16 @@ var Api = {
         reject(timeoutError);
       }, Api._timeoutMs);
     });
+    var cancelReject;
+    var canceled = new Promise(function (_resolve, reject) { cancelReject = reject; });
+    var request = { cancel: function () {
+      clearTimeout(timer);
+      if (controller) controller.abort();
+      cancelReject(new Error("Request canceled"));
+      if (callbacks.onFinish) callbacks.onFinish();
+    }};
+    Api._active = request;
+    timeoutPromise = Promise.race([timeoutPromise, canceled]);
     var submittedAt = Date.now();
     var requestOptions = {
       method: "POST",
@@ -113,6 +134,7 @@ var Api = {
     if (controller) requestOptions.signal = controller.signal;
 
     var attempt = function () {
+      if (requestId !== Api._requestId) return Promise.resolve();
       return Api._attempt(requestOptions, timeoutPromise).then(function (data) {
         clearTimeout(timer);
         if (requestId !== Api._requestId) return; // 陈旧响应丢弃
@@ -172,6 +194,8 @@ var Api = {
       .catch(handleError)
       .then(function () {
         clearTimeout(timer);
+        if (Api._active !== request) return;
+        Api._active = null;
         Api._inFlight = false;
         if (callbacks.onFinish) callbacks.onFinish();
       });

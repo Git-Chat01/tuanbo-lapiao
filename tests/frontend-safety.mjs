@@ -982,7 +982,7 @@ function testRevivalScenariosKeepFactsAndStagesSeparate() {
 
 function testLoadingShowsHonestElapsedTime() {
   // 长等待不能是黑盒：手机端这一轮最长要等一两分钟，秒数必须如实往上走，
-  // 并且超过 20 秒要劝住「别刷新」——刷新等于从头再排一次队。
+  // 从零显示真实等待时长；不伪装模型内部进度。
   const elements = {};
   const elementFor = (id) => (elements[id] || (elements[id] = { id, textContent: "" }));
   const intervals = new Map();
@@ -1001,15 +1001,15 @@ function testLoadingShowsHonestElapsedTime() {
   const tick = () => { for (const timer of [...intervals.values()]) timer.fn(); };
 
   context.Report._startLoadingMessages();
-  assert.equal(elementFor("loading-elapsed").textContent, "", "5 秒内不改文案，只走轮播");
+  assert.equal(elementFor("loading-elapsed").textContent, "已等待 0 秒", "从零开始显示真实等待时长");
   now = 6000;
   tick();
-  assert.match(elementFor("loading-elapsed").textContent, /已经等了 6 秒/, "5 秒后应如实报出等待秒数");
+  assert.match(elementFor("loading-elapsed").textContent, /已等待 6 秒/, "5 秒后应如实报出等待秒数");
   assert.doesNotMatch(elementFor("loading-elapsed").textContent, /刷新/, "20 秒内不必提刷新");
   now = 21000;
   tick();
-  assert.match(elementFor("loading-elapsed").textContent, /已经等了 21 秒/);
-  assert.match(elementFor("loading-elapsed").textContent, /刷新要重新排一次队/, "久等必须劝住刷新");
+  assert.match(elementFor("loading-elapsed").textContent, /已等待 21 秒/);
+  assert.match(elementFor("loading-elapsed").textContent, /仍未收到结果/, "只描述已知状态，不声称模型正在写或排队");
 
   context.Report._stopLoadingMessages();
   assert.equal(intervals.size, 0, "结束时必须同时清掉轮播与秒数两个定时器");

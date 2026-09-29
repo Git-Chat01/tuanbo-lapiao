@@ -82,7 +82,7 @@ context.App={state:{lastReport:waiting,lastRequest:base,coaching:{totalAttempts:
 const root=element('div');
 context.Report._showWaitingResponse(waiting,root);
 assert.equal(context.App.state.coaching.totalAttempts,2,'等待回应页不增加挑战次数');
-const desk=root.children[0].children.at(-1);
+const desk=root.children[0].children.find(n=>n.className==='revision-desk');
 const select=desk.children.find(n=>n.tagName==='select');
 const input=desk.children.find(n=>n.tagName==='textarea');
 const submit=desk.children.find(n=>n.tagName==='button');
@@ -103,6 +103,7 @@ context.Form._renderScenario=()=>{};
 context.Form._setFreeMode=enabled=>{context.App.state.freeMode=enabled;};
 context.Form._setVoteGap=()=>{};
 context.Form._updateInputState=()=>{};
+context.Form._showSceneHistory=()=>{};
 context.Form.restore(derived);
 const restored=context.Form.collect();
 assert.equal(restored.mode,'response');assert.equal(restored.voteGap,derived.voteGap);
