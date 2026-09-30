@@ -223,6 +223,11 @@ node tests/worker-safety.mjs
 node tests/frontend-safety.mjs
 node tests/ui-flow-safety.mjs
 node tests/independent-matrix.mjs
+node tests/context-response-safety.mjs
+node tests/backend-boundary-safety.mjs
+node tests/redline-negation-safety.mjs
+node tests/voice-admin-safety.mjs
+node tests/workspace-recovery-safety.mjs
 wrangler deploy worker/index.js --dry-run
 ```
 
@@ -288,3 +293,13 @@ node tests/context-response-live.mjs --live
 ```
 
 第二项使用虚构样本访问已配置模型并消耗额度；结果保存在忽略目录 tests/tmp_results/。
+
+## 2026-09-30 最终安全与恢复修复
+
+批改限流改用 SQLite Durable Object 事务计数，入口码与 IP 每分钟各最多 60 次。保护绑定缺失或故障时返回 503，不调用模型。请求体按 UTF-8 字节流读取，超过 10KB 就停止读取。Worker 配置包含新绑定与首次迁移，发布需同步部署 wrangler.jsonc。评审版本已递增，旧判定缓存不会沿用。
+
+案例清单使用真实 KV 游标分页，筛选为空的页面仍可继续加载；页面显示已加载数量。批改参照检索使用固定预算，并增加发布索引和手工投喂幂等恢复。旧案例的全局索引与去重指纹需部署后分批回填，操作步骤和检索范围见 [后端维护说明](worker/backend-storage.md)。
+
+明确劝阻、保护观众及不消费边界不再仅凭风险名词硬判错；转折诱导、双重否定和条件施压仍保留硬检测。现场稿、复盘改稿和各模拟分支分别保存；接话结果、取消或失败后的提交稿也能恢复，旧复盘不会覆盖新稿。刷新不会跳过未看的现场回放。
+
+重复点击当前开口练不会重置录音；旧麦克风或波形分析任务不能清理新会话。后台投喂增加独立请求锁与提交快照，旧响应不清空新稿，幂等重试也不会插入重复卡片。CI 已覆盖九套离线回归。本轮未访问真实模型或执行生产案例回填。

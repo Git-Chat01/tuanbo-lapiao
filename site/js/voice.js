@@ -447,24 +447,27 @@
       startCountdown();
     } catch (error) {
       if (requestSession !== state.sessionId) return;
-      cleanupCapture();
+      cleanupCapture(requestSession);
       showError("没有打开麦克风", permissionErrorMessage(error), "重新请求麦克风");
     }
   }
 
   async function setupCaptureMeter(stream, requestSession) {
     var AudioContextCtor = getAudioContextConstructor();
+    var context = null;
     try {
-      state.captureContext = new AudioContextCtor();
-      if (state.captureContext.state === "suspended") await state.captureContext.resume();
-      if (requestSession !== state.sessionId) return;
-      state.captureSource = state.captureContext.createMediaStreamSource(stream);
-      state.analyser = state.captureContext.createAnalyser();
+      context = new AudioContextCtor();
+      state.captureContext = context;
+      if (context.state === "suspended") await context.resume();
+      if (requestSession !== state.sessionId || state.captureContext !== context) return;
+      state.captureSource = context.createMediaStreamSource(stream);
+      state.analyser = context.createAnalyser();
       state.analyser.fftSize = 1024;
       state.analyser.smoothingTimeConstant = 0.75;
       state.captureSource.connect(state.analyser);
     } catch (error) {
-      cleanupCapture();
+      // 旧 resume 可能在取消并重新录音后才失败，只清理本次请求的资源。
+      if (state.captureContext === context) cleanupCapture(requestSession);
       throw error;
     }
   }
@@ -682,26 +685,29 @@
     if (!state.blob) return;
     renderAnalysisPending();
     var AudioContextCtor = getAudioContextConstructor();
+    var context = null;
+    var blob = state.blob;
 
     try {
-      state.analysisContext = new AudioContextCtor();
-      var bytes = await state.blob.arrayBuffer();
-      if (recordingSession !== state.sessionId || !state.blob) return;
-      var audioBuffer = await state.analysisContext.decodeAudioData(bytes.slice(0));
-      if (recordingSession !== state.sessionId || !state.blob) return;
+      context = new AudioContextCtor();
+      state.analysisContext = context;
+      var bytes = await blob.arrayBuffer();
+      if (recordingSession !== state.sessionId || state.blob !== blob || state.analysisContext !== context) return;
+      var audioBuffer = await context.decodeAudioData(bytes.slice(0));
+      if (recordingSession !== state.sessionId || state.blob !== blob || state.analysisContext !== context) return;
       state.metrics = calculateMetrics(audioBuffer);
       state.recordedSeconds = state.metrics.duration;
       renderMetrics(state.metrics);
       setPhase("recorded");
       announce("录音采集质量检查完成");
     } catch (error) {
-      if (recordingSession !== state.sessionId || !state.blob) return;
+      if (recordingSession !== state.sessionId || state.blob !== blob || state.analysisContext !== context) return;
       state.metrics = null;
       setPhase("analysis-error");
       renderAnalysisError();
       announce("浏览器没能读取波形，不评价静音和过载", true);
     } finally {
-      await closeAnalysisContext();
+      await closeAnalysisContext(context);
     }
   }
 
@@ -887,9 +893,11 @@
 
   function bindTrackEnded(stream) {
     unbindTrackEnded();
+    var captureSession = state.sessionId;
     var tracks = stream.getAudioTracks();
     for (var i = 0; i < tracks.length; i++) {
       var handler = function () {
+        if (captureSession !== state.sessionId || state.stream !== stream) return;
         if (state.phase === "recording") stopRecording("track-ended");
         else if (state.phase === "countdown" || state.phase === "requesting") {
           cancelPreparation("麦克风轨道已经结束，这一遍没有开始。检查设备后重新录。");
@@ -943,7 +951,8 @@
     }
   }
 
-  function cleanupCapture() {
+  function cleanupCapture(requestSession) {
+    if (requestSession !== undefined && requestSession !== state.sessionId) return;
     clearCountdown();
     clearRecordingTimers();
     cancelMeterLoop();
@@ -979,10 +988,10 @@
     setMeter(0);
   }
 
-  async function closeAnalysisContext() {
-    if (!state.analysisContext) return;
-    var context = state.analysisContext;
-    state.analysisContext = null;
+  async function closeAnalysisContext(context) {
+    if (arguments.length === 0) context = state.analysisContext;
+    if (!context) return;
+    if (state.analysisContext === context) state.analysisContext = null;
     try {
       await context.close();
     } catch (error) {

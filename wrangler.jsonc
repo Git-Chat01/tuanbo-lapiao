@@ -5,6 +5,12 @@
   "name": "tuanbo-lapiao-coach",
   "main": "worker/index.js",
   "compatibility_date": "2026-08-16",
+  "durable_objects": {
+    "bindings": [{ "name": "COACH_LIMITER", "class_name": "CoachRateLimiter" }]
+  },
+  "migrations": [
+    { "tag": "coach-rate-limit-v1", "new_sqlite_classes": ["CoachRateLimiter"] }
+  ],
   // 案例库 KV（v2 自成长系统）：过关稿自动吸收 + 教练投喂 + 批改时检索参照
   // id 由 `wrangler kv namespace create CASES` 生成（2026-08-17）
   "kv_namespaces": [

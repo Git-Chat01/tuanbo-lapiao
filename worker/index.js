@@ -14,6 +14,7 @@ import {
   publishCase,
   listAdminCases,
   softDeleteCase,
+  reindexCases,
 } from "./cases.js";
 import { detectRedline } from "./redlines.js";
 
@@ -45,10 +46,8 @@ const LIMITS = {
 };
 
 // 批改接口限流：防止入口码泄露/被共享后被用来烧 DeepSeek 额度。
-// 固定 1 分钟窗口 + KV 计数器（key: rl:code|ip:{sha256 前 8 字节}:{分钟桶}，
-// 与 case: 前缀隔离，不会混进案例清单）。读改写竞态可能少算——方向是"略宽松"，
-// 目标是防烧钱而不是精确计费；额度可按实际使用调整。每次批改 2 读 2 写，
-// 免费额度（10 万写/天）足以支撑几百人训练。
+// 固定 1 分钟窗口；每个入口码/IP 指纹对应一个持久限流对象，事务计数。
+// 不用 Workers KV 读改写，避免并发漏算及同键每秒写入上限导致无保护放行。
 const COACH_RATE_LIMIT = {
   // 单入口码每分钟最多 60 次：教练按群体发码（一个码可覆盖十几名学员），
   // 高峰 15 人 × 3 次/分 = 45 次/分，60 留出余量；脚本刷是每分钟几百次，
@@ -56,7 +55,6 @@ const COACH_RATE_LIMIT = {
   codePerMinute: 60,
   ipPerMinute: 60, // 单 IP 每分钟最多 60 次（防有码后多设备/多码轮换刷）
   bucketMs: 60 * 1000,
-  ttlSeconds: 120, // 计数桶 2 分钟后自动过期，防残留
 };
 
 // 批改报告的枚举白名单（不信任模型输出，逃逸枚举 → 502 让前端重试）
@@ -193,7 +191,7 @@ const DEEPSEEK_CONFIG = {
 
 // 修改评分、安全闸门或案例标准时递增；提示词和模型配置也参与指纹。
 // 只复用已完成的检查，不用缓存把一个未经验证的模型输出变成标准答案。
-const REVIEW_VERSION = "2026-09-28-context-and-response-1";
+const REVIEW_VERSION = "2026-09-30-safety-boundaries-2";
 const REVIEW_TTL_SECONDS = 7 * 24 * 60 * 60;
 const reviewStores = new WeakMap();
 
@@ -2277,6 +2275,14 @@ async function handleAdmin(request, env, url, corsHeaders) {
   if (authError) return jsonResponse({ error: true, message: authError.message }, authError.status, corsHeaders);
 
   try {
+    // 显式、可恢复的旧库索引回填；每次最多 100 条，不随批改自动扫全库。
+    if (request.method === "POST" && url.pathname === "/api/admin/cases/reindex") {
+      const body = await readBody(request);
+      if (body.cursor != null && typeof body.cursor !== "string") throw new HttpError(400, "分页位置不对", "invalid reindex cursor");
+      const result = await reindexCases(env, { cursor: body.cursor || undefined, limit: body.limit });
+      return jsonResponse({ ok: true, ...result }, 200, corsHeaders);
+    }
+
     // 投喂优秀话术
     if (request.method === "POST" && url.pathname === "/api/admin/cases") {
       const body = await readBody(request);
@@ -2293,7 +2299,7 @@ async function handleAdmin(request, env, url, corsHeaders) {
         ? url.searchParams.get("source")
         : "auto";
       const includeDeleted = url.searchParams.get("includeDeleted") === "1";
-      const limit = Math.min(parseInt(url.searchParams.get("limit") || "50", 10) || 50, 200);
+      const limit = Math.max(1, Math.min(parseInt(url.searchParams.get("limit") || "50", 10) || 50, 200));
       const cursor = url.searchParams.get("cursor");
       const result = await listAdminCases(env, { source, includeDeleted, limit, cursor });
       return jsonResponse({ ok: true, ...result }, 200, corsHeaders);
@@ -2337,6 +2343,7 @@ async function handleAdmin(request, env, url, corsHeaders) {
 
     return jsonResponse({ error: true, message: "接口不存在" }, 404, corsHeaders);
   } catch (err) {
+    if (err.publicMessage && [400, 409].includes(err.status)) return jsonResponse({ error: true, message: err.publicMessage }, err.status, corsHeaders);
     console.log(`admin error: ${err.message}`);
     return jsonResponse({ error: true, message: "后台出错了，稍后再试" }, 500, corsHeaders);
   }
@@ -2346,15 +2353,37 @@ async function handleAdmin(request, env, url, corsHeaders) {
  * 读取并解析 JSON 请求体（教练接口与管理接口共用）。
  * @returns {Promise<object>}
  */
-async function readBody(request) {
-  const raw = await request.text();
-  if (raw.length > LIMITS.bodyMaxBytes) {
-    throw new HttpError(400, "内容太长，精简一下", "body 超限");
+export async function readBody(request) {
+  const reader = request.body && request.body.getReader();
+  const chunks = [];
+  let bytes = 0;
+  if (reader) {
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        bytes += value.byteLength;
+        if (bytes > LIMITS.bodyMaxBytes) {
+          // 不等剩余请求体上传完；已保留的缓冲最多 10KB。
+          try { await reader.cancel(); } catch { /* 请求可能已断开 */ }
+          throw new HttpError(400, "内容太长，精简一下", "body 超限");
+        }
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
   }
+  const encoded = new Uint8Array(bytes);
+  let offset = 0;
+  for (const chunk of chunks) { encoded.set(chunk, offset); offset += chunk.byteLength; }
   try {
-    return JSON.parse(raw);
+    const raw = new TextDecoder("utf-8", { fatal: true }).decode(encoded);
+    const body = JSON.parse(raw);
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("non-object JSON");
+    return body;
   } catch {
-    throw new HttpError(400, "请求格式不对", "JSON 解析失败");
+    throw new HttpError(400, "请求格式不对", "JSON 对象解析失败");
   }
 }
 
@@ -2407,47 +2436,51 @@ async function shortHash(value) {
 }
 
 /**
- * 批改接口固定窗口限流：同一分钟同一入口码/IP 超限返回 429 错误对象，放行返回 null。
- * KV binding 缺失时 fail-open——鉴权仍是第一道防线，限流只是防烧钱，
- * 且 CASES 缺失时案例模块本就会先失败。KV 抖动同样降级放行，
- * 限流失效好过批改整体 500。
- * @returns {Promise<{status:number, message:string}|null>}
+ * SQLite Durable Object：每个指纹仅保存当前分钟桶，重启后仍保留额度。
+ * Storage transaction 把读、检查、写作为一个整体，突发请求不会丢计数。
  */
-export async function checkCoachRateLimit(env, accessCode, ip) {
-  if (!env || !env.CASES) return null;
-  const bucket = Math.floor(Date.now() / COACH_RATE_LIMIT.bucketMs);
-  const entries = [
-    {
-      key: `rl:code:${await shortHash(accessCode)}:${bucket}`,
-      max: COACH_RATE_LIMIT.codePerMinute,
-      label: "入口码",
-    },
-  ];
-  if (ip) {
-    entries.push({
-      key: `rl:ip:${await shortHash(ip)}:${bucket}`,
-      max: COACH_RATE_LIMIT.ipPerMinute,
-      label: "IP",
+export class CoachRateLimiter {
+  constructor(ctx) { this.ctx = ctx; }
+
+  async fetch(request) {
+    if (request.method !== "POST") return new Response(null, { status: 405 });
+    const max = COACH_RATE_LIMIT.codePerMinute; // 两个维度均为 60/min。
+    const result = await this.ctx.storage.transaction(async (txn) => {
+      // 在事务内取桶时间，排队跨分钟的请求不会倒写旧窗口。
+      const bucket = Math.floor(Date.now() / COACH_RATE_LIMIT.bucketMs);
+      const saved = await txn.get("window");
+      const count = saved && saved.bucket === bucket ? saved.count : 0;
+      if (!Number.isInteger(count) || count < 0) throw new Error("Invalid limiter state");
+      if (count >= max) return { allowed: false };
+      await txn.put("window", { bucket, count: count + 1 });
+      return { allowed: true };
     });
+    return Response.json(result);
   }
-  for (const entry of entries) {
-    try {
-      const current = (await env.CASES.get(entry.key, "json")) || 0;
-      if (current >= entry.max) {
-        return {
-          status: 429,
-          message: `批改太频繁（按${entry.label}每分钟最多 ${entry.max} 次），休息一下再继续`,
-        };
+}
+
+/** 只在持久限流器确认额度后放行；缺绑定、故障或异常协议均返回 503。 */
+export async function checkCoachRateLimit(env, accessCode, ip) {
+  const unavailable = { status: 503, message: "批改保护暂时不可用，请稍后再试" };
+  if (!env || !env.COACH_LIMITER) return unavailable;
+  const entries = [{ key: `code:${await shortHash(accessCode)}`, label: "入口码", max: COACH_RATE_LIMIT.codePerMinute }];
+  if (ip) entries.push({ key: `ip:${await shortHash(ip)}`, label: "IP", max: COACH_RATE_LIMIT.ipPerMinute });
+  try {
+    for (const entry of entries) {
+      const id = env.COACH_LIMITER.idFromName(entry.key);
+      const response = await env.COACH_LIMITER.get(id).fetch(new Request("https://limiter.internal/check", { method: "POST" }));
+      if (!response.ok) return unavailable;
+      const result = await response.json();
+      if (!result || typeof result.allowed !== "boolean") return unavailable;
+      if (!result.allowed) {
+        return { status: 429, message: `批改太频繁（按${entry.label}每分钟最多 ${entry.max} 次），休息一下再继续` };
       }
-      await env.CASES.put(entry.key, JSON.stringify(current + 1), {
-        expirationTtl: COACH_RATE_LIMIT.ttlSeconds,
-      });
-    } catch (err) {
-      console.log(`rate limit degraded: ${err.message}`);
-      return null;
     }
+    return null;
+  } catch (err) {
+    console.log(`rate limiter unavailable: ${err.message}`);
+    return unavailable;
   }
-  return null;
 }
 
 /**

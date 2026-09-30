@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { createRateLimiterBinding } from "./helpers/rate-limiter.mjs";
 
 const toDataUrl = (source) =>
   `data:text/javascript;base64,${Buffer.from(source, "utf8").toString("base64")}`;
@@ -22,8 +23,8 @@ async function loadIndexModule() {
       'const SYSTEM_PROMPT = ""; const buildUserPrompt = (...args) => { globalThis.__lastBuildUserPromptArgs = args; return "test prompt"; };'
     )
     .replace(
-      /import \{\s*retrieveCases,\s*tryAbsorb,\s*addManualCase,\s*publishCase,\s*listAdminCases,\s*softDeleteCase,?\s*\} from "\.\/cases\.js";/,
-      "const retrieveCases = async (...args) => { globalThis.__retrieveCasesArgs = args; if (globalThis.__retrieveCasesError) throw new Error('case lookup unavailable'); return globalThis.__retrievedCases || []; }; const tryAbsorb = async (...args) => { globalThis.__tryAbsorbArgs = args; return null; }; const addManualCase = async () => ''; const publishCase = async (...args) => { globalThis.__publishCaseArgs = args; return globalThis.__publishCaseResult || { ok: true, alreadyPublished: false, publishedAt: 1 }; }; const listAdminCases = async () => ({ items: [] }); const softDeleteCase = async () => false;"
+      /import \{\s*retrieveCases,\s*tryAbsorb,\s*addManualCase,\s*publishCase,\s*listAdminCases,\s*softDeleteCase,?\s*(?:reindexCases,?\s*)?\} from "\.\/cases\.js";/,
+      "const retrieveCases = async (...args) => { globalThis.__retrieveCasesArgs = args; if (globalThis.__retrieveCasesError) throw new Error('case lookup unavailable'); return globalThis.__retrievedCases || []; }; const tryAbsorb = async (...args) => { globalThis.__tryAbsorbArgs = args; return null; }; const addManualCase = async () => ''; const publishCase = async (...args) => { globalThis.__publishCaseArgs = args; return globalThis.__publishCaseResult || { ok: true, alreadyPublished: false, publishedAt: 1 }; }; const listAdminCases = async () => ({ items: [] }); const softDeleteCase = async () => false; const reindexCases = async () => ({indexed:0});"
     )
     .replace(
       'import { detectRedline } from "./redlines.js";',
@@ -36,13 +37,15 @@ class MemoryKV {
   constructor(entries = []) {
     this.values = new Map(entries.map(([key, value]) => [key, JSON.stringify(value)]));
     this.putKeys = [];
+    this.metadata = new Map();
   }
 
-  async list({ prefix = "" } = {}) {
+  async list({ prefix = "", limit = 1000, cursor } = {}) {
     const keys = [...this.values.keys()]
       .filter((key) => key.startsWith(prefix))
-      .map((name) => ({ name }));
-    return { keys, list_complete: true };
+      .sort().map((name) => ({ name, metadata: this.metadata.get(name) }));
+    const offset = cursor ? Number(cursor) : 0;
+    return { keys: keys.slice(offset, offset + limit), list_complete: offset + limit >= keys.length, cursor: offset + limit < keys.length ? String(offset + limit) : undefined };
   }
 
   async get(key, type) {
@@ -51,10 +54,12 @@ class MemoryKV {
     return type === "json" ? JSON.parse(raw) : raw;
   }
 
-  async put(key, value) {
+  async put(key, value, options) {
+    if (options && options.metadata) this.metadata.set(key, options.metadata);
     this.putKeys.push(key);
     this.values.set(key, value);
   }
+  async delete(key) { this.values.delete(key); this.metadata.delete(key); }
 }
 
 const cases = await loadCasesModule();
@@ -2578,7 +2583,7 @@ globalThis.fetch = async () => {
 
 try {
   const workerEnv = {
-    ACCESS_CODE: "access-code-123",
+    COACH_LIMITER: createRateLimiterBinding(index.CoachRateLimiter), ACCESS_CODE: "access-code-123",
     ADMIN_CODE: "admin-code-123",
     DEEPSEEK_API_KEY: "test-key",
   };
@@ -3150,7 +3155,7 @@ for (const pureNarrationScript of ["凯哥说他想看返场。", "你说想看�
 {
   const rateLimitKv = new MemoryKV();
   const rateLimitEnv = {
-    ACCESS_CODE: "access-code-123",
+    COACH_LIMITER: createRateLimiterBinding(index.CoachRateLimiter), ACCESS_CODE: "access-code-123",
     ADMIN_CODE: "admin-code-123",
     DEEPSEEK_API_KEY: "test-key",
     CASES: rateLimitKv,
@@ -3197,32 +3202,33 @@ for (const pureNarrationScript of ["凯哥说他想看返场。", "你说想看�
   }
 }
 
-// 限流函数直测：IP 维度独立计数；KV 缺失时 fail-open（鉴权仍是第一道防线）。
+// 限流函数直测：IP 维度独立计数；专用 binding 缺失时 fail-closed。
 {
   const ipLimitKv = new MemoryKV();
+  const ipLimiter = createRateLimiterBinding(index.CoachRateLimiter);
   // 每次调用换一个码：码维度 30/分钟不会先触发，这里只测 IP 维度 60/分钟。
   for (let i = 0; i < 60; i += 1) {
     const allowed = await index.checkCoachRateLimit(
-      { CASES: ipLimitKv },
+      { CASES: ipLimitKv, COACH_LIMITER: ipLimiter },
       `ip-probe-code-${i}`,
       "203.0.113.9"
     );
     assert.equal(allowed, null, `IP 维度第 ${i + 1} 次应在额度内放行`);
   }
   const ipBlocked = await index.checkCoachRateLimit(
-    { CASES: ipLimitKv },
+    { CASES: ipLimitKv, COACH_LIMITER: ipLimiter },
     "some-code",
     "203.0.113.9"
   );
   assert.equal(ipBlocked?.status, 429, "同一 IP 超限应返回 429");
   const otherIp = await index.checkCoachRateLimit(
-    { CASES: ipLimitKv },
+    { CASES: ipLimitKv, COACH_LIMITER: ipLimiter },
     "another-code",
     "198.51.100.2"
   );
   assert.equal(otherIp, null, "新 IP 新码不应被旧桶误拦");
   const noBinding = await index.checkCoachRateLimit({}, "code", "1.2.3.4");
-  assert.equal(noBinding, null, "KV binding 缺失时 fail-open，不拦训练");
+  assert.equal(noBinding.status, 503, "专用限流 binding 缺失时停止模型调用");
 }
 
 // ---- 低危修复回归：词表与文本判断的批量修复 ----
@@ -3492,7 +3498,7 @@ assert.match(
         const report=requests.length===2&&repairSucceeds?upstreamReport:invalid;
         return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify(report)}}],usage:{prompt_tokens:10,completion_tokens:20}}));
       };
-      const env={ACCESS_CODE:"repair-test",DEEPSEEK_API_KEY:"test-key"};
+      const env={COACH_LIMITER:createRateLimiterBinding(index.CoachRateLimiter),ACCESS_CODE:"repair-test",DEEPSEEK_API_KEY:"test-key"};
       const response=await index.default.fetch(new Request("https://local.test/api/coach",{
         method:"POST",headers:{"Content-Type":"application/json",Accept:streaming?"application/x-ndjson":"application/json"},
         body:JSON.stringify({accessCode:env.ACCESS_CODE,voteGap:"close",script:baseScript}),
@@ -3535,7 +3541,7 @@ assert.match(
       usage:{prompt_tokens:10,completion_tokens:20}}),{status:200});
   };
   try{
-    const env={ACCESS_CODE:"reference-repair-test",DEEPSEEK_API_KEY:"test-key"};
+    const env={COACH_LIMITER:createRateLimiterBinding(index.CoachRateLimiter),ACCESS_CODE:"reference-repair-test",DEEPSEEK_API_KEY:"test-key"};
     const response=await index.default.fetch(new Request("https://local.test/api/coach",{
       method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({accessCode:env.ACCESS_CODE,voteGap:"close",script}),
@@ -3607,7 +3613,7 @@ assert.match(
 // A newly published or edited reference lesson refreshes the actual coach route,
 // while revision lookup still finds the latest report through the stable key.
 {
-  const env={ACCESS_CODE:"lesson-cache-test",DEEPSEEK_API_KEY:"test-key",CASES:new MemoryKV()};
+  const env={COACH_LIMITER:createRateLimiterBinding(index.CoachRateLimiter),ACCESS_CODE:"lesson-cache-test",DEEPSEEK_API_KEY:"test-key",CASES:new MemoryKV()};
   const savedFetch=globalThis.fetch;
   let modelCalls=0;
   globalThis.fetch=async()=>{
@@ -3701,7 +3707,7 @@ assert.match(
 
 // Both JSON and streaming routes surface teacher contradictions as non-scoring business errors.
 {
-  const env={ACCESS_CODE:"route-revision",CASES:new MemoryKV()};
+  const env={COACH_LIMITER:createRateLimiterBinding(index.CoachRateLimiter),ACCESS_CODE:"route-revision",CASES:new MemoryKV()};
   const oldScript=baseScript.replace("我还差十票","我还差二十票");
   const previous={verdict:"almost",coaching:{focus_key:"user_reason",original:"我还差二十票",example:"我还差十票"}};
   const current={verdict:"almost",structure_checks:[{key:"user_reason",status:"partial",evidence:"仍未接上理由"}]};

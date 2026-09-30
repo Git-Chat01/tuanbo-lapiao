@@ -1,3 +1,4 @@
+import { createRateLimiterBinding } from "./helpers/rate-limiter.mjs";
 // Real model, actual /api/coach lifecycle, local memory KV only. Never retries failures.
 // node tests/coaching-flow-live.mjs --live
 import assert from "node:assert/strict";
@@ -17,7 +18,7 @@ const vars=await readFile(new URL(".dev.vars",root),"utf8");
 const key=vars.split(/\r?\n/u).find(l=>l.startsWith("DEEPSEEK_API_KEY="))?.split("=").slice(1).join("=").trim().replace(/^['"]|['"]$/gu,"");
 if(!key)throw new Error("Missing configured model key");
 const data=new Map();
-const env={ACCESS_CODE:"local-flow-check",DEEPSEEK_API_KEY:key,CASES:{
+const env={COACH_LIMITER:createRateLimiterBinding(worker.CoachRateLimiter),ACCESS_CODE:"local-flow-check",DEEPSEEK_API_KEY:key,CASES:{
   async get(k,type){const value=data.get(k);return value===undefined?null:type==="json"?JSON.parse(value):value;},
   async put(k,v){data.set(k,v);},
 }};

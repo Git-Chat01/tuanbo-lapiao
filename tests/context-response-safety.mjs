@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
-import worker, {normalizeReport, applyReportSafetyGates, splitHardSentences, getReportQualityIssue, getInteractionReviewIssue, sanitizeScenario} from '../worker/index.js';
+import { createRateLimiterBinding } from './helpers/rate-limiter.mjs';
+import worker, {CoachRateLimiter, normalizeReport, applyReportSafetyGates, splitHardSentences, getReportQualityIssue, getInteractionReviewIssue, sanitizeScenario} from '../worker/index.js';
 import {detectRedline} from '../worker/redlines.js';
 
 const waitingScene = {phase:'awaiting_drop',hostCue:'队伍已组满，等待主持统一发令。'};
@@ -115,7 +116,7 @@ assert.equal(context.Form._isSameAsLast(restored),true);
 const savedFetch=globalThis.fetch;let calls=0;
 try {
  globalThis.fetch=async()=>{calls++;return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify(reportFor('组满了，谢谢大家，等主持口令。'))}}],usage:{prompt_tokens:1,completion_tokens:1}}));};
- const env={ACCESS_CODE:'local-context-test',DEEPSEEK_API_KEY:'fake-key'};
+ const env={COACH_LIMITER:createRateLimiterBinding(CoachRateLimiter),ACCESS_CODE:'local-context-test',DEEPSEEK_API_KEY:'fake-key'};
  const request=script=>worker.fetch(new Request('https://test.local/api/coach',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accessCode:env.ACCESS_CODE,voteGap:'secured',script,scenario:waitingScene})}),env,{waitUntil(){}});
  const short=await request('组满了，谢谢大家，等主持口令。');
  assert.equal(short.status,200,JSON.stringify(await short.clone().json()));assert.ok(calls);

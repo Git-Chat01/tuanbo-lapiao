@@ -32,6 +32,8 @@ var Coach = {
   _sessionAdminCode: "",
   // 单卡操作锁：发布 / 拒绝 / 删除期间，同一张卡不允许重复操作
   _caseOps: {},
+  // 投喂请求锁独立于按钮状态，编辑下一条时不能启动重复请求。
+  _feedBusy: false,
 
   // ---- 管理密码（仅当前 tab 会话，401 时清缓存重弹） ----
   getAdminCode: function () {
@@ -169,7 +171,7 @@ var Coach = {
     Coach._request("/api/admin/cases?source=" + tab + "&limit=50")
       .then(function (data) {
         if (requestId !== Coach._loadSeq || tab !== Coach._tab) return;
-        Coach._renderList(data.items || [], true);
+        Coach._renderList(data.items || [], true, data.hasMore);
         Coach._cursor[tab] = data.nextCursor || null;
         Coach._refreshLoadMore(data);
       })
@@ -197,7 +199,7 @@ var Coach = {
     )
       .then(function (data) {
         if (requestId !== Coach._loadSeq || tab !== Coach._tab) return;
-        Coach._renderList(data.items || [], false);
+        Coach._renderList(data.items || [], false, data.hasMore);
         Coach._cursor[tab] = data.nextCursor || null;
         Coach._refreshLoadMore(data);
       })
@@ -221,21 +223,28 @@ var Coach = {
   },
 
   _refreshLoadMore: function (data) {
-    document.getElementById("btn-load-more").hidden = !data.hasMore;
+    var btn = document.getElementById("btn-load-more");
+    btn.hidden = !data.hasMore;
+    var loaded = document.getElementById("list-container").querySelectorAll(".case-card").length;
+    btn.textContent = "加载更多（已加载 " + loaded + " 条）";
   },
 
   /** 渲染清单卡片。replace=true 清空重画（第一页），false 追加 */
-  _renderList: function (items, replace) {
+  _renderList: function (items, replace, hasMore) {
     var container = document.getElementById("list-container");
     if (replace) {
       while (container.firstChild) container.removeChild(container.firstChild);
     }
 
-    if (items.length === 0 && replace) {
+    var existingEmpty = container.querySelector(".list-empty");
+    if (existingEmpty && (items.length > 0 || !container.querySelector(".case-card"))) existingEmpty.remove();
+
+    if (items.length === 0 && !container.querySelector(".case-card")) {
       var empty = document.createElement("p");
       empty.className = "list-empty";
-      empty.textContent =
-        Coach._tab === "auto"
+      empty.textContent = hasMore
+        ? "这一页没有可显示的案例，可以继续加载下一页。"
+        : Coach._tab === "auto"
           ? "暂时没有自动候选——学员过关稿会先进入这里，等老师审核"
           : "还没投喂过，用左边喂第一条";
       container.appendChild(empty);
@@ -243,7 +252,7 @@ var Coach = {
     }
 
     for (var i = 0; i < items.length; i++) {
-      container.appendChild(Coach._caseCard(items[i]));
+      if (!Coach._hasCaseCard(container, items[i].id)) container.appendChild(Coach._caseCard(items[i]));
     }
   },
 
@@ -510,9 +519,14 @@ var Coach = {
   // ---- 投喂 ----
   /** 投喂表单：票况 chip + 话术 + 为什么好 */
   _feed: function () {
+    if (Coach._feedBusy) return;
     var active = document.querySelector('.coach-col--feed .chip[aria-pressed="true"]');
-    var script = document.getElementById("input-script").value.trim();
-    var whyGood = document.getElementById("input-whygood").value.trim();
+    var scriptInput = document.getElementById("input-script");
+    var whyInput = document.getElementById("input-whygood");
+    var rawScript = scriptInput.value;
+    var rawWhyGood = whyInput.value;
+    var script = rawScript.trim();
+    var whyGood = rawWhyGood.trim();
 
     if (!active) {
       Coach._toast("先选票数情况");
@@ -536,27 +550,35 @@ var Coach = {
     }
 
     var btn = document.getElementById("btn-feed");
+    var voteGap = active.dataset.value;
+    Coach._feedBusy = true;
     btn.disabled = true;
     btn.textContent = "投喂中……";
 
-    Coach._request("/api/admin/cases", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        voteGap: active.dataset.value,
-        script: script,
-        whyGood: whyGood,
-      }),
-    })
+    return Promise.resolve()
+      .then(function () {
+        return Coach._request("/api/admin/cases", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            voteGap: voteGap,
+            script: script,
+            whyGood: whyGood,
+          }),
+        });
+      })
       .then(function (data) {
         // 乐观插入：KV 最终一致性 ~60s，清单立即显示刚投的（检索慢半拍没关系）
         Coach._toast("投喂成功，教练收到了");
-        Coach._resetFeedForm();
+        var currentGap = document.querySelector('.coach-col--feed .chip[aria-pressed="true"]');
+        if (scriptInput.value === rawScript && whyInput.value === rawWhyGood && currentGap && currentGap.dataset.value === voteGap) {
+          Coach._resetFeedForm();
+        }
         Coach._insertLocalCard({
           id: data.id,
           source: "manual",
           script: script,
-          voteGap: active.dataset.value,
+          voteGap: voteGap,
           whyGood: whyGood,
           createdAt: Date.now(),
           deleted: false,
@@ -566,16 +588,21 @@ var Coach = {
         if (err.message !== "401") Coach._toast("投喂失败：" + err.message);
       })
       .then(function () {
-        btn.disabled = false;
+        Coach._feedBusy = false;
         btn.textContent = "投喂给教练";
         Coach._refreshFeedBtn();
       });
   },
 
   /** 乐观插入：manual tab 直接插到清单顶部（不等 KV 生效） */
+  _hasCaseCard: function (container, id) {
+    return Array.prototype.some.call(container.querySelectorAll(".case-card"), function (card) { return card.dataset.id === id; });
+  },
+
   _insertLocalCard: function (item) {
     if (Coach._tab !== "manual") return;
     var container = document.getElementById("list-container");
+    if (Coach._hasCaseCard(container, item.id)) return;
     // 先清掉空态占位
     var empty = container.querySelector(".list-empty");
     if (empty) empty.remove();
@@ -607,7 +634,7 @@ var Coach = {
     var active = document.querySelector('.coach-col--feed .chip[aria-pressed="true"]');
     var script = document.getElementById("input-script").value.trim();
     var whyGood = document.getElementById("input-whygood").value.trim();
-    document.getElementById("btn-feed").disabled = !(
+    document.getElementById("btn-feed").disabled = Coach._feedBusy || !(
       active &&
       script.length >= LIMITS.scriptMin &&
       whyGood.length > 0

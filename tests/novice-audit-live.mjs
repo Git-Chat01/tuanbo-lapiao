@@ -1,3 +1,4 @@
+import { createRateLimiterBinding } from "./helpers/rate-limiter.mjs";
 // Read user-provided drafts; actual current Worker + configured model, local KV only.
 // --initial runs each unchanged draft twice with isolated records (no hidden retry).
 // --revise uses revisions.json prepared from the first review, retaining its saved record.
@@ -31,7 +32,7 @@ globalThis.fetch=async(...args)=>{
   await writeFile(new URL(`raw-${phase}-${n}.json`,out),JSON.stringify({currentScript:input.currentScript,httpStatus:response.status,body:await response.clone().text()},null,2));
   return response;
 };
-const makeEnv=()=>{const map=new Map();return {ACCESS_CODE:"local-novice-audit",DEEPSEEK_API_KEY:key,CASES:{
+const makeEnv=()=>{const map=new Map();return {COACH_LIMITER:createRateLimiterBinding(worker.CoachRateLimiter),ACCESS_CODE:"local-novice-audit",DEEPSEEK_API_KEY:key,CASES:{
   async get(k,type){const v=map.get(k);return v===undefined?null:type==="json"?JSON.parse(v):v;},
   async put(k,v){map.set(k,v);},
 }};};

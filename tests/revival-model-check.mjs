@@ -23,7 +23,7 @@ async function loadIndexModule() {
       'const SYSTEM_PROMPT = ""; const buildUserPrompt = () => "";'
     )
     .replace(
-      /import \{\s*retrieveCases,\s*tryAbsorb,\s*addManualCase,\s*publishCase,\s*listAdminCases,\s*softDeleteCase,?\s*\} from "\.\/cases\.js";/,
+      /import \{\s*retrieveCases,\s*tryAbsorb,\s*addManualCase,\s*publishCase,\s*listAdminCases,\s*softDeleteCase,?\s*(?:reindexCases,?\s*)?\} from "\.\/cases\.js";/,
       "const retrieveCases = async () => []; const tryAbsorb = async () => null; const addManualCase = async () => ''; const publishCase = async () => ({ ok: true }); const listAdminCases = async () => ({ items: [] }); const softDeleteCase = async () => false;"
     )
     .replace(

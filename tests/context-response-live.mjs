@@ -1,15 +1,17 @@
+import { createRateLimiterBinding } from "./helpers/rate-limiter.mjs";
 // Synthetic regression against the configured model; never reads production KV.
 // node tests/context-response-live.mjs --live
 import assert from 'node:assert/strict';
 import {readFile,writeFile,mkdir} from 'node:fs/promises';
 import vm from 'node:vm';
+import { CoachRateLimiter } from '../worker/index.js';
 import worker from '../worker/index.js';
 if(!process.argv.includes('--live'))throw new Error('Use --live to call the configured model');
 const vars=await readFile(new URL('../.dev.vars',import.meta.url),'utf8');
 const key=vars.split(/\r?\n/u).find(l=>l.startsWith('DEEPSEEK_API_KEY='))?.split('=').slice(1).join('=').trim().replace(/^['"]|['"]$/gu,'');
 if(!key)throw new Error('Missing configured model key');
 const values=new Map();
-const env={ACCESS_CODE:'context-live-test',DEEPSEEK_API_KEY:key,CASES:{async list(){return {keys:[],list_complete:true};},async get(k,type){const v=values.get(k);return v===undefined?null:type==='json'?JSON.parse(v):v;},async put(k,v){values.set(k,v);}}};
+const env={COACH_LIMITER:createRateLimiterBinding(CoachRateLimiter),ACCESS_CODE:'context-live-test',DEEPSEEK_API_KEY:key,CASES:{async list(){return {keys:[],list_complete:true};},async get(k,type){const v=values.get(k);return v===undefined?null:type==='json'?JSON.parse(v):v;},async put(k,v){values.set(k,v);}}};
 const pending=[];
 const context=vm.createContext({});
 vm.runInContext(await readFile(new URL('../site/js/form.js',import.meta.url),'utf8'),context);
