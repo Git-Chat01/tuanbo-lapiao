@@ -538,13 +538,13 @@ var Form = {
 
     Api.submit(data, {
       onSuccess: function (report) {
-        Report._clearWorkspace();
         App.state.lastReport = report;
         if (report.verdict === "passed") Report.showPassed(report);
         else Report.showContent(report);
       },
       onError: function (status, message) {
         if (status === 401) {
+          Form.restore(data, {replayCompleted:true});
           App.showView("form");
           App.showAccessModal(function () { Form._submitData(data); }, { invalid: true, clear: true });
         } else {
@@ -592,6 +592,8 @@ var Form = {
     if (!next) return;
     var error = Form.validate(next);
     if (error) { App.toast(error); return; }
+    Form._captureCurrentDraft();
+    Form.restore(next, {replayCompleted:true});
     Form._submitData(next);
   },
 
@@ -615,8 +617,9 @@ var Form = {
     Form._submitData(next);
   },
 
-  restore: function (data) {
+  restore: function (data, options) {
     if (!data) return;
+    options = options || {};
     if (data.scenario && data.scenario.id && Form._findScenario(data.scenario.id)) {
       Form._selectScenario(data.scenario.id, { skipCapture: true, skipSave: true });
     }
@@ -632,7 +635,7 @@ var Form = {
     Form._setFreeMode(data.mode === "free" || !data.scenario);
     document.getElementById("input-script").value = data.script || "";
     if (data.voteGap) Form._setVoteGap(data.voteGap);
-    if (data.scenario && !App.state.freeMode) {
+    if (data.scenario && !App.state.freeMode && options.replayCompleted !== false) {
       Form._replayCompleted = true;
       Form._renderSceneGuidance(true);
       Form._applyProgress(Form._scenario);
@@ -690,7 +693,7 @@ var Form = {
   _saveDraft: function () {
     Form._captureCurrentDraft();
     if (window.Report && Report._workspace && App.state.currentView === "form") {
-      Report._saveWorkspace({type:"pending", request:Form.collect()});
+      Report._saveFormDraft(Form.collect(), Form._replayCompleted);
     }
     try {
       localStorage.setItem(STORAGE_KEYS.draft, JSON.stringify({

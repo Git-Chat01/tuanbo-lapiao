@@ -126,6 +126,7 @@ var Report = {
   _workspace: null,
   _workspaceKey: "tuanbo-coaching-workspace-v1",
   _saveWorkspace: function (value) {
+    value.version = 2;
     value.coaching = App.state.coaching || null;
     Report._workspace = value;
     try { localStorage.setItem(Report._workspaceKey, JSON.stringify(value)); return true; }
@@ -135,11 +136,35 @@ var Report = {
     Report._workspace = null;
     try { localStorage.removeItem(Report._workspaceKey); } catch (error) {}
   },
+  _saveFormDraft: function (request, replayCompleted) {
+    if (!Report._workspace) return;
+    // 表单与复盘是两个编辑位置；返回现场不能销毁复盘中的各分支稿。
+    Report._workspace.formDraft = { request: request, replayCompleted: Boolean(replayCompleted) };
+    Report._workspace.formActive = true;
+    App.state.form = request;
+    return Report._saveWorkspace(Report._workspace);
+  },
+  _recoverPreviousWorkspace: function (request, replayCompleted) {
+    var pending = Report._workspace;
+    var saved = pending && pending.type === "pending" && pending.previousWorkspace;
+    if (!saved || !saved.request || !saved.report) return false;
+    Report._workspace = saved;
+    App.state.lastRequest = saved.request;
+    App.state.lastReport = saved.report;
+    if (saved.coaching) App.state.coaching = saved.coaching;
+    if (saved.report.practice_status !== "awaiting_response" && App.state.coaching && App.state.coaching.lastProgress) App.state.coaching.currentReport = saved.report;
+    App.unlockStage("report");
+    if (saved.report.verdict === "passed") Report.showPassed(saved.report);
+    else Report.showContent(saved.report);
+    Form.restore(request, {replayCompleted:replayCompleted !== false});
+    Report._saveFormDraft(request, Form._replayCompleted);
+    return true;
+  },
   _draftFor: function () {
     var request = App.state.lastRequest;
     var saved = Report._workspace;
     if (!saved || saved.type !== "edit" || JSON.stringify(saved.request) !== JSON.stringify(request)) {
-      saved = {type:"edit", request:request, report:App.state.lastReport, revision:request ? request.script : "", branch:"0", responses:{}};
+      saved = {type:"edit", request:request, report:App.state.lastReport, revision:request ? request.script : "", branch:"0", responses:{}, replayCompleted:true};
       Report._workspace = saved;
     }
     return saved;
@@ -149,16 +174,28 @@ var Report = {
       var saved = JSON.parse(localStorage.getItem(Report._workspaceKey) || "null");
       if (!saved || !saved.request || typeof saved.request.script !== "string" || saved.request.script.length > LIMITS.scriptMax) return;
       Report._workspace = saved;
-      App.state.form = saved.request;
+      if (saved.type === "pending" && saved.previousWorkspace) {
+        var pendingForm = saved.formDraft;
+        if (Report._recoverPreviousWorkspace(pendingForm ? pendingForm.request : saved.request, pendingForm ? pendingForm.replayCompleted : true)) {
+          App.showView("form");
+          return;
+        }
+      }
       App.state.lastRequest = saved.request;
       if (saved.coaching && typeof saved.coaching.totalAttempts === "number") App.state.coaching = saved.coaching;
-      Form.restore(saved.request);
-      if (saved.type === "edit" && saved.report && typeof saved.report === "object") {
+      App.state.lastReport = (saved.type === "edit" || saved.type === "passed") ? saved.report || null : null;
+      var formDraft = saved.formDraft && saved.formDraft.request;
+      if (formDraft && (typeof formDraft.script !== "string" || formDraft.script.length > LIMITS.scriptMax)) formDraft = null;
+      App.state.form = formDraft || saved.request;
+      Form.restore(App.state.form, { replayCompleted: formDraft ? saved.formDraft.replayCompleted === true : saved.replayCompleted !== false });
+      if ((saved.type === "edit" || saved.type === "passed") && saved.report && typeof saved.report === "object") {
         App.state.lastReport = saved.report;
         if (saved.report.practice_status !== "awaiting_response" && App.state.coaching && App.state.coaching.lastProgress) App.state.coaching.currentReport = saved.report;
         App.unlockStage("report");
-        Report.showContent(saved.report);
+        if (saved.report.verdict === "passed") Report.showPassed(saved.report);
+        else Report.showContent(saved.report);
       }
+      if (formDraft && saved.formActive) App.showView("form");
     } catch (error) { Report._clearWorkspace(); }
   },
   _cancelWait: function () {
@@ -166,8 +203,11 @@ var Report = {
     Report._stopLoadingMessages();
     document.getElementById("report-loading").hidden = true;
     document.getElementById("btn-back-edit").disabled = false;
-    App.lockStage("report");
-    Form.restore(App.state.lastRequest);
+    var request = App.state.lastRequest;
+    if (!Report._recoverPreviousWorkspace(request, true)) {
+      App.lockStage("report");
+      Form.restore(request, {replayCompleted:true});
+    }
     App.showView("form");
     App.toast("已取消等待，原稿仍在，可以继续修改");
   },
@@ -1051,6 +1091,7 @@ var Report = {
     input.addEventListener("input", function () {
       syncCount();
       draft.revision = input.value;
+      draft.revisionDirty = true;
       state.textContent += Report._saveWorkspace(draft) ? " · 已自动保存" : " · 本机无法保存，请保留页面";
     });
     syncCount();
@@ -1323,6 +1364,7 @@ var Report = {
 
     if (report.practice_status === "awaiting_response") {
       Report._showWaitingResponse(report, content);
+      Report._saveWorkspace(Report._draftFor());
       App.showView("report");
       return;
     }
@@ -1344,6 +1386,7 @@ var Report = {
     if (help && !Report._shouldOpenHelp(progress)) details.appendChild(help);
     details.appendChild(Report._fullReview(report, checks, focus));
     content.appendChild(details);
+    Report._saveWorkspace(Report._draftFor());
     App.showView("report");
   },
 
@@ -1412,7 +1455,6 @@ var Report = {
   },
 
   showPassed: function (report) {
-    Report._clearWorkspace();
     var detailPanel = document.getElementById("passed-details");
     if (detailPanel) detailPanel.open = false;
     Report._stopLoadingMessages();
@@ -1450,11 +1492,18 @@ var Report = {
     if (optionalPolish) learn.appendChild(optionalPolish);
     Report._renderPassedRoundDynamics(report);
 
+    var saved = Report._workspace;
+    if (!saved || saved.type !== "passed" || JSON.stringify(saved.request) !== JSON.stringify(App.state.lastRequest)) {
+      saved = {type:"passed", request:App.state.lastRequest, report:report, replayCompleted:true};
+    }
+    Report._saveWorkspace(saved);
     App.showView("passed");
   },
 
   showLoading: function () {
-    var saved = Report._saveWorkspace({type:"pending", request:App.state.lastRequest});
+    var previous = Report._workspace;
+    if (previous && previous.type === "pending") previous = previous.previousWorkspace;
+    var saved = Report._saveWorkspace({type:"pending", request:App.state.lastRequest, replayCompleted:true, previousWorkspace:previous || null});
     var draftStatus = document.getElementById("loading-draft-status");
     if (draftStatus) draftStatus.textContent = saved ? "本次原稿已保存在这台设备，取消或刷新后可继续编辑。" : "本机无法保存草稿，取消可返回编辑；请暂时保留页面。";
     Report._showRedlineBanner("");
@@ -1510,13 +1559,26 @@ var Report = {
   _onBackEdit: function () {
     Report._stopLoadingMessages();
     var base = App.state.form || App.state.lastRequest;
+    if (Report._recoverPreviousWorkspace(base, true)) {
+      App.showView("form");
+      return;
+    }
     var input = document.getElementById("revision-script");
-    if (input && App.state.lastReport && App.state.lastReport.verdict !== "passed" && App.state.lastReport.practice_status !== "awaiting_response") {
+    var previous = App.state.lastRequest;
+    var sceneKey = Form._scenarioKey || JSON.stringify;
+    var sameContext = base && previous && (base.mode || "guided") === (previous.mode || "guided") &&
+      base.voteGap === previous.voteGap && sceneKey(base.scenario || null) === sceneKey(previous.scenario || null);
+    var saved = Report._workspace;
+    var useRevision = !saved || !saved.formDraft || saved.revisionDirty;
+    if (sameContext && useRevision && input && App.state.lastReport && App.state.lastReport.verdict !== "passed" && App.state.lastReport.practice_status !== "awaiting_response") {
       base = Object.assign({}, App.state.lastRequest, {script:input.value});
       App.state.form = base;
-      Report._saveWorkspace({type:"pending", request:base});
+      if (saved) saved.revisionDirty = false;
     }
-    Form.restore(base);
+    var formDraft = Report._workspace && Report._workspace.formDraft;
+    var replayCompleted = !formDraft || JSON.stringify(formDraft.request) !== JSON.stringify(base) || formDraft.replayCompleted === true;
+    Form.restore(base, {replayCompleted:replayCompleted});
+    Report._saveFormDraft(base, Form._replayCompleted);
     App.showView("form");
   },
 
@@ -1530,13 +1592,13 @@ var Report = {
     Report.showLoading();
     Api.submit(request, {
       onSuccess: function (report) {
-        Report._clearWorkspace();
         App.state.lastReport = report;
         if (report.verdict === "passed") Report.showPassed(report);
         else Report.showContent(report);
       },
       onError: function (status, message) {
         if (status === 401) {
+          Form.restore(request, {replayCompleted:true});
           App.showView("form");
           App.showAccessModal(function () { Report._submitAgain(request); }, { invalid: true, clear: true });
         } else {

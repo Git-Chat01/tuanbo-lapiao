@@ -118,6 +118,7 @@ var App = {
   },
 
   _openStage: function (stage) {
+    if (stage === App._stageForView(App.state.currentView)) return;
     if (window.Api && Api._inFlight) {
       App.toast("教练正在看这一版，结果出来前先别切走");
       return;
@@ -129,6 +130,10 @@ var App = {
     }
     if (stage === "report") {
       if (!App.state.lastReport) return;
+      if (window.Report && Report._workspace) {
+        Report._workspace.formActive = false;
+        Report._saveWorkspace(Report._workspace);
+      }
       App.showView(App.state.lastReport.verdict === "passed" ? "passed" : "report");
       return;
     }
