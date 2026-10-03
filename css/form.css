@@ -413,3 +413,12 @@
 .presenter-page .scene-progress dt { font-size: var(--font-size-sm); }
 .presenter-page .scene-feed__item:last-child { border-left: 3px solid var(--stage-amber); }
 .presenter-page .scene-feed__item.is-playing { transform: none; }
+
+/* 新人默认入口沿用排练台的纸面与红色强调，首屏只保留背景和写稿。 */
+.presenter-page .novice-context { padding: 20px 0 22px; border-bottom: 1px solid var(--color-border); margin-bottom: 22px; }
+.presenter-page .novice-context__label { margin: 0 0 10px; font-size: 12px; letter-spacing: .06em; color: var(--stage-red); }
+.presenter-page .novice-context__main { margin: 0; font-size: 18px; line-height: 1.8; font-weight: 600; }
+.presenter-page .novice-context__note { margin: 12px 0 0; font-size: 14px; line-height: 1.7; color: var(--color-text-secondary); }
+.presenter-page .legacy-draft-note { margin: 0 0 18px; padding: 12px 16px; border-left: 2px solid var(--stage-red); font-size: 14px; line-height: 1.6; }
+.presenter-page .legacy-draft-note p { margin: 0; }
+.presenter-page .legacy-draft-note button { margin: 8px 0 0; text-align: left; }

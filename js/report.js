@@ -702,7 +702,8 @@ var Report = {
       result: ["gratitude", "user_reason", "vote_instruction"],
       post_round: ["gratitude", "user_reason", "vote_instruction"],
     };
-    var applicableKeys = applicableByPhase[phase] || null;
+    var novice = Report._scenario().id === "novice-revival-far-v1";
+    var applicableKeys = novice ? ["self_intro", "user_reason", "vote_instruction"] : (applicableByPhase[phase] || null);
     return Report.STRUCTURE.map(function (definition) {
       var found = null;
       for (var i = 0; i < incoming.length; i++) {
@@ -721,7 +722,7 @@ var Report = {
         status: applicable ? status : "na",
         evidence: applicable
           ? (found && typeof found.evidence === "string" ? found.evidence : "这一项还没说清楚")
-          : "这是中途切片，这一拍不用重复补这一项。",
+          : (novice ? "本轮没有已知的支持者，不要求补感谢或具体人名。" : "这是中途切片，这一拍不用重复补这一项。"),
       };
     });
   },
@@ -823,8 +824,8 @@ var Report = {
   _heading: function (report, focus, progress) {
     var heading = Report._el("header", "review-heading");
     var challenge = Report._challengeFor(focus);
-    var eyebrow = "话术闯关 · 第 " + progress.totalAttempts + " 次挑战";
-    var title = "这次只练：" + challenge.title;
+    var eyebrow = "话术陪练 · 第 " + progress.totalAttempts + " 版";
+    var title = "这次只改一处";
     heading.setAttribute("aria-live", "polite");
     heading.appendChild(Report._el("span", null, eyebrow));
     heading.appendChild(Report._el("h1", null, title));
@@ -899,7 +900,8 @@ var Report = {
   _coachingFor: function (report, focus) {
     var value = report && report.coaching;
     if (!value || !focus || value.focus_key !== focus.key) return null;
-    var limits = { keep: 40, original: 60, action: 45, example: 55, why: 50 };
+    // 与服务端的有效短带教范围一致，不能把已验证的解释静默丢掉。
+    var limits = { keep: 120, original: 200, action: 120, example: 160, why: 160 };
     if (!Object.keys(limits).every(function (key) {
       return typeof value[key] === "string" && value[key].trim() && Array.from(value[key]).length <= limits[key];
     })) return null;
@@ -912,19 +914,18 @@ var Report = {
     var coaching = Report._coachingFor(report, focus);
     var paper = Report._el("section", "focus-paper focus-paper--compact" + (report.redline_note ? " focus-paper--redline" : ""));
     paper.setAttribute("aria-label", "这次只改一处");
-    if (report.interaction_review && report.interaction_review.reading) {
-      paper.appendChild(Report._challengeRow(
-        report.interaction_review.judgment === "uncertain" ? "现场还待确认" : "现场判断",
-        report.interaction_review.reading
-      ));
-    }
     var direction = Report._specificDirectionFor(report, focus) || Report._solutionFor(report, focus);
-    paper.appendChild(Report._challengeRow("这次只改", coaching ? coaching.action : Report._shortFeedback(direction, 65, "只改教练指出的这一处，其他先保留。"), "challenge-card__row--solution"));
     if (coaching) {
       paper.appendChild(Report._challengeRow("你的原话", coaching.original, "challenge-card__row--evidence"));
-      paper.appendChild(Report._challengeRow("可以这样改", coaching.example, "challenge-card__row--specific"));
+      paper.appendChild(Report._challengeRow("问题在哪里", (report.interaction_review && report.interaction_review.judgment === "misread" ? report.interaction_review.reading : report.card_why) || Report._focusWhy(report, focus)));
+      paper.appendChild(Report._challengeRow("这次只改", coaching.action, "challenge-card__row--solution"));
+      paper.appendChild(Report._challengeRow("可以这样说", coaching.example, "challenge-card__row--specific"));
+      paper.appendChild(Report._challengeRow("为什么这样改", coaching.why));
+    } else {
+      paper.appendChild(Report._challengeRow("问题在哪里", report.card_why || Report._focusWhy(report, focus)));
+      paper.appendChild(Report._challengeRow("这次只改", Report._shortFeedback(direction, 65, "只改教练指出的这一处，其他先保留。"), "challenge-card__row--solution"));
+      paper.appendChild(Report._challengeRow("为什么", Report._shortFeedback(Report._focusWhy(report, focus), 100, "先把这一处说清，让观众听懂你的意思。")));
     }
-    paper.appendChild(Report._challengeRow("为什么", report.interaction_review ? report.interaction_review.why : Report._shortFeedback(Report._focusWhy(report, focus), 70, "先把这一处说清，让观众听懂你的意思。详细原因可展开复盘。")));
     return paper;
   },
 
@@ -991,7 +992,10 @@ var Report = {
 
   _helpPanel: function (report, focus, progress) {
     var challenge = Report._challengeFor(focus);
-    var helpItems = Report._helpItemsFor(report, focus);
+    var coaching = Report._coachingFor(report, focus);
+    var helpItems = Report._scenario().id === "novice-revival-far-v1" && coaching
+      ? ["先保留原稿里已经说清的部分，只动上面引用的这一处。", coaching.action + " 改后对照上面的解释，再连起来念一遍。"]
+      : Report._helpItemsFor(report, focus);
     if (!helpItems.length) return null;
 
     var isOpen = Report._shouldOpenHelp(progress);
@@ -1021,7 +1025,7 @@ var Report = {
   _revisionDesk: function (focus, progress) {
     var challenge = Report._challengeFor(focus);
     var section = Report._el("section", "revision-desk");
-    var label = Report._el("label", null, "过这一关：只改“" + challenge.title + "”");
+    var label = Report._el("label", null, "在原稿上改这一处");
     label.setAttribute("for", "revision-script");
     section.appendChild(label);
     section.appendChild(Report._el(
@@ -1063,7 +1067,7 @@ var Report = {
       section.insertBefore(locate, input);
     }
     var foot = Report._el("div", "revision-desk__foot");
-    var state = Report._el("span", "revision-state", "先按上面的解题方法动一处");
+    var state = Report._el("span", "revision-state", "按上面的改法动一处");
     state.id = "revision-state";
     var count = Report._el("span", "revision-count");
     foot.appendChild(state);
@@ -1071,8 +1075,8 @@ var Report = {
     section.appendChild(foot);
 
     var buttonText = progress.focusAttempts >= 2
-      ? "带着提示，再挑战一次"
-      : "只改这一处，提交下一次挑战";
+      ? "按这个方法，再看一版"
+      : "改好了，帮我再看一版";
     var button = Report._el("button", "training-primary revision-submit", buttonText);
     button.type = "button";
     button.disabled = true;
@@ -1084,9 +1088,9 @@ var Report = {
       var valid = value.length >= LIMITS.scriptMin && value.length <= LIMITS.scriptMax;
       count.textContent = value.length + " / " + LIMITS.scriptMax;
       button.disabled = !changed || !valid;
-      if (!changed) state.textContent = "先按上面的解题方法动一处";
+      if (!changed) state.textContent = "按上面的改法动一处";
       else if (!valid) state.textContent = "至少保留一句完整的话";
-      else state.textContent = "已经改动，可以继续挑战";
+      else state.textContent = "已改动，可以让教练再看";
     };
     input.addEventListener("input", function () {
       syncCount();
@@ -1449,9 +1453,19 @@ var Report = {
     updateResponse(false);
     submit.addEventListener("click", function () { Form.submitResponse(input.value, Number(choices.value)); });
     desk.appendChild(submit);
-    content.appendChild(desk);
-    content.appendChild(Report._el("p", "revision-desk__hint", "接话练习练临场回应；开口练习练上一句的停顿和语气。"));
-    content.appendChild(voice);
+    if (Report._scenario().id === "novice-revival-far-v1") {
+      voice.className = "training-primary";
+      voice.textContent = "先把这句开口练熟";
+      content.appendChild(voice);
+      var optional = Report._el("details", "review-details");
+      optional.appendChild(Report._el("summary", null, "可选加练：试着接一句观众回复"));
+      optional.appendChild(desk);
+      content.appendChild(optional);
+    } else {
+      content.appendChild(desk);
+      content.appendChild(Report._el("p", "revision-desk__hint", "接话练习练临场回应；开口练习练上一句的停顿和语气。"));
+      content.appendChild(voice);
+    }
   },
 
   showPassed: function (report) {
@@ -1514,7 +1528,7 @@ var Report = {
     document.getElementById("report-loading").hidden = false;
     var state = Report._coachingState();
     var title = document.querySelector("#report-loading h1");
-    if (title) title.textContent = "教练正在看第 " + (state.totalAttempts + 1) + " 次挑战";
+    if (title) title.textContent = "教练正在看第 " + (state.totalAttempts + 1) + " 版";
     var elapsedNode = document.getElementById("loading-elapsed");
     if (elapsedNode) elapsedNode.textContent = ""; // 清掉上一轮留下的秒数，从 0 开始数
     Report._startLoadingMessages();

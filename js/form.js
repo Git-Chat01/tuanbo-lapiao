@@ -51,8 +51,32 @@ var Form = {
     window.addEventListener("pagehide", function () {
       if (App.state.currentView === "form") { clearTimeout(Form._draftTimer); Form._saveDraft(); }
     });
+    var noviceButton = document.getElementById("btn-novice-mode");
+    if (noviceButton) noviceButton.addEventListener("click", function () {
+      Form._selectScenario(DEFAULT_TRAINING_SCENARIO_ID);
+      document.getElementById("input-script").focus();
+    });
+    Form._syncTrainingMode();
     Form._restoreDraft();
     Form._updateInputState();
+  },
+
+  _isNovice: function () {
+    return !App.state.freeMode && Form._scenario && Form._scenario.id === NOVICE_TRAINING_SCENARIO_ID;
+  },
+
+  _syncTrainingMode: function () {
+    var novice = Form._isNovice();
+    var context = document.getElementById("novice-context");
+    var legacy = document.getElementById("legacy-draft-note");
+    if (context) context.hidden = !novice;
+    if (legacy) legacy.hidden = Boolean(novice);
+    document.getElementById("scenario-picker").hidden = true;
+    document.getElementById("scene-window").hidden = Boolean(App.state.freeMode || novice);
+    document.getElementById("coach-cue").hidden = Boolean(App.state.freeMode || novice);
+    document.getElementById("btn-free-mode").hidden = true;
+    document.getElementById("script-label").textContent = novice ? "你现在会怎么开口？" : (App.state.freeMode ? "你当时是怎么说的？" : "你会怎么接这颗球？");
+    if (novice) document.getElementById("training-goal-title").textContent = Form._scenario.title;
   },
 
   _findScenario: function (id) {
@@ -204,6 +228,7 @@ var Form = {
     replay.disabled = timeline.length === 0;
     var replayLabel = replay.querySelector("span:last-child");
     if (replayLabel) replayLabel.textContent = "看现场回放 · " + timeline.length + "条";
+    Form._syncTrainingMode();
     Form._updateInputState();
   },
 
@@ -383,6 +408,7 @@ var Form = {
       : (Form._scenario ? (Form._scenario.preReplayTitle || Form._scenario.title) : "把上票理由说到具体用户身上");
     document.getElementById("script-label").textContent = enabled ? "你当时是怎么说的？" : "你会怎么接这颗球？";
     document.getElementById("btn-free-mode").textContent = enabled ? "返回场景带练" : "我有一段自己的话术";
+    Form._syncTrainingMode();
   },
 
   _onVoteClick: function (event) {
@@ -438,8 +464,8 @@ var Form = {
   },
 
   validate: function (data) {
-    if (!data.voteGap) return "先点一下现在票数什么情况";
-    if (!data.script.trim()) return "先写下这一拍准备说的话";
+    if (!data.voteGap) return "请确认练习背景后再提交";
+    if (!data.script.trim()) return "先写下你准备说的话";
     if (data.script.length > LIMITS.scriptMax) return "话术太长，精简到 500 字以内";
     return null;
   },
@@ -491,7 +517,7 @@ var Form = {
       return;
     }
     if (Form._isSameAsLast(data)) {
-      App.toast("先按教练指出的关卡改动一处，再提交下一次挑战");
+      App.toast("先改动教练指出的这一处，再看看是否说清了");
       return;
     }
     if (!App.getAccessCode()) {
