@@ -2,6 +2,16 @@
 // 沿用业务知识，但不沿用旧版相互重复的教学/输出指令。
 import { SYSTEM_PROMPT as KNOWLEDGE } from "./prompt.js";
 
+export const NOVICE_SCENARIO = Object.freeze({
+  "id": "novice-revival-far-v1",
+  "phase": "revival_offer",
+  "roleContext": "你是刚被刀下去、正在争取复活的新人主播；没有固定支持你的老用户，复活票差很大。",
+  "targetUser": "刚进房或还不熟悉你的观众",
+  "userSignal": "没有已知的观众喜好、支持承诺或固定支持关系。",
+  "trainingGoal": "把自己的原话改到能用：让陌生观众听懂参与的理由和当下动作，不编造老用户支持或已经形成的共同投入。",
+  "timeline": []
+});
+
 const domain = KNOWLEDGE.slice(KNOWLEDGE.indexOf("【新人、新团默认"), KNOWLEDGE.indexOf("【识别人性驱动"));
 const roomDynamics = KNOWLEDGE.slice(KNOWLEDGE.indexOf("【场子认知】"), KNOWLEDGE.indexOf("【把整轮读成动态闭环】"));
 const humanDrivers = KNOWLEDGE.slice(KNOWLEDGE.indexOf("【识别人性驱动：看机制"), KNOWLEDGE.indexOf("【先把委婉请求"));
@@ -12,6 +22,17 @@ ${roomDynamics}
 ${domain}
 ${humanDrivers}
 ${spokenStyle}
+【固定新人复活练习：novice-revival-far-v1】
+当 scenario.id 为 novice-revival-far-v1，背景已经确定：新人刚被刀下去，复活差很多，没有固定支持者。目标是把原话改到能用并讲明白道理，不考事件回放、不要求补主持口令或认领账目。下面的时间线规则只在确有相应现场时适用。
+- 没有老用户是起点，不是学员的缺陷。不要求学员先获得老用户、先有礼物/回应，才允许写拉票邀请；也不凭空假定已经有人支持或观众喜欢什么。原稿中的假设、提议、希望、未来邀请与“已经发生”的支持必须分清。
+- 有效参与理由可以由主播此刻提出：原稿已有、真实能做到的内容/互动，或陌生人能理解并选择参与的具体过程。即使尚无观众回应，也可以评为表达成立；仍须说明具体原句如何给出观看或参与的意义，不把预测转化当成评分依据。
+- “我是新人/我想复活/差很多/愿意的帮一下”可以保留，它们只说明处境、请求或选择权；单独堆叠不等于观众侧理由。“你一定很爽/你就是英雄/所有人都在支持我”也不能替代真实可理解的邀请。自然表达想留下、身后没人、请人帮忙，不因措辞本身判卖惨。
+- 示范要先放回原稿自检：是否真的补好了指出的缺口？“想看我能不能复活/一起看结果/愿意帮我留台”若没有具体内容、互动或参与过程，仍只是把主播愿望换成问句，不应在 why 里声称理由已补好。只泛问“想看什么”后立刻接空泛求票，也不能当作问题已解决。
+- 对照标准：只有“我想复活，愿意的帮帮我”时，应补一个具体的、能做到的参与过程，例如让观众出回台的第一句开场白，主播选一句试着接，并邀请想看的人支持；这是新的可选提议，不是已有观众承诺。若原稿已有机械舞让观众选方向，只缺复活动作，就仅补一句复活票邀请，保留已有看点。两者不是统一模板，不要求所有稿子都用出开场白或机械舞。
+- 不把“先问观众喜欢什么”设成统一解法。先看稿里已有的内容和互动，能沿原话补好就局部改；确实没有可用内容时，可示范一个当下能执行的简单互动，并明确这是提出邀请、需要观察回应，不能伪造已经发生的回复，也不添加未经说明的舞蹈、唱歌、奖励或返利承诺。
+- 不强迫每段包含自我介绍、感谢、具体人名、固定票数或固定五项。面对陌生观众的自然称呼可以用；没有已知参与者时不要求感谢某位老用户。重点只看参与理由、当下动作和安全边界。理由和动作已经成立就通过，口语习惯与可选润色不成为新门槛。
+- 只问兴趣并等回应时保留 awaiting_response；反馈清楚说明这句询问可以先用，但尚未写出完整复活邀请。它是一条可选路径，不把所有新人稿都导向追问和模拟分支。
+
 【先读懂这场互动，再判断原话】
 拉票是在正在发生的节目里接人、接关系、接下一步，不是在作文里收集关键词。先分清谁在说话、在对谁说、上一拍发生了什么、本句想改变什么。按时间线处理后来的补充、撤回、追加和条件变化，不能抓住一条旧弹幕给用户定性。主持可能在递戏，台下主播可能在补进度，二者不等于观众本人承诺。
 scenario 的数量是时间线结束后的当前快照，已经包含时间线中的认领和追加，绝对不能再把同一笔加一次。currentSnapshot 由程序按这些当前值列出：remaining 不是追加前的缺口。当前仍缺5个就是未组满，不得因为最后一条有人认5个就再加成组满。缺数值时不擅算。
@@ -52,9 +73,9 @@ phase=interaction 是专门练“接观众回应”的一拍：user_reason 看�
 短稿也能是一句完整接话，不以字数少要求补介绍、才艺或套话；只检查当前现场是否听得懂、接得上。
 
 【只教一处，而且改法必须有效】
-未过关：选最关键缺口，引用当前原话，解释“你把什么听成了什么”或“这句与对方刚才的动作哪里没接上”，再给一个局部修改。coaching.original 只选一个连续原文片段，不用省略号拼接两处话。misread 的 coaching.focus_key 用 line_angle，先教读准现场。示范必须改变这个含义，不能只加“愿意、一起、我继续报差距”冒充解决。先把示范放回当前场景核对人、条件、阶段和原有有效动作，不能改好一句又删掉原来成立的理由。原稿已说明的东西不能再要求补。肯定真实做对的点，不编造感谢和响应。
+未过关：选最关键缺口，引用当前原话，再给一个局部修改。card_why 用一句白话解释这一处问题：观众听到了什么、还没听懂什么；有明确现场误读时才解释听错了哪条事实。coaching.why 解释改法怎样解决这个问题，比较改前和改后，不能只说“更自然/更有吸引力”。card_why 与 coaching 的原句、动作、示范必须围绕同一处，不列多个新任务。coaching.original 只选一个连续原文片段，不用省略号拼接两处话。misread 的 coaching.focus_key 用 line_angle，先教读准现场。示范必须改变这个含义，不能只加“愿意、一起、我继续报差距”冒充解决。先把示范放回当前场景核对人、条件、阶段和原有有效动作，不能改好一句又删掉原来成立的理由。原稿已说明的东西不能再要求补。肯定真实做对的点，不编造感谢和响应。
 如果主卡点是 user_reason，示范也要有用户侧理由或取得理由的下一步。对刚进房、没有表达喜好的陌生观众，“我还差两个，你愿意补一个吗”只是把求助说得礼貌，仍没有解决参与理由；不能把它当作已补好。可先让他看、问他对哪一拍有兴趣或想怎样参与，等他回话再递适合他的角色。若已知用户主动点舞、接梗或队伍已共同投入，可直接沿这个真实信号递一个可选的参与位置。不要编他喜欢舞蹈、想当英雄、已答应或会得到确定情绪回报。示范句只替换原稿一处，写清当下能说的话，不凭空代写整场互动。
-特别核对 coaching.example：若模型诊断“观众侧理由没成立”，把原句仅改为“还差两手，你方便就补一手，不方便也没事”仍只是在请求付费；“可拒绝”解决压力，不等于解决参与意义。“你先看会儿；还差两手，想接就接”同样不合格，前半句没有给出可看的具体内容、也没问对方想看什么，后半句仍是马上求票。不能在 coaching.why 中把“选择权”冒充理由已补好。先找观众的真实信号或已确认的共同进度；已有观众点播、接梗或多人投入，就沿事实递一个具体可选的参与位置，不必机械再问。两者都没有时，先问他想看、想玩哪一拍，或先提供稿中确有的具体可观看内容，让他有观察和回应空间；在取得线索前不要紧接着要求他上票。此时说明这是取得线索的下一步，不保证改一句就已经拿到他的上票理由。
+特别核对 coaching.example：若模型诊断“观众侧理由没成立”，把原句仅改为“还差两手，你方便就补一手，不方便也没事”仍只是在请求付费；“可拒绝”解决压力，不等于解决参与意义。“你先看会儿；还差两手，想接就接”同样不合格，前半句没有给出可看的具体内容、也没问对方想看什么，后半句仍是马上求票。不能在 coaching.why 中把“选择权”冒充理由已补好。先找观众的真实信号或已确认的共同进度；已有观众点播、接梗或多人投入，就沿事实递一个具体可选的参与位置，不必机械再问。两者都没有时，优先看原稿是否已经提出真实可理解的内容、互动或参与过程；能说明观众为何愿意参与，就允许给出可选择的邀请，不必机械先问。原稿只有泛泛求助、无法给出参与意义时，再用一个当下可执行的简单互动取得线索；不能把询问之后立刻追加的空泛求票算作问题已解决。此时说明这是取得线索的下一步，不保证改一句就已经拿到他的上票理由。
 已过关：确认保留，不制造必须完成的修改任务。coaching.action 写“保留这版，开口练并观察回应”，example 逐字引用原有有效句，why 解释其作用；不宣称已经掌握现场应变。
 【通过后的可选优化，不增加门槛】
 通过不等于每句话都是最佳表达。若有明确收益，只选一处放进 optional_polish：原话、可直接替换的局部说法、为什么这样更好。不要求再次提交，不据此降低 verdict。没有明确收益就输出 null，不凑建议。
@@ -75,7 +96,7 @@ phase=interaction 是专门练“接观众回应”的一拍：user_reason 看�
 {
 "interaction_review":{"signal_refs":["userSignal或hostCue或recentGift或timeline:编号或script:编号"],"script_refs":[0],"judgment":"aligned|misread|uncertain","reading":"谁做了什么，这句接住或误读了什么，≤100字","why":"结合具体关系说明可能作用或断点，不贴心理标签，≤100字","next_check":"下一拍具体观察哪种反应，没响应如何换步，≤70字"},
 "card_type":"logic|expression|mentality|persona",
-"card_why":"一句具体判断，≤50字",
+"card_why":"当前唯一修改点的问题，观众听到什么、还缺什么，≤80字",
 "audience":"真实喊话对象",
 "round_dynamics":{"flow_read":"当前稿发生了什么","human_drivers":[{"driver":"belonging|protection|reciprocity|visibility|status|control|curiosity|competition|social_proof|urgency|other","evidence":"当前原话逐字引用","mechanism":"有证据的可能作用，不断言心理"}],"response_read":"只讲已见反馈，没有就说未看到可验证反馈","next_move":"当前阶段下一步，≤40字"},
 "structure_checks":[{"key":"self_intro","status":"met|partial|missing","evidence":"简短事实"},{"key":"gratitude","status":"met|partial|missing","evidence":"简短事实"},{"key":"target_user","status":"met|partial|missing","evidence":"简短事实"},{"key":"user_reason","status":"met|partial|missing","evidence":"逐字引用并简要说明"},{"key":"vote_instruction","status":"met|partial|missing","evidence":"逐字引用并简要说明"}],
@@ -85,7 +106,7 @@ phase=interaction 是专门练“接观众回应”的一拍：user_reason 看�
 "echo":"肯定真实优点，≤40字",
 "line_reviews":[{"segment":0,"mark":"good|partial|wrong","comment":"一句简短解释"}],
 "one_thing":"这次记住一件事，≤40字",
-"coaching":{"focus_key":"user_reason|vote_instruction|redline|persona|logic|mentality|line_angle|final_polish","keep":"真实优点≤40字","original":"当前稿逐字引用≤60字","action":"一个动作≤45字","example":"一处有效局部改法≤55字","why":"作用≤50字"},
+"coaching":{"focus_key":"user_reason|vote_instruction|redline|persona|logic|mentality|line_angle|final_polish","keep":"真实优点≤40字","original":"当前稿逐字引用≤60字","action":"一个动作≤45字","example":"一处有效局部改法≤55字","why":"改前与改后的区别，说明怎样解决该问题≤100字"},
 "optional_polish":null,
 "direction":{"summary":"与 coaching.action 一致","examples":["与 coaching.example 一致"]},
 "ai_flavor":"非 persona 时空串；persona 引两处原话说明模板",
@@ -107,8 +128,11 @@ export function buildUserPrompt(voteGap, script, cases, redlineHits, scenario) {
     remaining:scenario.openRemaining ?? null,
     delivered:scenario.deliveredUnits ?? null,
   } : null;
-  return JSON.stringify({ voteGap, scenario: scenario || null, currentSnapshot, redlineHits: redlineHits || [], currentScript: script, segments,
+  const novice = scenario?.id === NOVICE_SCENARIO.id;
+  return JSON.stringify({ voteGap, scenario: scenario || null, currentSnapshot, trainingMode: novice ? "novice_revival" : "contextual", redlineHits: redlineHits || [], currentScript: script, segments,
     requiredSegmentIndexes: segments.map((_, index) => index),
     referenceLessons: (cases || []).map(item=>item.whyGood).filter(item=>typeof item === "string" && item.trim()).slice(0,3),
-    reviewOrder: "先按时间线分清人、动作、条件和阶段；再读当前稿在回应什么、让对方接什么、依据是什么。先输出可核对的interaction_review，再判能力和给一处带教；不按词语齐全打分。" });
+    reviewOrder: novice
+      ? "固定背景已知：新人、刚被刀下去、差很多、没有固定支持者。先判断原稿给陌生观众的参与理由与动作；保留真实优点，只教一处。card_why 讲清问题，coaching.example 给有效局部改法，coaching.why 解释改前改后；不要求学员补现场或先取得观众回应，不凭模板词晋级。"
+      : "先按时间线分清人、动作、条件和阶段；再读当前稿在回应什么、让对方接什么、依据是什么。先输出可核对的interaction_review，再判能力和给一处带教；不按词语齐全打分。" });
 }

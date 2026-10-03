@@ -912,7 +912,7 @@ function testRevivalScenariosKeepFactsAndStagesSeparate() {
   const closing = scenarios.find((item) => item.id === "revival-closing-last-two");
   const delivery = scenarios.find((item) => item.id === "revival-awaiting-drop-01");
   assert.ok(condition && closing && delivery, "真实复活链应拆成三个可独立练习的现场切片");
-  assert.equal(context.DEFAULT_TRAINING_SCENARIO_ID, "revival-closing-last-two");
+  assert.equal(context.DEFAULT_TRAINING_SCENARIO_ID, "novice-revival-far-v1");
 
   assert.deepEqual(
     [condition.targetUnits, condition.initialProgress.pledgedUnits, condition.initialProgress.openRemaining],
@@ -1555,9 +1555,9 @@ function testShortCoachingUsesTheActualSentence() {
   assert.equal(context.Report._focusWhy(report, focus), report.coaching.why, "正确解释中提到上票也不能被关键词过滤掉");
   assert.equal(context.Report._solutionFor(report, focus), report.coaching.action);
   const card = context.Report._focusPaper(report, focus, {});
-  assert.equal(card.children.length, 4, "主卡只显示改什么、原话、一个示范、为什么");
+  assert.equal(card.children.length, 5, "主卡说明原话、问题、一个动作、示范及改法原理");
   const texts = card.children.map(row => row.children[1].textContent);
-  assert.deepEqual(texts, [report.coaching.action, report.coaching.original, report.coaching.example, report.coaching.why]);
+  assert.deepEqual(texts, [report.coaching.original, report.card_why, report.coaching.action, report.coaching.example, report.coaching.why]);
   assert.ok(texts.join("").length <= 210, "主卡正文必须保持简短");
   assert.equal(context.Report._coachingFor({...report, coaching: {...report.coaching, original: "虚构原句"}}, focus), null);
   assert.equal(context.Report._coachingFor({...report, coaching: {...report.coaching, focus_key: "gratitude"}}, focus), null);
@@ -1636,7 +1636,7 @@ function testSemanticFeedbackAndVisibleHelp() {
   const focus=context.Report._focusCheck(context.Report._checks(report),report);
   assert.equal(focus.key,"line_angle");
   const card=context.Report._focusPaper(report,focus,{});
-  assert.equal(card.children[0].children[1].textContent,report.interaction_review.reading);
+  assert.equal(card.children[1].children[1].textContent,report.interaction_review.reading);
   assert.deepEqual(Array.from(context.Report._helpItemsFor(report,focus)),[report.coaching.action,report.interaction_review.why],"卡关提示跟随实际误读，不再复述认领模板");
   const help=element("section");help.isHelp=true;
   context.Report._recordResult=()=>({focus,checks:[],focusAttempts:2});

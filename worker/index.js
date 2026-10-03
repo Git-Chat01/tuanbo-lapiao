@@ -6,7 +6,7 @@
 // 注意：所有错误响应都由入口统一 jsonResponse 构造，保证 CORS 头始终存在
 // （浏览器侧缺 CORS 头时连错误文案都读不到，前端只能显示"网络错误"）。
 
-import { SYSTEM_PROMPT, buildUserPrompt } from "./current-review.js";
+import { SYSTEM_PROMPT, buildUserPrompt, NOVICE_SCENARIO } from "./current-review.js";
 import {
   retrieveCases,
   tryAbsorb,
@@ -191,7 +191,7 @@ const DEEPSEEK_CONFIG = {
 
 // 修改评分、安全闸门或案例标准时递增；提示词和模型配置也参与指纹。
 // 只复用已完成的检查，不用缓存把一个未经验证的模型输出变成标准答案。
-const REVIEW_VERSION = "2026-09-30-safety-boundaries-2";
+const REVIEW_VERSION = "2026-10-03-novice-coaching-1";
 const REVIEW_TTL_SECONDS = 7 * 24 * 60 * 60;
 const reviewStores = new WeakMap();
 
@@ -341,6 +341,12 @@ export default {
       // 入口码鉴权（fail-closed）
       const authError = checkAccessCode(body, env);
       if (authError) return jsonResponse({ error: true, message: authError.message }, authError.status, corsHeaders);
+
+      // 固定新人练习由服务端提供背景，不能混入旧切片的数量、承诺或喜好。
+      if (body.scenario?.id === NOVICE_SCENARIO.id) {
+        body.scenario = structuredClone(NOVICE_SCENARIO);
+        body.voteGap = "far";
+      }
 
       // 参数白名单校验（v2 极简：票况 + 话术）
       const paramsError = validateParams(body);
@@ -3052,6 +3058,12 @@ export function getReportQualityIssue(report, sourceScript, scenario = null, det
   if (report.verdict !== "passed" && !report.coaching) return "缺少有效的短带教";
   if (report.verdict !== "passed" && report.practice_status !== "awaiting_response" && core.some(item => item.key === report.coaching?.focus_key && item.status === "met")) return "修改点要求重做已达标核心";
   const compact = text => String(text || "").replace(/\s+/gu, "");
+  if (scenario?.id === NOVICE_SCENARIO.id && report.verdict !== "passed") {
+    const lesson = report.coaching;
+    if (!report.card_why?.trim() || !lesson?.action?.trim() || !lesson?.example?.trim() || !lesson?.why?.trim()) return "新人带教缺少问题、改法或解释";
+    if (report.practice_status !== "awaiting_response" && compact(lesson.original) === compact(lesson.example)) return "示范没有修改指出的问题";
+    if (detectRedline(lesson.example).length) return "教练示范包含风险表达";
+  }
   const source = compact(sourceScript);
   const sceneQuotes = [
     ...Object.keys(SCENARIO_TEXT_LIMITS).filter(key => key !== "id").map(key => scenario?.[key]),

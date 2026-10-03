@@ -37,7 +37,7 @@ var LABELS = {
   voteGap: { far: "差一大截", close: "快够了", secured: "在保位" },
 };
 
-// 新人默认从一轮完整现场开始，而不是面对空白表单。
+// 保留旧现场用于恢复已有草稿；新人默认背景在下方单独定义。
 // timeline 只记录可观察事实：角色、事件类型、原话和票的玩法作用。
 // effect 只说明本轮票的方向，不代表用户喜欢或讨厌主播。
 var TRAINING_SCENARIOS = [
@@ -208,7 +208,23 @@ var TRAINING_SCENARIOS = [
   },
 ];
 
-var DEFAULT_TRAINING_SCENARIO_ID = "revival-closing-last-two";
+// 固定新人复活背景；旧切片仅用于恢复已有草稿。修改事实时升级 id。
+var NOVICE_TRAINING_SCENARIO_ID = "novice-revival-far-v1";
+TRAINING_SCENARIOS.push(Object.assign({
+  "id": "novice-revival-far-v1",
+  "phase": "revival_offer",
+  "roleContext": "你是刚被刀下去、正在争取复活的新人主播；没有固定支持你的老用户，复活票差很大。",
+  "targetUser": "刚进房或还不熟悉你的观众",
+  "userSignal": "没有已知的观众喜好、支持承诺或固定支持关系。",
+  "trainingGoal": "把自己的原话改到能用：让陌生观众听懂参与的理由和当下动作，不编造老用户支持或已经形成的共同投入。",
+  "timeline": []
+}, {
+  voteGap: "far",
+  title: "复活差得多，你准备怎么说？",
+  selectorLabel: "新人复活",
+  coachHint: "先写你真的会说的话，教练会指出一处关键问题，陪你改明白。"
+}));
+var DEFAULT_TRAINING_SCENARIO_ID = NOVICE_TRAINING_SCENARIO_ID;
 
 // 文本长度限制（与 worker/index.js 的 LIMITS 保持一致）
 // scriptMax=500 只约束主播端批改（DeepSeek 输出边界）；教练后台投喂不调模型，上限更宽

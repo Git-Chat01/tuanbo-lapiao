@@ -19,8 +19,8 @@ async function loadIndexModule() {
   let source = await readFile(new URL("../worker/index.js", import.meta.url), "utf8");
   source = source
     .replace(
-      'import { SYSTEM_PROMPT, buildUserPrompt } from "./current-review.js";',
-      'const SYSTEM_PROMPT = ""; const buildUserPrompt = (...args) => { globalThis.__lastBuildUserPromptArgs = args; return "test prompt"; };'
+      'import { SYSTEM_PROMPT, buildUserPrompt, NOVICE_SCENARIO } from "./current-review.js";',
+      'const NOVICE_SCENARIO = {id:"novice-revival-far-v1"}; const SYSTEM_PROMPT = ""; const buildUserPrompt = (...args) => { globalThis.__lastBuildUserPromptArgs = args; return "test prompt"; };'
     )
     .replace(
       /import \{\s*retrieveCases,\s*tryAbsorb,\s*addManualCase,\s*publishCase,\s*listAdminCases,\s*softDeleteCase,?\s*(?:reindexCases,?\s*)?\} from "\.\/cases\.js";/,
