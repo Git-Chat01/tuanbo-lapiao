@@ -191,7 +191,7 @@ const DEEPSEEK_CONFIG = {
 
 // 修改评分、安全闸门或案例标准时递增；提示词和模型配置也参与指纹。
 // 只复用已完成的检查，不用缓存把一个未经验证的模型输出变成标准答案。
-const REVIEW_VERSION = "2026-10-03-novice-coaching-2";
+const REVIEW_VERSION = "2026-10-04-report-identity-1";
 const REVIEW_TTL_SECONDS = 7 * 24 * 60 * 60;
 const reviewStores = new WeakMap();
 
@@ -207,13 +207,66 @@ function selectedReferenceLessons(cases) {
 export async function reviewRecordKey(accessCode, voteGap, script, scenario, cases = null) {
   const inputParts = [REVIEW_VERSION, SYSTEM_PROMPT, DEEPSEEK_CONFIG,
     accessCode, voteGap, script, scenario];
-  // Omitted cases retain the stable history key used by revision.previousScript.
+  // Omitted cases retain a fallback key for temporary case retrieval failures.
   // Current reviews always pass cases (including []), so a newly published or
   // edited lesson gets a fresh cache key without putting its text in the key.
   if (cases !== null) inputParts.push(selectedReferenceLessons(cases));
   const input = JSON.stringify(inputParts);
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
   return "review:" + Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
+}
+
+// Each delivered report is immutable, even for cache hits and shared entry codes.
+// A separate DO per receipt provides read-after-write consistency across regions.
+const REPORT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+async function reportDigest(value) {
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(value)));
+  return Array.from(new Uint8Array(bytes), b => b.toString(16).padStart(2, "0")).join("");
+}
+async function reportStub(env, accessCode, reportId) {
+  const name = "report:" + await reportDigest([accessCode, reportId]);
+  return env.COACH_LIMITER.get(env.COACH_LIMITER.idFromName(name));
+}
+async function reportContext(voteGap, script, scenario) {
+  return reportDigest([voteGap, script.trim(), scenario || null]);
+}
+export async function saveDeliveredReview(env, accessCode, voteGap, script, scenario, report) {
+  const reportId = crypto.randomUUID();
+  const record = { schema: 1, expiresAt: Date.now() + REVIEW_TTL_SECONDS * 1000,
+    context: await reportContext(voteGap, script, scenario), report: {...report, report_id: reportId} };
+  try {
+    const stub = await reportStub(env, accessCode, reportId);
+    const response = await stub.fetch(new Request("https://limiter.internal/report", {
+      method: "PUT", headers: {"Content-Type":"application/json"}, body: JSON.stringify(record),
+    }));
+    if (response.status !== 201) throw new Error("receipt storage failed");
+  } catch {
+    throw new HttpError(503, "报告暂时未能保存，请重试；已完成的批改会优先复用", "report receipt unavailable");
+  }
+  report.report_id = reportId;
+  return reportId;
+}
+export async function readDeliveredReview(env, accessCode, reportId, voteGap, script, scenario) {
+  if (!reportId) return null; // Old clients never fall back to someone else's latest report.
+  let record;
+  try {
+    const stub = await reportStub(env, accessCode, reportId);
+    const response = await stub.fetch(new Request("https://limiter.internal/report"));
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error("receipt read failed");
+    record = await response.json();
+    if (record?.schema !== 1 || record.report?.report_id !== reportId ||
+        !VERDICT_ENUM.includes(record.report?.verdict) || !Number.isSafeInteger(record.expiresAt)) {
+      throw new Error("invalid receipt");
+    }
+  } catch {
+    throw new HttpError(503, "暂时无法核对上次报告，请稍后重试，当前稿已保留", "report receipt read unavailable");
+  }
+  if (record.expiresAt <= Date.now()) return null;
+  if (record.context !== await reportContext(voteGap, script, scenario)) {
+    throw new HttpError(400, "上次报告与这份原稿或练习背景不一致，请重新检查当前稿", "report context mismatch");
+  }
+  return record;
 }
 
 function reviewStore(env) {
@@ -256,7 +309,7 @@ async function writeReviewRecord(env, key, result, sourceKey = null) {
   catch { console.log("review write degraded"); }
 }
 
-async function keepLatestReviewForRevision(env, historyKey, recordKey, result) {
+async function keepLatestReviewForFallback(env, historyKey, recordKey, result) {
   const store = reviewStore(env);
   if (!store) return;
   // Same selected lessons and same script: don't rewrite the alias on every
@@ -372,7 +425,7 @@ export default {
       // 红线检测（纯词表，不调模型）——命中不拒批，作用在判定与吸收两个闸门
       const redlineHits = detectRedline(body.script);
 
-      // 复练历史键只跟当前稿和现场有关；案例检索短暂故障时也能找回
+      // 降级缓存键只跟当前稿和现场有关；案例检索短暂故障时也能找回
       // 同版本已交给学员的报告，避免退回空案例再判出另一套结果。
       const historyKey = await reviewRecordKey(body.accessCode, body.voteGap, body.script, scenario);
 
@@ -396,7 +449,7 @@ export default {
       const recordKey = savedOnCaseFailure ? null
         : await reviewRecordKey(body.accessCode, body.voteGap, body.script, scenario, cases);
       const previous = revision && revision.previousScript !== body.script.trim()
-        ? await readReviewRecord(env, await reviewRecordKey(body.accessCode, body.voteGap, revision.previousScript, scenario))
+        ? await readDeliveredReview(env, body.accessCode, revision.reportId, body.voteGap, revision.previousScript, scenario)
         : null;
       const evaluate = async () => {
         // 调 DeepSeek 批改
@@ -455,10 +508,10 @@ export default {
           : await reuseReview(env, recordKey, evaluate);
         const conflict = getRevisionConflict(result.report, revision, body.script, previous?.report);
         if (conflict) throw new HttpError(409, conflict, "coach example and recheck conflict");
-        // Preserve the latest report actually served to the user for revisions,
-        // even if published reference lessons changed after the prior request.
-        if (!savedOnCaseFailure) await keepLatestReviewForRevision(env, historyKey, recordKey, result);
+        // This alias is only a retrieval fallback; revision comparison uses its exact receipt.
+        if (!savedOnCaseFailure) await keepLatestReviewForFallback(env, historyKey, recordKey, result);
         applyRevisionFeedback(result.report, revision, body.script, previous?.report);
+        await saveDeliveredReview(env, body.accessCode, body.voteGap, body.script, scenario, result.report);
         return result;
       };
 
@@ -2444,13 +2497,42 @@ async function shortHash(value) {
 }
 
 /**
- * SQLite Durable Object：每个指纹仅保存当前分钟桶，重启后仍保留额度。
+ * SQLite Durable Object：限流指纹保存当前分钟桶；报告指纹保存不可变回执。
  * Storage transaction 把读、检查、写作为一个整体，突发请求不会丢计数。
  */
 export class CoachRateLimiter {
   constructor(ctx) { this.ctx = ctx; }
 
+  async alarm() {
+    // Only receipt objects schedule alarms. Limiter objects retain their window.
+    const record = await this.ctx.storage.get("report");
+    if (record && record.expiresAt <= Date.now()) await this.ctx.storage.deleteAll();
+    else if (record) await this.ctx.storage.setAlarm(record.expiresAt);
+  }
+
   async fetch(request) {
+    const path = new URL(request.url).pathname;
+    if (path === "/report") {
+      if (request.method === "GET") {
+        const record = await this.ctx.storage.get("report");
+        return record && record.expiresAt > Date.now()
+          ? Response.json(record) : new Response(null, {status:404});
+      }
+      if (request.method !== "PUT") return new Response(null, {status:405});
+      const record = await request.json();
+      if (record?.schema !== 1 || !REPORT_ID_PATTERN.test(record.report?.report_id || "") ||
+          !VERDICT_ENUM.includes(record.report?.verdict) || !/^[0-9a-f]{64}$/u.test(record.context || "") ||
+          !Number.isSafeInteger(record.expiresAt) || record.expiresAt <= Date.now() ||
+          record.expiresAt > Date.now() + REVIEW_TTL_SECONDS * 1000) return new Response(null, {status:400});
+      const created = await this.ctx.storage.transaction(async txn => {
+        if (await txn.get("report")) return false;
+        await txn.put("report", record);
+        await this.ctx.storage.setAlarm(record.expiresAt);
+        return true;
+      });
+      return new Response(null, {status:created ? 201 : 409});
+    }
+    if (path !== "/check") return new Response(null, {status:404});
     if (request.method !== "POST") return new Response(null, { status: 405 });
     const max = COACH_RATE_LIMIT.codePerMinute; // 两个维度均为 60/min。
     const result = await this.ctx.storage.transaction(async (txn) => {
@@ -2689,12 +2771,16 @@ export function scenarioEvidenceText(scenario) {
  */
 export function normalizeRevision(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (Object.hasOwn(value, "reportId") && (typeof value.reportId !== "string" || !REPORT_ID_PATTERN.test(value.reportId))) {
+    throw new HttpError(400, "上次报告编号无效，请重新打开练习", "invalid revision report id");
+  }
   const fields = { previousScript: LIMITS.scriptMax, focusKey: 32, instruction: 300 };
   const result = {};
   for (const [key, max] of Object.entries(fields)) {
     if (typeof value[key] !== "string" || !value[key].trim() || value[key].length > max) return null;
     result[key] = value[key].trim();
   }
+  if (value.reportId) result.reportId = value.reportId;
   if (![...STRUCTURE_CHECK_KEYS, "logic", "expression", "mentality", "persona", "redline", "line_angle", "final_polish"].includes(result.focusKey)) return null;
   return result;
 }
@@ -2781,6 +2867,11 @@ export function getRevisionConflict(report, value, currentScript, previousReport
 export function applyRevisionFeedback(report, value, currentScript, previousReport = null) {
   const revision = normalizeRevision(value);
   if (!revision || revision.previousScript === currentScript.trim()) return report;
+  if (!previousReport) {
+    delete report.revision_check;
+    report.revision_note = "上次报告已过期或无法核对，本次按当前稿独立检查；不影响本次结果。";
+    return report;
+  }
   // 优先接续服务端实际发出的任务，客户端传来的建议不能改评分或冒充历史。
   const key = previousReport?.coaching?.focus_key || revision.focusKey;
   const labels = { self_intro: "自我介绍", gratitude: "接住参与", target_user: "喊话对象",
@@ -2796,13 +2887,11 @@ export function applyRevisionFeedback(report, value, currentScript, previousRepo
   }
   const evidence = report.structure_checks?.find(item => item.key === key)?.evidence ||
     (key === "line_angle" ? report.interaction_review?.reading : "");
-  // 没有可核验旧报告时只保留原有的当前达标提示，不伪造逐版对照。
-  if (previousReport) report.revision_check = { focus_key: key, status: state, evidence: evidence || "" };
+  report.revision_check = { focus_key: key, status: state, evidence: evidence || "" };
   if (state === "resolved") {
     report.revision_note = `上次练的${label}，这版已经说清了。`;
     if (["redline", "persona"].includes(key)) report.revision_note = `上次指出的${label}问题，这版已消除。`;
-    if (!previousReport && report.coaching) report.coaching.keep = report.revision_note;
-  } else if (previousReport && state === "still_open") {
+  } else if (state === "still_open") {
     const lesson = previousReport.coaching;
     if (adoptedCoachExample(revision, currentScript, lesson) && !newCoachingTargetsAdoptedExample(report, lesson)) {
       report.revision_note = `上次示范的那句已改；这版还有另一处${label}问题，接着看本次指出的原句。`;
@@ -2856,6 +2945,15 @@ function validateManual(body) {
  * @param {{voteGap:string, script:string, cases:object[], redlineHits:string[], scenario:object|null}} params
  * @returns {Promise<{report:object, usage:{prompt_tokens:number, completion_tokens:number}}>}
  */
+// Occasionally JSON mode wraps the report as {type:"json_object",content:{...}}.
+// Unwrap only that exact transport shape; all report gates still run afterwards.
+export function unwrapModelEnvelope(value) {
+  if (value && typeof value === "object" && !Array.isArray(value) &&
+      Object.keys(value).length === 2 && value.type === "json_object" &&
+      value.content && typeof value.content === "object" && !Array.isArray(value.content)) return value.content;
+  return value;
+}
+
 async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario, revision = null }, repair = null) {
   if (!env.DEEPSEEK_API_KEY) {
     throw new HttpError(503, "服务未配置", "DeepSeek key 未配置");
@@ -2916,7 +3014,7 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
   const content = data?.choices?.[0]?.message?.content;
   let report;
   try {
-    report = JSON.parse(content);
+    report = unwrapModelEnvelope(JSON.parse(content));
   } catch {
     // JSON mode 偶发截断导致解析失败 → 让前端重试
     throw new HttpError(502, "报告格式出错，请重试", "JSON 解析失败");

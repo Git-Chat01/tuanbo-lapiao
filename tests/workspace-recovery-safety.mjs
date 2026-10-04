@@ -35,7 +35,7 @@ function session(storage=new Map()) {
   return {c,get,storage,success:report=>callbacks.onSuccess(report),error:(status,message)=>callbacks.onError(status,message)};
 }
 function report(script,waiting=false,passed=false) {
-  return {verdict:passed?'passed':'almost',practice_status:waiting?'awaiting_response':undefined,
+  return {report_id:'11111111-1111-4111-8111-111111111111',verdict:passed?'passed':'almost',practice_status:waiting?'awaiting_response':undefined,
     card_type:'logic',card_why:'接住眼前回应',audience:'观众丙',verdict_reason:'保持这句的选择权',echo:'已接住回应',one_thing:'留出回应空隙',
     ai_flavor:'',redline_note:'',interaction_review:{judgment:'aligned',reading:'已问出兴趣，等待反馈',next_check:'看下一拍'},
     structure_checks:['self_intro','gratitude','target_user','user_reason','vote_instruction'].map(key=>({key,status:!passed&&key==='user_reason'?'partial':'met',evidence:script})),
@@ -55,6 +55,7 @@ assert.equal(saved.responses['0'],'第一分支接话');assert.equal(saved.respo
 assert.equal(saved.type,'edit','返回现场不能把报告工作区改成 pending');
 let refreshed=session(s.storage);refreshed.c.Report._restoreWorkspace();
 assert.equal(refreshed.c.App.state.currentView,'form');
+assert.equal(refreshed.c.App.state.lastReport.report_id,saved.report.report_id,'刷新必须保留报告编号');
 assert.equal(refreshed.get('btn-submit').disabled,true,'原稿未变化时刷新仍阻止重复提交');
 assert.equal(refreshed.c.Report._workspace.responses['1'],'第二分支接话');
 refreshed.c.App._openStage('report');assert.equal(refreshed.get('response-script').value,'第二分支接话');

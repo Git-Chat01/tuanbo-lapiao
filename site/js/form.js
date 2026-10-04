@@ -548,6 +548,7 @@ var Form = {
         focusKey: focus.key,
         instruction: coaching ? coaching.action : (Report._specificDirectionFor(previousReport, focus) || Report._solutionFor(previousReport, focus)),
       };
+      if (previousReport.report_id) data.revision.reportId = previousReport.report_id;
     } else if (retryRevision) {
       data.revision = retryRevision;
     }

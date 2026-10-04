@@ -57,11 +57,12 @@ assert.match(getReportQualityIssue(Object.assign(normalizeReport(rawReport(false
 assert.match(getReportQualityIssue(Object.assign(normalizeReport(rawReport(false),script),{coaching:{...lesson.coaching,why:''}}),script,NOVICE_SCENARIO),/缺少/);
 assert.match(getReportQualityIssue(Object.assign(normalizeReport(rawReport(false),script),{coaching:{...lesson.coaching,example:'去借钱刷礼物支持我'}}),script,NOVICE_SCENARIO),/风险/);
 const fetchBefore=globalThis.fetch;let received;
-try {
- globalThis.fetch=async(_url,options)=>{received=JSON.parse(JSON.parse(options.body).messages[1].content);return Response.json({choices:[{message:{content:JSON.stringify(rawReport())}}],usage:{prompt_tokens:1,completion_tokens:1}});};
+for (const wrapped of [false,true]) try {
+ globalThis.fetch=async(_url,options)=>{received=JSON.parse(JSON.parse(options.body).messages[1].content);return Response.json({choices:[{message:{content:JSON.stringify(wrapped?{type:"json_object",content:rawReport()}:rawReport())}}],usage:{prompt_tokens:1,completion_tokens:1}});};
  const env={ACCESS_CODE:'novice-test',DEEPSEEK_API_KEY:'fake',COACH_LIMITER:createRateLimiterBinding(CoachRateLimiter)};
  const result=await worker.fetch(new Request('https://local.test/api/coach',{method:'POST',body:JSON.stringify({accessCode:env.ACCESS_CODE,script,voteGap:'secured',scenario:{...NOVICE_SCENARIO,phase:'awaiting_drop',userSignal:'老粉都已经答应了',targetUnits:28,pledgedUnits:28}})}),env,{waitUntil:p=>p.catch(()=>{})});
  assert.equal(result.status,200,JSON.stringify(await result.clone().json()));
+ assert.equal((await result.json()).report.verdict,'passed','包装兼容后仍走相同判分与证据校验');
  assert.equal(received.voteGap,'far');const {timeline,...fixedFacts}=NOVICE_SCENARIO;assert.deepEqual(received.scenario,fixedFacts,'后端不能沿用被改成组满/已有老粉的固定新人背景');
 } finally {globalThis.fetch=fetchBefore;}
 assert.equal(new Set(noviceCoachingFixtures.map(f=>f.id)).size,noviceCoachingFixtures.length);

@@ -1569,6 +1569,7 @@ function testShortCoachingUsesTheActualSentence() {
 async function testRevisionContextFollowsOnlyTheSameScene() {
   const original = {script: "凯哥，大家一起组一组。", voteGap: "close", scenario: {id: "one", phase: "closing"}, mode: "guided"};
   const previousReport = makeChallengeReport(["missing", "missing", "met", "partial", "met"]);
+  previousReport.report_id = "11111111-1111-4111-8111-111111111111";
   let captured;
   const context = createBrowserContext({
     App: {state: {lastRequest: original, lastReport: previousReport}, toast() {}, lockStage() {}, unlockStage() {}, showView() {}},
@@ -1581,6 +1582,7 @@ async function testRevisionContextFollowsOnlyTheSameScene() {
   const changed = {...original, script: "凯哥，愿意一起守这轮的量力搭一点，我继续报差距。"};
   context.Form._submitData(changed);
   assert.equal(captured.revision.previousScript, original.script);
+  assert.equal(captured.revision.reportId, previousReport.report_id, "复练携带实际看到的报告编号");
   assert.equal(captured.revision.focusKey, "user_reason");
   assert.ok(captured.revision.instruction.length > 0);
   const revision = captured.revision;
@@ -1594,7 +1596,7 @@ async function testRevisionContextFollowsOnlyTheSameScene() {
   });
   loadScript(apiContext, "site/js/api.js");
   await new Promise(resolvePromise => apiContext.Api.submit({...changed, revision: {...revision, extra: "discard"}}, {onFinish: resolvePromise}));
-  assert.deepEqual(wire.revision, JSON.parse(JSON.stringify(revision)), "API 只传上一版、同一修改点和方向，不传整段历史或多余字段");
+  assert.deepEqual(wire.revision, JSON.parse(JSON.stringify(revision)), "API 只传报告编号、上一版及修改点，不传整段历史或多余字段");
 }
 
 async function testRetryAndResponseBodyKeepDeadline() {

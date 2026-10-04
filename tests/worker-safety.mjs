@@ -364,7 +364,9 @@ const shortCoaching = {
   assert.match(current.SYSTEM_PROMPT, /两个核心 met.{0,30}必须 passed/);
   const fixed = {verdict:"almost",structure_checks:[{key:"user_reason",status:"met"}],coaching:{keep:"原先优点"}};
   index.applyRevisionFeedback(fixed, revision, "不同的新稿");
-  assert.match(fixed.coaching.keep, /这版已经说清/);
+  assert.equal(fixed.coaching.keep, "原先优点");
+  assert.equal(fixed.revision_check, undefined);
+  assert.match(fixed.revision_note, /独立检查/);
   assert.equal(fixed.verdict, "almost", "复练历史不得抬高结论");
   const unfinished = {verdict:"almost",structure_checks:[{key:"user_reason",status:"partial"}],coaching:{keep:"原先优点"}};
   index.applyRevisionFeedback(unfinished, revision, "不同的新稿");
@@ -3575,7 +3577,7 @@ assert.match(
   const firstLesson = [{whyGood:"公开经验甲"}];
   const secondLesson = [{whyGood:"公开经验乙"}];
   const lessonKey = await index.reviewRecordKey("one", "close", baseScript, null, firstLesson);
-  assert.notEqual(key, lessonKey,"当前报告必须区别于供复练查找的稳定历史键");
+  assert.notEqual(key, lessonKey,"当前报告必须区别于检索故障时使用的稳定缓存键");
   assert.notEqual(lessonKey, await index.reviewRecordKey("one", "close", baseScript, null, secondLesson),"已选案例经验改变必须刷新评分缓存");
   const threeLessons=[...firstLesson,{whyGood:"经验二"},{whyGood:"经验三"}];
   assert.equal(await index.reviewRecordKey("one", "close", baseScript, null, threeLessons),
@@ -3611,7 +3613,7 @@ assert.match(
 }
 
 // A newly published or edited reference lesson refreshes the actual coach route,
-// while revision lookup still finds the latest report through the stable key.
+// while revision lookup follows the exact receipt the caller actually saw.
 {
   const env={COACH_LIMITER:createRateLimiterBinding(index.CoachRateLimiter),ACCESS_CODE:"lesson-cache-test",DEEPSEEK_API_KEY:"test-key",CASES:new MemoryKV()};
   const savedFetch=globalThis.fetch;
@@ -3651,7 +3653,8 @@ assert.match(
     const savedAlias=env.CASES.values.get(aliasKey);
     globalThis.__retrieveCasesError=true;
     const degraded=await submit(baseScript);
-    assert.deepEqual(degraded.report,refreshed.report,
+    assert.notEqual(degraded.report.report_id,refreshed.report.report_id,"缓存命中也分配独立报告编号");
+    assert.deepEqual({...degraded.report,report_id:null},{...refreshed.report,report_id:null},
       "案例检索暂时失败时应返回同稿同现场已服务报告，而非空案例重判");
     assert.equal(modelCalls,2,"有历史报告时检索故障不得再次调用模型");
     assert.equal(env.CASES.values.get(aliasKey),savedAlias,
@@ -3662,9 +3665,9 @@ assert.match(
     assert.equal(modelCalls,3,"新稿检索故障应进行一次新判断");
     globalThis.__retrieveCasesError=false;
     const historyKey=await index.reviewRecordKey(env.ACCESS_CODE,"close",baseScript,null);
-    assert.equal((await index.readReviewRecord(env,historyKey)).report.verdict_reason,"本次批改 2","复练历史指向用户最近看到的报告");
+    assert.equal((await index.readReviewRecord(env,historyKey)).report.verdict_reason,"本次批改 2","降级别名指向此稿最近生成的报告");
     const revisedScript=baseScript.replace("我还差十票","我现在还差十票");
-    const revised=await submit(revisedScript,{previousScript:baseScript,focusKey:"user_reason",instruction:"接住观众兴趣"});
+    const revised=await submit(revisedScript,{reportId:refreshed.report.report_id,previousScript:baseScript,focusKey:"user_reason",instruction:"接住观众兴趣"});
     assert.deepEqual(revised.report.revision_check?.focus_key,"user_reason");
     assert.equal(revised.report.revision_check?.status,"resolved","案例变化后仍能读取上一版用于复练");
   }finally{globalThis.fetch=savedFetch;delete globalThis.__retrievedCases;delete globalThis.__retrieveCasesError;}
@@ -3717,11 +3720,12 @@ assert.match(
     if(script===oldScript) await index.reuseReview(env,
       await index.reviewRecordKey(env.ACCESS_CODE,"close",script,null),async()=>({ok:true,report,usage:{}}));
   }
+  const reportId=await index.saveDeliveredReview(env,env.ACCESS_CODE,"close",oldScript,null,previous);
   for(const streaming of [false,true]){
     const response=await index.default.fetch(new Request("https://local.test/api/coach",{
       method:"POST",headers:{"Content-Type":"application/json",Accept:streaming?"application/x-ndjson":"application/json"},
       body:JSON.stringify({accessCode:env.ACCESS_CODE,voteGap:"close",script:baseScript,
-        revision:{previousScript:oldScript,focusKey:"user_reason",instruction:"示范替换"}}),
+        revision:{reportId,previousScript:oldScript,focusKey:"user_reason",instruction:"示范替换"}}),
     }),env,{waitUntil(){}});
     const payload=JSON.parse((await response.text()).trim().split("\n").at(-1));
     assert.equal(streaming?payload.status:response.status,409);

@@ -105,7 +105,21 @@ noviceCoachingFixtures.push(
   "risk": true,
   "recheck": true,
   "preserve": "字谜|提示",
-  "removed": "借钱|谁都别走",
+  "removed": "谁不支持我谁都别走",
   "lesson": "同类施压前后都要清除，保留已成立的猜谜内容和支持动作。"
 }
 );
+
+noviceCoachingFixtures.push({
+ id:'preserve-capability-boundary',group:'retain-content',
+ script:'我是新来的小满，刚被刀下去了，复活还差很多。我不擅长临场接词，也不会唱跳，我说话慢，但喜欢把今天的小糗事讲给人听。大家帮帮我，我想回台。',
+ passed:false,recheck:true,preserve:'小糗事',forbiddenSuggestion:'你们.{0,8}(出个词|出一个词|给我一个词|选.{0,4}舞)|我.{0,6}(接一句|唱一段|跳一段)',
+ lesson:'沿小糗事和慢语气展开具体参与内容，不能让她表演明确不会的唱跳或临场接词。'
+});
+
+noviceCoachingFixtures.push({
+ id:'empty-comment-reward',group:'viewer-reason',
+ script:'我是新人小满，刚被刀下去了，复活还差很多。你们愿意的话，评论区扣个满字，我一个个记住；想让我留下的，帮我补一票。',
+ passed:false,recheck:true,
+ lesson:'评论和记名只有动作，没有具体讲述、表演或有内容的回应；不能把记住陌生观众本身默认当成足够的复活理由。'
+});

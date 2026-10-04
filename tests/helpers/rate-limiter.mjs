@@ -11,11 +11,12 @@ export function createRateLimiterBinding(LimiterClass) {
       const state = states.get(name);
       if (!objects.has(name)) {
         const storage = {
+          async get(key) { return structuredClone(state.values.get(key)); },
+          async put(key, value) { state.values.set(key, structuredClone(value)); },
+          async deleteAll() { state.values.clear(); },
+          async setAlarm(time) { state.alarm = time; },
           transaction(callback) {
-            const result = state.queue.then(() => callback({
-              async get(key) { return structuredClone(state.values.get(key)); },
-              async put(key, value) { state.values.set(key, structuredClone(value)); },
-            }));
+            const result = state.queue.then(() => callback(storage));
             state.queue = result.catch(() => {});
             return result;
           },
