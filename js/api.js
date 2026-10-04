@@ -98,6 +98,7 @@ var Api = {
         focusKey: payload.revision.focusKey,
         instruction: payload.revision.instruction,
       };
+      if (payload.revision.reportId) body.revision.reportId = payload.revision.reportId;
     }
 
     // 前端超时保险。旧 WebView 没有 AbortController 时用 Promise.race 降级，
