@@ -66,3 +66,46 @@ export const noviceCoachingFixtures = [
     "lesson": "诱导借钱和强迫支持必须拦截，不能只润色语气。"
   }
 ];
+
+// 验证整段同类错误与原稿风格保留，不把一种节目当通用答案。
+noviceCoachingFixtures.push(
+{
+  "id": "repeated-loyalty",
+  "group": "whole-script",
+  "script": "老粉们，你们刚才已经答应包我复活了。我是新人小满，会机械舞，回台后演机器人失灵，你们选卡左边还是右边；想看就帮我上点复活票。把刚才答应我的票都兑现吧。",
+  "passed": false,
+  "recheck": true,
+  "preserve": "机器人|机械舞",
+  "removed": "已经答应|答应我的|都兑现",
+  "lesson": "前后两处虚构承诺属于同类错误，应一起改掉，保留中间的机械舞与观众选择。"
+},
+{
+  "id": "preserve-wordplay",
+  "group": "retain-content",
+  "script": "我是新人小满，刚被刀下去了，复活还差很多。我准备了三个冷笑话，回台后你们选先听谐音梗还是反转梗，冷到你们就打个冷字，我换下一个。",
+  "passed": false,
+  "recheck": true,
+  "preserve": "冷笑话|谐音梗|反转梗",
+  "lesson": "原稿已有冷笑话与回应方式，只需补复活动作，不能改成让观众出开场白或跳舞。"
+},
+{
+  "id": "preserve-quiet-style",
+  "group": "retain-content",
+  "script": "我是新人小满，刚被刀下去了，复活还差很多。我不太会热闹地喊，回台后想和你们玩猜字谜，我出题，你们猜，卡住了我就给一个提示。",
+  "passed": false,
+  "recheck": true,
+  "preserve": "猜字谜|出题|提示",
+  "lesson": "保留安静表达与已提出的猜字谜，补清复活支持动作，不换成热闹口号或另一个节目。"
+},
+{
+  "id": "repeated-pressure",
+  "group": "whole-script",
+  "script": "我是新人小满，复活差很多，没钱也去借钱刷礼物。我回台可以出字谜，你们猜，猜不出我就给提示，想看就帮我上点复活票。谁不支持我谁都别走。",
+  "passed": false,
+  "risk": true,
+  "recheck": true,
+  "preserve": "字谜|提示",
+  "removed": "借钱|谁都别走",
+  "lesson": "同类施压前后都要清除，保留已成立的猜谜内容和支持动作。"
+}
+);

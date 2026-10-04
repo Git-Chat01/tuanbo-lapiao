@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {readFile,writeFile,mkdir} from 'node:fs/promises';
-import worker, {CoachRateLimiter} from '../worker/index.js';
+import worker, {CoachRateLimiter, applyCoachingEdits, hasCertainAudienceClaim} from '../worker/index.js';
 import {NOVICE_SCENARIO} from '../worker/current-review.js';
 import {createRateLimiterBinding} from './helpers/rate-limiter.mjs';
 import {noviceCoachingFixtures} from './novice-coaching-fixtures.mjs';
@@ -11,22 +11,24 @@ if(!key)throw Error('Configured model key missing');
 const only=process.argv.find(x=>x.startsWith('--only='))?.slice(7).split(',');
 const fixtures=noviceCoachingFixtures.filter(f=>!only||only.includes(f.id));
 if(!fixtures.length)throw Error("No matching synthetic fixtures");
+const label=process.argv.find(x=>x.startsWith("--label="))?.slice(8) || "";
+if(label && !/^[a-z0-9-]+$/u.test(label))throw Error("Invalid run label");
 const results=[];
 const traceLabels=new Map(fixtures.map(f=>[f.script,f.id]));
 const originalFetch=globalThis.fetch,rawCounts=new Map();
 globalThis.fetch=async(url,options)=>{
  const response=await originalFetch(url,options);
  const prompt=JSON.parse(JSON.parse(options.body).messages[1].content);
- const label=traceLabels.get(prompt.currentScript);
- const fixture=label?{id:label,script:prompt.currentScript}:null;
+ const traceLabel=traceLabels.get(prompt.currentScript);
+ const fixture=traceLabel?{id:traceLabel,script:prompt.currentScript}:null;
  if(fixture){
   const n=(rawCounts.get(fixture.id)||0)+1;rawCounts.set(fixture.id,n);
   const data=await response.clone().json();
-  await writeFile(new URL('tmp_results/novice-raw-'+fixture.id+'-'+n+'.json',import.meta.url),JSON.stringify({script:fixture.script,report:data.choices?.[0]?.message?.content},null,2));
+  await writeFile(new URL('tmp_results/novice-raw-'+(label?label+'-':'')+fixture.id+'-'+n+'.json',import.meta.url),JSON.stringify({script:fixture.script,report:data.choices?.[0]?.message?.content},null,2));
  }
  return response;
 };
-const output=new URL('tmp_results/novice-coaching-live.json',import.meta.url);
+const output=new URL('tmp_results/novice-coaching-live'+(label?'-'+label:'')+'.json',import.meta.url);
 await mkdir(new URL('tmp_results/',import.meta.url),{recursive:true});
 async function run(f){
  const store=new Map();const pending=[];
@@ -41,10 +43,14 @@ async function run(f){
   assert.equal(body.report.practice_status==='awaiting_response',Boolean(f.waiting));
   if(!f.passed&&!f.waiting){assert.ok(body.report.coaching?.example);assert.ok(body.report.coaching?.why);assert.ok(body.report.card_why);}
   if(f.risk)assert.equal(body.report.verdict,'off');
-  if(['need-only','polite-only','specific-content-no-action'].includes(f.id)){
+  const descriptions=[body.report.card_why,body.report.coaching?.why,...body.report.line_reviews.map(x=>x.comment)];
+  assert.ok(!descriptions.some(hasCertainAudienceClaim),'不能把观众心理说成必然');
+  if(f.recheck || ['need-only','polite-only','specific-content-no-action'].includes(f.id)){
    const lesson=body.report.coaching;
-   assert.equal(f.script.split(lesson.original).length,2,'示范应准确定位一个原句');
-   const revised=f.script.replace(lesson.original,lesson.example);
+   const revised=applyCoachingEdits(f.script,lesson);
+   assert.ok(revised,'示范与关联修改应准确定位且不重叠');
+   if(f.preserve){assert.match(revised,new RegExp(f.preserve,'u'),'保留本稿已有的内容');assert.doesNotMatch(revised,/开场白|机械舞|机器人/u.test(f.script)?/$^/u:/开场白|机械舞|机器人/u,'不换成无关模板');}
+   if(f.removed)assert.doesNotMatch(revised,new RegExp(f.removed,'u'),'整稿不能残留同类错误');
    traceLabels.set(revised,f.id+'-revision');
    const next=await worker.fetch(new Request('https://local.test/api/coach',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accessCode:env.ACCESS_CODE,script:revised,voteGap:'far',scenario:NOVICE_SCENARIO,revision:{previousScript:f.script,focusKey:lesson.focus_key,instruction:lesson.action}})}),env,{waitUntil:p=>pending.push(p)});
    const nextBody=await next.json();result.revision={script:revised,status:next.status,body:nextBody};

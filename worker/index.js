@@ -191,7 +191,7 @@ const DEEPSEEK_CONFIG = {
 
 // 修改评分、安全闸门或案例标准时递增；提示词和模型配置也参与指纹。
 // 只复用已完成的检查，不用缓存把一个未经验证的模型输出变成标准答案。
-const REVIEW_VERSION = "2026-10-03-novice-coaching-1";
+const REVIEW_VERSION = "2026-10-03-novice-coaching-2";
 const REVIEW_TTL_SECONDS = 7 * 24 * 60 * 60;
 const reviewStores = new WeakMap();
 
@@ -1023,7 +1023,7 @@ function hasClearlyNegatedViewerValue(sentence) {
 
 function hasIntroducedContentAdvice(advice, sourceScript) {
   return (
-    !VIEWER_CONTENT_PATTERN.test(String(sourceScript || "")) &&
+    !(VIEWER_CONTENT_PATTERN.test(String(sourceScript || "")) || /机械舞|街舞|民族舞|冷笑话|谐音梗|反转梗|猜字谜|字谜/u.test(String(sourceScript || ""))) &&
     INTRODUCED_CONTENT_ADVICE_PATTERN.test(String(advice || ""))
   );
 }
@@ -2194,8 +2194,9 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
   // 短带教与完整报告共用边界，不能因新字段绕过已有阶段和事实校验。
   // 校验失败只撤掉教练自己的示范，不把模型错误算到新人头上。
   if (report.coaching) {
-    const advice = `${report.coaching.action} ${report.coaching.example} ${report.coaching.why}`;
-    const proposedSpeech = report.coaching.example;
+    const examples = coachingEdits(report.coaching).map(edit => edit.example || "").join(" ");
+    const advice = `${report.coaching.action} ${examples} ${report.coaching.why}`;
+    const proposedSpeech = report.coaching.related_edits?.length ? (applyCoachingEdits(sourceScript, report.coaching) || examples) : report.coaching.example;
     const inventedContent = hasIntroducedContentAdvice(advice, observableContext);
     const prematureGuarantee = guaranteesResult(advice);
     const phaseConflict = scenarioPhase === "awaiting_drop"
@@ -2208,7 +2209,8 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
       report.direction.summary = "只沿着原话已有的事实改一句，不补造观众偏好，也不保证上票后的结果。用你自己的话说。";
       report.direction.examples = [];
     } else if (writtenTermsIn(proposedSpeech).length > 0) {
-      report.coaching.example = speakable(proposedSpeech);
+      report.coaching.example = speakable(report.coaching.example);
+      if (report.coaching.related_edits) report.coaching.related_edits = report.coaching.related_edits.map(edit => ({...edit, example:edit.example ? speakable(edit.example) : ""}));
     }
   }
   // 没有 coaching 时示范句也照样落在 direction.examples 上，同样得清一遍书面词（只删不进）。
@@ -2710,11 +2712,46 @@ function revisionFocusState(report, key) {
   return report.verdict === "passed" ? "resolved" : "unverified";
 }
 
+// 修改计划统一按原稿定位后从后往前替换，避免替换文字再次匹配其他原句。
+export function coachingEdits(lesson) {
+  return lesson ? [{original:lesson.original, example:lesson.example}, ...(Array.isArray(lesson.related_edits) ? lesson.related_edits : [])] : [];
+}
+
+export function applyCoachingEdits(source, lesson) {
+  if (typeof source !== "string" || !lesson) return null;
+  if (lesson.related_edits != null && (!Array.isArray(lesson.related_edits) || lesson.related_edits.length > 4)) return null;
+  const ranges = [];
+  for (const edit of coachingEdits(lesson)) {
+    if (!edit || typeof edit.original !== "string" || !edit.original.trim() || Array.from(edit.original).length > 200 ||
+        typeof edit.example !== "string" || Array.from(edit.example).length > 160) return null;
+    const start = source.indexOf(edit.original);
+    if (start < 0 || source.indexOf(edit.original, start + 1) >= 0) return null;
+    ranges.push({start, end:start + edit.original.length, example:edit.example});
+  }
+  ranges.sort((a,b)=>a.start-b.start);
+  if (ranges.some((range,i)=>i > 0 && range.start < ranges[i-1].end)) return null;
+  let result = source;
+  for (const range of ranges.reverse()) result = result.slice(0,range.start) + range.example + result.slice(range.end);
+  return result.trim() && result.length <= LIMITS.scriptMax ? result : null;
+}
+
+// 只拦截明确的无依据断言；完整的语义边界仍由提示词与对照回归验证。
+export function hasCertainAudienceClaim(value) {
+  const text = String(value || "").replace(/[“「][^”」]*[”」]|"[^"\n]*"|‘[^’]*’/gu, "");
+  const pattern = /(?:观众|用户|对方)(?:们)?[^。！？!?；;]{0,32}?(?:一定|肯定|必然|必定|自然|只会|只感到)(?:会|就|都|只|不|没|感到|觉得|更|很|有|愿意|想|去|给|来|被|得|上|送|投|掏|留|动|走|爽|信|支持|喜欢|讨厌|压力|无聊)/gu;
+  for (const match of text.matchAll(pattern)) {
+    const prefix = text.slice(Math.max(0,match.index-18),match.index) + match[0].replace(/(?:一定|肯定|必然|必定|自然|只会|只感到)[\s\S]*$/u, "");
+    if (/不$/u.test(prefix)) continue;
+    if (!/(?:不能|无法|不应|不要|未能|没有依据|并非|不代表|不等于|不保证|尚不能)[^。！？!?；;]{0,24}$/u.test(prefix)) return true;
+  }
+  return false;
+}
+
 function adoptedCoachExample(value, currentScript, lesson) {
   const revision = normalizeRevision(value);
   if (!revision || !lesson?.original || !lesson?.example || lesson.original === lesson.example) return false;
-  const parts = revision.previousScript.split(lesson.original);
-  return parts.length === 2 && (parts[0] + lesson.example + parts[1]).trim() === currentScript.trim();
+  const revised = applyCoachingEdits(revision.previousScript, lesson);
+  return revised !== null && revised.trim() === currentScript.trim();
 }
 
 function provisionalAudienceProbe(lesson) {
@@ -2727,7 +2764,7 @@ function provisionalAudienceProbe(lesson) {
 
 function newCoachingTargetsAdoptedExample(report, lesson) {
   const nextOriginal = String(report.coaching?.original || "").replace(/\s+/gu, "");
-  return !nextOriginal || String(lesson.example || "").replace(/\s+/gu, "").includes(nextOriginal);
+  return !nextOriginal || coachingEdits(lesson).some(edit => String(edit.example || "").replace(/\s+/gu, "").includes(nextOriginal));
 }
 
 export function getRevisionConflict(report, value, currentScript, previousReport) {
@@ -2748,7 +2785,7 @@ export function applyRevisionFeedback(report, value, currentScript, previousRepo
   const key = previousReport?.coaching?.focus_key || revision.focusKey;
   const labels = { self_intro: "自我介绍", gratitude: "接住参与", target_user: "喊话对象",
     user_reason: "参与理由", vote_instruction: "当下动作", line_angle: "现场理解",
-    redline: "风险表达", persona: "模板表达" };
+    redline: "风险表达", persona: "模板表达", logic: "表达逻辑", mentality: "表达姿态", expression: "表达方式" };
   const label = labels[key];
   if (!label) return report;
   const state = revisionFocusState(report, key);
@@ -2837,7 +2874,7 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
       task:"修正上一份报告的校验错误，返回完整JSON。原稿和现场未改变；不是要求改判通过。保持有证据的判断，重新核对相互矛盾之处。",
       validationIssue:repair.issue,
       invalidFields:repair.details || [],
-      rules:"引用必须逐字来自原稿或现场，概括表达不要加引号伪装成原话；coaching.original 选连续原文，不拼接。所有逐句编号完整保留，结论和核心状态一致。不要添加原稿未有的事实、示范承诺或通过门槛。",
+      rules:"引用必须逐字来自原稿或现场，概括表达不要加引号伪装成原话；coaching.original 和 related_edits 各选唯一、互不重叠的连续原文，不拼接；同类错误一并修正，反馈不保证观众心理和行为。所有逐句编号完整保留，结论和核心状态一致。不要添加原稿未有的事实、示范承诺或通过门槛。",
     })});
   }
 
@@ -3057,12 +3094,26 @@ export function getReportQualityIssue(report, sourceScript, scenario = null, det
   if (report.verdict !== "passed" && noRisk && core.every(item => item.status === "met")) return "核心已达标但结论仍卡关";
   if (report.verdict !== "passed" && !report.coaching) return "缺少有效的短带教";
   if (report.verdict !== "passed" && report.practice_status !== "awaiting_response" && core.some(item => item.key === report.coaching?.focus_key && item.status === "met")) return "修改点要求重做已达标核心";
+  if (report._coachingEditsContractValid === false) return "关联修改引用不唯一、相互重叠或替换后稿件超长";
+  if (report.coaching?.related_edits?.length && applyCoachingEdits(sourceScript,report.coaching) === null) return "关联修改不能准确放回原稿";
+  if (scenario?.id === NOVICE_SCENARIO.id) {
+    const explanations = [report.card_why, report.verdict_reason, report.echo, report.one_thing, report.coaching?.why, report.coaching?.action,
+      report.interaction_review?.reading, report.interaction_review?.why, report.optional_polish?.why,
+      report.round_dynamics?.response_read, ...(report.round_dynamics?.human_drivers || []).map(item=>item.mechanism),
+      ...report.line_reviews.map(item=>item.comment)];
+    if (explanations.some(hasCertainAudienceClaim)) return "教练把未经证实的观众心理或行为说成必然，请改为表达事实与可能影响";
+  }
   const compact = text => String(text || "").replace(/\s+/gu, "");
   if (scenario?.id === NOVICE_SCENARIO.id && report.verdict !== "passed") {
     const lesson = report.coaching;
     if (!report.card_why?.trim() || !lesson?.action?.trim() || !lesson?.example?.trim() || !lesson?.why?.trim()) return "新人带教缺少问题、改法或解释";
     if (report.practice_status !== "awaiting_response" && compact(lesson.original) === compact(lesson.example)) return "示范没有修改指出的问题";
-    if (detectRedline(lesson.example).length) return "教练示范包含风险表达";
+    if (coachingEdits(lesson).some(edit => detectRedline(edit.example).length)) return "教练示范包含风险表达";
+    const revised = applyCoachingEdits(sourceScript,lesson);
+    if (report.practice_status !== "awaiting_response" && revised === null) return "示范须能唯一定位并放回完整原稿，修改后不超过500字";
+    // 局部示范不能再次复制原稿中已经保留的自我介绍。
+    const intros = sourceScript.match(/(?:我是|我叫)[^，,。！？!?；;\r\n]{1,24}[，,。！？!?；;]/gu) || [];
+    if (revised && intros.some(intro => revised.split(intro).length > sourceScript.split(intro).length)) return "局部示范重复了原稿已经保留的自我介绍，请只替换问题部分";
   }
   const source = compact(sourceScript);
   const sceneQuotes = [
@@ -3502,7 +3553,15 @@ export function normalizeReport(report, sourceScript) {
       [...STRUCTURE_CHECK_KEYS, "logic", "expression", "mentality", "persona", "redline", "line_angle", "final_polish"].includes(coaching.focus_key) &&
       typeof sourceScript === "string" && compactWhitespace(sourceScript).includes(compactWhitespace(coaching.original))) {
     normalized.coaching = Object.fromEntries(Object.keys(coachingLimits).map((key) => [key, coaching[key].trim()]));
+    if (Array.isArray(coaching.related_edits)) normalized.coaching.related_edits = coaching.related_edits.filter(edit => edit && typeof edit.original === "string" && typeof edit.example === "string").map(edit => ({original:edit.original,example:edit.example}));
   }
+
+  Object.defineProperty(normalized, "_coachingEditsContractValid", {
+    value: report.verdict === "passed" || coaching?.related_edits == null ||
+      (Array.isArray(coaching.related_edits) && coaching.related_edits.length === 0) ||
+      applyCoachingEdits(sourceScript, coaching) !== null,
+    enumerable:false,
+  });
 
   const polish = report.optional_polish;
   if (report.verdict === "passed" && polish && typeof polish === "object" && !Array.isArray(polish) &&
@@ -3517,6 +3576,7 @@ export function normalizeReport(report, sourceScript) {
     if (Array.from(keep).length <= 160) {
       normalized.coaching.action = "保留这版，开口练并观察回应";
       normalized.coaching.example = keep;
+      delete normalized.coaching.related_edits;
       normalized.direction = { summary: normalized.coaching.action, examples: [keep] };
     } else {
       delete normalized.coaching;

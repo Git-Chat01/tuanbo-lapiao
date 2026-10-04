@@ -222,7 +222,7 @@ TRAINING_SCENARIOS.push(Object.assign({
   voteGap: "far",
   title: "复活差得多，你准备怎么说？",
   selectorLabel: "新人复活",
-  coachHint: "先写你真的会说的话，教练会指出一处关键问题，陪你改明白。"
+  coachHint: "先写你真的会说的话，教练会指出一个关键问题，陪你改明白。"
 }));
 var DEFAULT_TRAINING_SCENARIO_ID = NOVICE_TRAINING_SCENARIO_ID;
 
