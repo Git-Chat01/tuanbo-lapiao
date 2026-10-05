@@ -1576,6 +1576,11 @@ var Report = {
     Report._loadingClockTimer = null;
   },
 
+  showRetrying: function (message) {
+    var target = document.getElementById("loading-message");
+    if (target) target.textContent = message;
+  },
+
   showError: function (message) {
     Report._stopLoadingMessages();
     document.getElementById("report-loading").hidden = true;
@@ -1626,6 +1631,7 @@ var Report = {
     App.showView("report");
     Report.showLoading();
     Api.submit(request, {
+      onRetry: Report.showRetrying,
       onSuccess: function (report) {
         App.state.lastReport = report;
         if (report.verdict === "passed") Report.showPassed(report);

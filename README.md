@@ -322,3 +322,11 @@ node tests/context-response-live.mjs --live
 `node tests/report-identity-safety.mjs` 覆盖相同入口码与原稿的不同报告、不可覆盖、重启、过期、故障、JSON/流式复练绑定。安装项目已有开发依赖后，`node tests/report-storage-runtime.mjs` 用本地 workerd/SQLite 核对真实事务、alarm 调度与并发不可覆盖，不连接线上 Cloudflare。
 
 真实模型回归使用虚构样本与本地案例库，`tests/novice-coaching-live.mjs` 记录初批、复批和模型调用耗时；`--baseline` 使用 HEAD 的完整提示词，`--no-thinking` 仅用于试验。新增明确能力边界和空泛扣字样本，作为后续带教素材校准的对照，不代表已解决所有语义问题。
+
+## 2026-10-05 连接中断恢复
+
+浏览器与接口断连（含读取正文失败）、只收到心跳或不完整报告时，在原 105 秒总预算内最多自动恢复一次；剩余不足 45 秒、明确离线、主动取消、已超时或服务端明确禁止重试时不重跑。页面显示自动重连状态，保留同一稿件、场景及复练报告编号，只有完整报告才交付。
+
+模型 90 秒预算覆盖响应头与正文读取；正文网络错误、超时和 JSON 损坏分别归类，避免漏成无信息的 500，也不把模型超时归咎学员手机。流式响应禁止缓存和变换；生成任务注册 `ctx.waitUntil`，较晚断开后可在 Cloudflare 提供的最多 30 秒宽限期内完成并进入既有缓存。这不是持久任务队列，不保证任意时刻断线都继续完成，长断网仍需恢复连接。
+
+`GET /health` 新增 `serviceVersion` 标识连接修复版本，`reviewVersion` 保持不变以复用既有评分缓存。`node tests/connection-recovery-safety.mjs` 模拟断连、读正文中断、只收到心跳、重连时取消、统一时限及断连后的缓存恢复；不调用真实模型。

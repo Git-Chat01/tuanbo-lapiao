@@ -192,6 +192,8 @@ const DEEPSEEK_CONFIG = {
 // 修改评分、安全闸门或案例标准时递增；提示词和模型配置也参与指纹。
 // 只复用已完成的检查，不用缓存把一个未经验证的模型输出变成标准答案。
 const REVIEW_VERSION = "2026-10-04-report-identity-1";
+// Transport-only releases must not invalidate completed grading results.
+const SERVICE_VERSION = "2026-10-05-connection-recovery-1";
 const REVIEW_TTL_SECONDS = 7 * 24 * 60 * 60;
 const reviewStores = new WeakMap();
 
@@ -365,6 +367,7 @@ export default {
           ok: true,
           service: "tuanbo-lapiao-coach",
           reviewVersion: REVIEW_VERSION,
+          serviceVersion: SERVICE_VERSION,
         },
         200,
         corsHeaders
@@ -517,7 +520,7 @@ export default {
 
       // 只有前端会带这个头；脚本、测试、旧页面不带 → 保持纯 JSON 与原有状态码语义。
       const wantsStream = (request.headers.get("Accept") || "").includes("application/x-ndjson");
-      if (wantsStream) return streamCoachResponse(generate, corsHeaders, startedAt);
+      if (wantsStream) return streamCoachResponse(generate, corsHeaders, startedAt, ctx);
 
       return jsonResponse(await generate(), 200, corsHeaders);
     } catch (err) {
@@ -2976,41 +2979,59 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
     })});
   }
 
-  let resp;
+  const controller = new AbortController();
+  let timer;
+  const timeout = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      const error = new Error("Model deadline exceeded");
+      error.name = "TimeoutError";
+      reject(error);
+    }, Math.max(1, deadline - Date.now()));
+  });
+  let data;
   try {
-    resp = await fetch(DEEPSEEK_CONFIG.url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${env.DEEPSEEK_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: DEEPSEEK_CONFIG.model,
-        temperature: DEEPSEEK_CONFIG.temperature,
-        max_tokens: DEEPSEEK_CONFIG.maxTokens,
-        // 显式 low，避免默认 high 的长思考挤占 JSON 正文与响应时间。
-        thinking: { type: "enabled" },
-        reasoning_effort: "low",
-        response_format: { type: "json_object" }, // 结构化输出，前端逐字段 textContent 渲染
-        messages,
-      }),
-      signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
-    });
+    // The deadline covers headers AND the entire body, including provider keep-alives.
+    data = await Promise.race([(async () => {
+      const resp = await fetch(DEEPSEEK_CONFIG.url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${env.DEEPSEEK_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: DEEPSEEK_CONFIG.model,
+          temperature: DEEPSEEK_CONFIG.temperature,
+          max_tokens: DEEPSEEK_CONFIG.maxTokens,
+          // 显式 low，避免默认 high 的长思考挤占 JSON 正文与响应时间。
+          thinking: { type: "enabled" },
+          reasoning_effort: "low",
+          response_format: { type: "json_object" }, // 结构化输出，前端逐字段 textContent 渲染
+          messages,
+        }),
+        signal: controller.signal,
+      });
+      if (!resp.ok) {
+        // Status is sufficient for diagnostics; never log upstream bodies or wait on an error body.
+        console.log(`deepseek upstream ${resp.status}`);
+        if (resp.body) resp.body.cancel().catch(() => {});
+        throw new HttpError(502, "教练服务暂时没有响应，请稍后重试", `上游 ${resp.status}`);
+      }
+      return await resp.json();
+    })(), timeout]);
   } catch (err) {
+    if (err instanceof HttpError) throw err;
     if (err.name === "TimeoutError" || err.name === "AbortError") {
-      throw new HttpError(504, "教练想太久了，重试一次", "DeepSeek 超时");
+      throw new HttpError(504, "教练批改超过等待时限，原稿已保留，请重试", "DeepSeek 超时（含正文接收）");
     }
-    throw new HttpError(502, "连不上教练，稍后重试", `DeepSeek 网络错误: ${err.message}`);
+    if (err.name === "SyntaxError") {
+      throw new HttpError(502, "教练返回的结果不完整，请重试", "DeepSeek 响应正文无法解析");
+    }
+    throw new HttpError(502, "教练服务连接中断，请稍后重试", `DeepSeek 网络错误: ${err.message}`);
+  } finally {
+    clearTimeout(timer);
   }
 
-  if (!resp.ok) {
-    // 上游错误：不透传细节给前端，只记日志（上游 message 可能含敏感信息）
-    const upstreamText = await resp.text().catch(() => "");
-    console.log(`deepseek upstream ${resp.status}: ${upstreamText.slice(0, 200)}`);
-    throw new HttpError(502, "教练那边出错了，稍后重试", `上游 ${resp.status}`);
-  }
-
-  const data = await resp.json();
   const content = data?.choices?.[0]?.message?.content;
   let report;
   try {
@@ -3728,9 +3749,7 @@ function jsonResponse(data, status, corsHeaders, extraHeaders = {}) {
   });
 }
 
-// 流式保活心跳间隔。iPhone Safari 对完全收不到数据的连接约 60 秒判死，
-// 而模型生成最长要 90 秒——一点字节都不发的请求就是第一次「连不上教练」的死因。
-// 10 秒留 6 倍余量，也远小于任何网关的空闲阈值。
+// 周期性发送字节减少空闲断连；移动网络切换、页面挂起或代理仍可能切断连接。
 const STREAM_HEARTBEAT_MS = 10000;
 
 /**
@@ -3743,7 +3762,7 @@ const STREAM_HEARTBEAT_MS = 10000;
  * @param {object} corsHeaders - CORS 头
  * @param {number} startedAt - 请求开始时间，仅用于错误日志
  */
-function streamCoachResponse(run, corsHeaders, startedAt) {
+function streamCoachResponse(run, corsHeaders, startedAt, ctx) {
   const encoder = new TextEncoder();
   let heartbeat = null;
   const stream = new ReadableStream({
@@ -3764,7 +3783,11 @@ function streamCoachResponse(run, corsHeaders, startedAt) {
 
       let payload;
       try {
-        payload = await run();
+        const pending = run();
+        // A late disconnect gets up to the platform's 30s grace to finish and cache.
+        // This is bounded recovery, not a durable background job.
+        if (ctx?.waitUntil) ctx.waitUntil(pending.catch(() => {}));
+        payload = await pending;
       } catch (err) {
         const status = err.status || 500;
         console.log(`coach error: ${Date.now() - startedAt}ms, status=${status}, ${err.message}`);
@@ -3785,6 +3808,6 @@ function streamCoachResponse(run, corsHeaders, startedAt) {
   });
   return new Response(stream, {
     status: 200,
-    headers: { "Content-Type": "application/x-ndjson; charset=utf-8", ...corsHeaders },
+    headers: { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store, no-transform", ...corsHeaders },
   });
 }

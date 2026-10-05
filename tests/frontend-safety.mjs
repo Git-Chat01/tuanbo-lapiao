@@ -1377,7 +1377,7 @@ async function testTimeoutWithoutAbortControllerInvalidatesLateResponse() {
 
   await new Promise((resolvePromise) => setTimeout(resolvePromise, 0));
   assert.equal(fetchCount, 1);
-  assert.equal(errorResult.message, "等太久了，网络可能不好，重试一次");
+  assert.equal(errorResult.message, "等太久了，未能在时限内收到完整批改结果。原稿仍在，可以重试。");
   assert.equal(
     context.Api._requestId,
     requestIdAtSubmit + 1,

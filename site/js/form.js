@@ -564,6 +564,7 @@ var Form = {
     Report.showLoading();
 
     Api.submit(data, {
+      onRetry: Report.showRetrying,
       onSuccess: function (report) {
         App.state.lastReport = report;
         if (report.verdict === "passed") Report.showPassed(report);
