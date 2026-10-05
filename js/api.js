@@ -1,4 +1,4 @@
-// API 层：fetch 封装——防连点、陈旧请求守卫、前端超时、错误分类、502/504 自动重试一次
+// API 层：同一总时限内，网关或连接中断最多自动恢复一次。
 // 模式沿用 expense-tracker update-flow 的 memoize + requestId 守卫
 
 var Api = {
@@ -20,13 +20,20 @@ var Api = {
 
   init: function () {},
 
+  _connectionError: function (cause) {
+    var error = new Error("Connection interrupted");
+    error.name = cause && cause.name || "Error";
+    error.transportFailed = true;
+    return error;
+  },
+
   /**
    * 单次批改尝试：fetch + 响应解析统一封装。
    * 响应有两种形态，用同一条路径解析：
    *   1. 纯 JSON（旧 Worker、本地 mock、测试桩）；
    *   2. NDJSON —— Worker 在生成期间每 10 秒发一行心跳（{"t":"ping"}）保活手机端连接
-   *      （iPhone Safari 对长时间收不到字节的连接约 60 秒判死），只有最后一个非空行是结果。
-   * 所以取“最后一个非空行”JSON.parse 即可同时吃两种；不需要 ReadableStream/TextDecoder，
+   *      心跳减少空闲断连，但不能保证移动网络/代理始终保持连接。
+   * 取最后一个非空行后仍须检查报告是否完整，只有心跳绝不算成功。不需要 ReadableStream/TextDecoder，
    * 旧 WebView 也能跑 —— 保活发生在 TCP 层，这里只是 await 整个文本。
    * 解析失败说明后端没返回合法 JSON（比如网关 502/504 的 HTML 页面），
    * 打上 parseFailed 标记让上层单独分类，而不是混进“连不上教练”的网络错误。
@@ -34,8 +41,11 @@ var Api = {
    * @param {Promise} timeoutPromise - 与初次请求共享的总超时预算
    */
   _attempt: function (requestOptions, timeoutPromise) {
-    return Promise.race([fetch(API_BASE + "/api/coach", requestOptions).then(function (res) {
-      return res.text().then(function (text) {
+    var response;
+    try { response = fetch(API_BASE + "/api/coach", requestOptions); }
+    catch (error) { response = Promise.reject(error); }
+    return Promise.race([Promise.resolve(response).catch(function (error) { throw Api._connectionError(error); }).then(function (res) {
+      return res.text().catch(function (error) { throw Api._connectionError(error); }).then(function (text) {
         var lines = String(text || "").split("\n");
         var lastLine = "";
         for (var i = lines.length - 1; i >= 0; i--) {
@@ -50,6 +60,8 @@ var Api = {
         } catch (parseError) {
           var err = new Error("教练返回了无法识别的响应");
           err.parseFailed = true;
+          // A closed stream with only pings or a partial final JSON has no deliverable report.
+          err.incompleteResponse = res.ok && (!lastLine || /"t"\s*:\s*"ping"/.test(text));
           err.status = res.status || 0;
           throw err;
         }
@@ -62,6 +74,12 @@ var Api = {
           apiError.retryable = data && data.retryable;
           throw apiError;
         }
+        if (!data || !data.report || typeof data.report !== "object" || Array.isArray(data.report)) {
+          var incomplete = new Error("教练结果没有接收完整");
+          incomplete.incompleteResponse = true;
+          incomplete.status = res.status || 0;
+          throw incomplete;
+        }
         return data;
       });
     }), timeoutPromise]);
@@ -70,7 +88,7 @@ var Api = {
   /**
    * 提交批改请求。
    * @param {object} payload - Form.collect() 的产物
-   * @param {object} callbacks - {onSuccess(report), onError(status, message), onFinish()}
+   * @param {object} callbacks - {onSuccess(report), onError(status, message), onRetry(message), onFinish()}
    */
   submit: function (payload, callbacks) {
     callbacks = callbacks || {};
@@ -156,13 +174,22 @@ var Api = {
       if (requestId !== Api._requestId) return;
       var status = err.status || 0;
 
-      // Worker 网关短暂故障（502/503/504）自动重试一次，共用一个超时预算；
+      // 网关故障、fetch/读正文断连、只收到心跳：都最多恢复一次，共用原总预算；
       // 401/429 等业务状态不重试，避免把“入口码不对”拖成两次请求。
       // 预算不够就别重试：90 秒超时后只剩十几秒，第二次注定跑不完，
       // 用户却要多等一轮（实测“等了两分钟”就是这么来的）。
       var remainingBudget = Api._timeoutMs - (Date.now() - submittedAt);
-      if (err.retryable !== false && (status === 502 || status === 503 || status === 504) && !retried && remainingBudget >= Api._retryMinBudgetMs) {
+      var timedOut = err.name === "AbortError" || err.name === "TimeoutError";
+      var offline = window.navigator && window.navigator.onLine === false;
+      var recoverable = err.transportFailed || err.incompleteResponse || status === 502 || status === 503 || status === 504;
+      if (!timedOut && !offline && err.retryable !== false && recoverable && !retried && remainingBudget >= Api._retryMinBudgetMs) {
         retried = true;
+        if (callbacks.onRetry) {
+          try { callbacks.onRetry(err.transportFailed || err.incompleteResponse
+            ? "连接刚刚中断，正在自动重连，不用重复提交。"
+            : "教练服务暂时没有返回结果，正在重试一次。"); }
+          catch (retryUiError) { console.error("重试提示显示失败：", retryUiError); }
+        }
         return Promise.race([new Promise(function (resolve) {
           setTimeout(resolve, 1500);
         }), timeoutPromise])
@@ -177,7 +204,9 @@ var Api = {
         // 稍后会把结果当成功投递。把请求号前移，让迟到响应在 onSuccess 处作废，
         // 避免“超时提示 + 结果突然出现”的双重投递。
         if (!controller) Api._requestId += 1;
-        message = "等太久了，网络可能不好，重试一次";
+        message = "等太久了，未能在时限内收到完整批改结果。原稿仍在，可以重试。";
+      } else if (err.incompleteResponse) {
+        message = "批改结果没有接收完整，原稿仍在，请重新连接教练。";
       } else if (err.parseFailed) {
         // 响应不是合法 JSON：网关 HTML（502/504）或意外内容，按状态码区分文案
         message = status >= 400 ? "教练服务开小差了，稍后再试" : "结果解析失败，稍后再试";
@@ -186,7 +215,9 @@ var Api = {
       } else if (status >= 400) {
         message = err.message; // Worker 返回的业务文案（含 429 限流提示）
       } else {
-        message = "连不上教练，检查一下网络"; // fetch 网络层错误（断网/DNS）
+        message = offline
+          ? "当前设备已离线，请恢复网络后重新连接教练。原稿仍在。"
+          : "与教练的连接中断，原稿仍在。请重新连接；若反复出现，可切换网络或用系统浏览器打开。";
       }
       if (callbacks.onError) callbacks.onError(status, message);
     };
