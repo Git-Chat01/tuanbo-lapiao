@@ -91,6 +91,7 @@ var Api = {
    * @param {object} callbacks - {onSuccess(report), onError(status, message), onRetry(message), onFinish()}
    */
   submit: function (payload, callbacks) {
+    if (window.CoachJobs) return CoachJobs.submit(payload, callbacks);
     callbacks = callbacks || {};
     if (!API_BASE) {
       App.toast("后端地址未配置（部署时填入 config.js）");

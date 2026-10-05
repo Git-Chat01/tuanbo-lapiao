@@ -78,7 +78,7 @@ try{
  const response=await worker.fetch(request(true),e,{waitUntil:p=>pending.push(p)});
  assert.equal(response.headers.get('cache-control'),'no-store, no-transform');assert.equal(pending.length,1);
  const reader=response.body.getReader();await reader.read();await reader.cancel();
- await flush();assert.ok(release);
+ for(let i=0;i<100&&!release;i++)await new Promise(resolve=>setTimeout(resolve,2));assert.ok(release);
  const report={interaction_review:{signal_refs:['script:0'],script_refs:[0],judgment:'aligned',reading:'提出机械舞和选择方向的邀请。',why:'内容和参与动作有原句依据。',next_check:'看观众是否回应。'},card_type:'logic',card_why:'内容与动作清楚。',audience:'陌生观众',verdict:'passed',verdict_reason:'参与理由和动作已说清。',echo:'保留原有内容。',one_thing:'观察真实回应。',ai_flavor:'',redline_note:'',structure_checks:['self_intro','gratitude','target_user','user_reason','vote_instruction'].map(key=>({key,status:['user_reason','vote_instruction'].includes(key)?'met':'partial',evidence:script})),line_reviews:[{original:script,mark:'good',comment:'原话有具体内容和动作。'}],round_dynamics:{flow_read:'提出机械舞内容。',human_drivers:[{driver:'control',evidence:'你们选方向',mechanism:'让观众可以参与内容选择。'}],response_read:'尚未看到实际反馈。',next_move:'观察回应。'},coaching:{focus_key:'final_polish',keep:'保留内容。',original:script,action:'保留原稿。',example:script,why:'参与方式清楚。'}};
  release(Response.json({choices:[{message:{content:JSON.stringify(report)}}],usage:{prompt_tokens:1,completion_tokens:1}}));
  await Promise.all(pending);

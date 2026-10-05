@@ -18,6 +18,7 @@ async function loadPromptModule() {
 async function loadIndexModule() {
   let source = await readFile(new URL("../worker/index.js", import.meta.url), "utf8");
   source = source
+    .replace('from "./coach-jobs.js";', 'from "' + new URL('../worker/coach-jobs.js', import.meta.url).href + '";')
     .replace(
       'import { SYSTEM_PROMPT, buildUserPrompt, NOVICE_SCENARIO } from "./current-review.js";',
       'const NOVICE_SCENARIO = {id:"novice-revival-far-v1"}; const SYSTEM_PROMPT = ""; const buildUserPrompt = (...args) => { globalThis.__lastBuildUserPromptArgs = args; return "test prompt"; };'

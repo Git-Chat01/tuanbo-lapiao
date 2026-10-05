@@ -129,6 +129,10 @@ var Report = {
     value.version = 2;
     value.coaching = App.state.coaching || null;
     Report._workspace = value;
+    if (window.CoachJobs && window.Api && Api._active && Api._active.jobId) {
+      var newest = CoachJobs.read();
+      if (newest && newest.id !== Api._active.jobId) return false;
+    }
     try { localStorage.setItem(Report._workspaceKey, JSON.stringify(value)); return true; }
     catch (error) { return false; }
   },
@@ -174,6 +178,15 @@ var Report = {
       var saved = JSON.parse(localStorage.getItem(Report._workspaceKey) || "null");
       if (!saved || !saved.request || typeof saved.request.script !== "string" || saved.request.script.length > LIMITS.scriptMax) return;
       Report._workspace = saved;
+      if (saved.type === "pending" && !saved.formActive && window.CoachJobs && CoachJobs.canResume(saved.request)) {
+        App.state.lastRequest = saved.request;
+        App.state.form = saved.request;
+        if (saved.coaching) App.state.coaching = saved.coaching;
+        Form.restore(saved.request, {replayCompleted:true});
+        App.unlockStage("report");
+        Report._submitAgain(saved.request);
+        return;
+      }
       if (saved.type === "pending" && saved.previousWorkspace) {
         var pendingForm = saved.formDraft;
         if (Report._recoverPreviousWorkspace(pendingForm ? pendingForm.request : saved.request, pendingForm ? pendingForm.replayCompleted : true)) {
@@ -209,6 +222,7 @@ var Report = {
       Form.restore(request, {replayCompleted:true});
     }
     App.showView("form");
+    if (window.CoachJobs) Report._saveFormDraft(request, true);
     App.toast("已取消等待，原稿仍在，可以继续修改");
   },
   // 按原文字符建立索引；模型引用只忽略空白，不猜测或自动替换原句。

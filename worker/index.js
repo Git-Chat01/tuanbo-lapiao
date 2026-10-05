@@ -17,6 +17,7 @@ import {
   reindexCases,
 } from "./cases.js";
 import { detectRedline } from "./redlines.js";
+import { coachJobClass } from "./coach-jobs.js";
 
 // CORS Origin 白名单：命中则回显该 Origin，未命中回退到第一个
 // （CORS 只约束浏览器跨域读响应，真正的安全门槛是入口码/管理密码，不是这里）
@@ -193,7 +194,7 @@ const DEEPSEEK_CONFIG = {
 // 只复用已完成的检查，不用缓存把一个未经验证的模型输出变成标准答案。
 const REVIEW_VERSION = "2026-10-04-report-identity-1";
 // Transport-only releases must not invalidate completed grading results.
-const SERVICE_VERSION = "2026-10-05-connection-recovery-1";
+const SERVICE_VERSION = "2026-10-05-durable-jobs-1";
 const REVIEW_TTL_SECONDS = 7 * 24 * 60 * 60;
 const reviewStores = new WeakMap();
 
@@ -385,6 +386,10 @@ export default {
       return handleAdmin(request, env, url, corsHeaders);
     }
 
+    if (url.pathname === "/api/coach/jobs" || url.pathname.startsWith("/api/coach/jobs/")) {
+      return handleCoachJob(request, env, url, corsHeaders);
+    }
+
     // ---- 主播批改接口：POST /api/coach ----
     if (request.method !== "POST" || url.pathname !== "/api/coach") {
       return jsonResponse({ error: true, message: "接口不存在" }, 404, corsHeaders);
@@ -425,98 +430,7 @@ export default {
         );
       }
 
-      // 红线检测（纯词表，不调模型）——命中不拒批，作用在判定与吸收两个闸门
-      const redlineHits = detectRedline(body.script);
-
-      // 降级缓存键只跟当前稿和现场有关；案例检索短暂故障时也能找回
-      // 同版本已交给学员的报告，避免退回空案例再判出另一套结果。
-      const historyKey = await reviewRecordKey(body.accessCode, body.voteGap, body.script, scenario);
-
-      // 案例检索失败时先复用同稿已服务报告；冷启动才用 cases=[] 继续批。
-      let cases = [];
-      let savedOnCaseFailure = null;
-      try {
-        cases = await retrieveCases(env, {
-          voteGap: body.voteGap,
-          script: body.script,
-          scenario,
-        });
-      } catch (err) {
-        console.log(`cases retrieve fail (degraded): ${err.message}`);
-        savedOnCaseFailure = await readReviewRecord(env, historyKey);
-      }
-
-      // 生成阶段包成一个函数：非流式走原来的 jsonResponse，流式交给 streamCoachResponse。
-      // 两种路径跑的是同一份逻辑与同一套安全闸门，不会分叉。
-      const revision = normalizeRevision(body.revision);
-      const recordKey = savedOnCaseFailure ? null
-        : await reviewRecordKey(body.accessCode, body.voteGap, body.script, scenario, cases);
-      const previous = revision && revision.previousScript !== body.script.trim()
-        ? await readDeliveredReview(env, body.accessCode, revision.reportId, body.voteGap, revision.previousScript, scenario)
-        : null;
-      const evaluate = async () => {
-        // 调 DeepSeek 批改
-        const result = await callDeepSeek(env, {
-          voteGap: body.voteGap,
-          script: body.script,
-          cases,
-          redlineHits,
-          scenario,
-          revision: normalizeRevision(body.revision),
-        });
-
-        // 契约校验 + 缺失字段补默认值
-        const report = normalizeReport(result.report, body.script);
-
-        // 后端安全闸门：不信任模型对红线与人设卡的最终判定。
-        // 必须在学习候选闸门之前执行，避免不合格稿进入候选池。
-        applyReportSafetyGates(report, redlineHits, {
-          sourceScript: body.script,
-          scenario,
-          voteGap: body.voteGap,
-        });
-
-        // 学习候选闸门：只有「过关 + 无红线 + 非人设卡」的稿子才进入候选池。
-        // 自动稿不会直接参与后续检索；只有教练发布的案例才是当前判断尺子。
-        if (report.verdict === "passed" && redlineHits.length === 0 && report.card_type !== "persona") {
-          ctx.waitUntil(
-            (async () => {
-              try {
-                const id = await tryAbsorb(env, {
-                  script: body.script,
-                  voteGap: body.voteGap,
-                  report,
-                  scenario,
-                });
-                if (id) console.log(`absorb ok: ${id}`);
-              } catch (err) {
-                console.log(`absorb fail: ${err.message}`);
-              }
-            })()
-          );
-        }
-
-        // 日志只记元信息，不记入口码与话术全文（学员内容隐私 + 省日志成本）
-        console.log(
-          `coach ok: ${Date.now() - startedAt}ms, verdict=${report.verdict}, card=${report.card_type}, ` +
-            `cases=${cases.length}, redline=${redlineHits.length}, ` +
-            `tokens in=${result.usage.prompt_tokens} out=${result.usage.completion_tokens}`
-        );
-        return { ok: true, report, usage: result.usage };
-      };
-
-      const generate = async () => {
-        const result = savedOnCaseFailure
-          ? structuredClone(savedOnCaseFailure)
-          : await reuseReview(env, recordKey, evaluate);
-        const conflict = getRevisionConflict(result.report, revision, body.script, previous?.report);
-        if (conflict) throw new HttpError(409, conflict, "coach example and recheck conflict");
-        // This alias is only a retrieval fallback; revision comparison uses its exact receipt.
-        if (!savedOnCaseFailure) await keepLatestReviewForFallback(env, historyKey, recordKey, result);
-        applyRevisionFeedback(result.report, revision, body.script, previous?.report);
-        await saveDeliveredReview(env, body.accessCode, body.voteGap, body.script, scenario, result.report);
-        return result;
-      };
+      const generate = () => generateCoachReview(body, env, ctx, startedAt);
 
       // 只有前端会带这个头；脚本、测试、旧页面不带 → 保持纯 JSON 与原有状态码语义。
       const wantsStream = (request.headers.get("Accept") || "").includes("application/x-ndjson");
@@ -534,6 +448,156 @@ export default {
     }
   },
 };
+
+async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDeadline = null) {
+  const scenario = sanitizeScenario(body.scenario);
+  // 红线检测（纯词表，不调模型）——命中不拒批，作用在判定与吸收两个闸门
+  const redlineHits = detectRedline(body.script);
+
+  // 降级缓存键只跟当前稿和现场有关；案例检索短暂故障时也能找回
+  // 同版本已交给学员的报告，避免退回空案例再判出另一套结果。
+  const historyKey = await reviewRecordKey(body.accessCode, body.voteGap, body.script, scenario);
+
+  // 案例检索失败时先复用同稿已服务报告；冷启动才用 cases=[] 继续批。
+  let cases = [];
+  let savedOnCaseFailure = null;
+  try {
+    cases = await retrieveCases(env, {
+      voteGap: body.voteGap,
+      script: body.script,
+      scenario,
+    });
+  } catch (err) {
+    console.log(`cases retrieve fail (degraded): ${err.message}`);
+    savedOnCaseFailure = await readReviewRecord(env, historyKey);
+  }
+
+  // 生成阶段包成一个函数：非流式走原来的 jsonResponse，流式交给 streamCoachResponse。
+  // 两种路径跑的是同一份逻辑与同一套安全闸门，不会分叉。
+  const revision = normalizeRevision(body.revision);
+  const recordKey = savedOnCaseFailure ? null
+    : await reviewRecordKey(body.accessCode, body.voteGap, body.script, scenario, cases);
+  const previous = revision && revision.previousScript !== body.script.trim()
+    ? await readDeliveredReview(env, body.accessCode, revision.reportId, body.voteGap, revision.previousScript, scenario)
+    : null;
+  const preparedAt = Date.now();
+  let generated = false;
+  const evaluate = async () => {
+    if (jobDeadline && Date.now() >= jobDeadline) throw new HttpError(504, "批改任务已超时，原稿已保留，请重试。", "job deadline before model");
+    generated = true;
+    // 调 DeepSeek 批改
+    const result = await callDeepSeek(env, {
+      voteGap: body.voteGap,
+      script: body.script,
+      cases,
+      redlineHits,
+      scenario,
+      revision: normalizeRevision(body.revision),
+    }, null, jobDeadline);
+
+    // 契约校验 + 缺失字段补默认值
+    const report = normalizeReport(result.report, body.script);
+
+    // 后端安全闸门：不信任模型对红线与人设卡的最终判定。
+    // 必须在学习候选闸门之前执行，避免不合格稿进入候选池。
+    applyReportSafetyGates(report, redlineHits, {
+      sourceScript: body.script,
+      scenario,
+      voteGap: body.voteGap,
+    });
+
+    // 学习候选闸门：只有「过关 + 无红线 + 非人设卡」的稿子才进入候选池。
+    // 自动稿不会直接参与后续检索；只有教练发布的案例才是当前判断尺子。
+    if (report.verdict === "passed" && redlineHits.length === 0 && report.card_type !== "persona") {
+      ctx.waitUntil(
+        (async () => {
+          try {
+            const id = await tryAbsorb(env, {
+              script: body.script,
+              voteGap: body.voteGap,
+              report,
+              scenario,
+            });
+            if (id) console.log(`absorb ok: ${id}`);
+          } catch (err) {
+            console.log(`absorb fail: ${err.message}`);
+          }
+        })()
+      );
+    }
+
+    // 日志只记元信息，不记入口码与话术全文（学员内容隐私 + 省日志成本）
+    console.log(
+      `coach ok: ${Date.now() - startedAt}ms, verdict=${report.verdict}, card=${report.card_type}, ` +
+        `cases=${cases.length}, redline=${redlineHits.length}, ` +
+        `tokens in=${result.usage.prompt_tokens} out=${result.usage.completion_tokens}`
+    );
+    return { ok: true, report, usage: result.usage };
+  };
+
+  const deliver = async () => {
+    const result = savedOnCaseFailure
+      ? structuredClone(savedOnCaseFailure)
+      : await reuseReview(env, recordKey, evaluate);
+    const evaluatedAt = Date.now();
+    const conflict = getRevisionConflict(result.report, revision, body.script, previous?.report);
+    if (conflict) throw new HttpError(409, conflict, "coach example and recheck conflict");
+    // This alias is only a retrieval fallback; revision comparison uses its exact receipt.
+    if (!savedOnCaseFailure) await keepLatestReviewForFallback(env, historyKey, recordKey, result);
+    applyRevisionFeedback(result.report, revision, body.script, previous?.report);
+    await saveDeliveredReview(env, body.accessCode, body.voteGap, body.script, scenario, result.report);
+    console.log(JSON.stringify({event:"coach_timing", preparationMs:preparedAt-startedAt,
+      evaluationMs:evaluatedAt-preparedAt, deliveryMs:Date.now()-evaluatedAt,
+      totalMs:Date.now()-startedAt, generated}));
+    return result;
+  };
+
+  return deliver();
+}
+
+// Only the public handler can select an object. Entry code + unguessable UUID
+// scope every read/write; neither credential nor draft is put in URLs or logs.
+async function handleCoachJob(request, env, url, corsHeaders) {
+  const headers = {...corsHeaders, "Cache-Control":"no-store"};
+  try {
+    if (request.method !== "POST") return jsonResponse({error:true, message:"请求方式不支持"}, 405, headers);
+    const body = await readBody(request);
+    const authError = checkAccessCode(body, env);
+    if (authError) return jsonResponse({error:true, message:authError.message}, authError.status, headers);
+    const creating = url.pathname === "/api/coach/jobs";
+    const id = creating ? body.jobId : url.pathname.slice("/api/coach/jobs/".length);
+    if (typeof id !== "string" || !REPORT_ID_PATTERN.test(id)) {
+      return jsonResponse({error:true, message:"批改任务编号无效，请重新提交。"}, 400, headers);
+    }
+    if (!env.COACH_JOBS) throw new HttpError(503, "后台批改服务暂时不可用，请稍后重试。", "job binding missing");
+    const owner = await reportDigest(body.accessCode);
+    let internal = new Request("https://job.internal/task");
+    if (creating) {
+      if (body.scenario?.id === NOVICE_SCENARIO.id) {
+        body.scenario = structuredClone(NOVICE_SCENARIO); body.voteGap = "far";
+      }
+      const error = validateParams(body);
+      if (error) return jsonResponse({error:true, message:error.message}, error.status, headers);
+      const payload = {voteGap:body.voteGap, script:body.script.trim(),
+        scenario:sanitizeScenario(body.scenario), revision:normalizeRevision(body.revision)};
+      const ip = request.headers.get("CF-Connecting-IP");
+      internal = new Request("https://job.internal/task", {method:"PUT", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({id, owner, payload, ipHash:ip ? await shortHash(ip) : ""})});
+    }
+    const stub = env.COACH_JOBS.get(env.COACH_JOBS.idFromName(await reportDigest([owner, id])));
+    const response = await stub.fetch(internal);
+    return jsonResponse(await response.json(), response.status, headers);
+  } catch (err) {
+    return jsonResponse({error:true, message:err.publicMessage || "暂时无法查询批改，请稍后重试，原稿仍在。"}, err.status || 503, headers);
+  }
+}
+
+export const CoachJob = coachJobClass({
+  generate:(body, env, ctx, deadline) => generateCoachReview(body, env, ctx, Date.now(), deadline),
+  digest:reportDigest,
+  authorize:async (env, owner) => Boolean(env.ACCESS_CODE) && await reportDigest(env.ACCESS_CODE) === owner,
+  rateLimit:(env, ipHash) => checkCoachRateLimit(env, env.ACCESS_CODE, ipHash, true),
+});
 
 const GENERIC_TARGET_PATTERN =
   /^(?:大哥|哥哥|小哥哥|帅哥|美女|小美女|靓仔|宝宝|宝贝|宝子|姐姐|小姐姐|大姐|老板|老师|大叔|叔叔|阿姨|哥们|兄弟们?|姐妹们?|老铁|大佬|家人们?|朋友们?|大家|各位|宝宝们?|粉丝们?|观众们?|你们?|我们?|他们?|她们?|它们?|主持|拜托大家|这一轮|这轮|现在|刚才|谢谢|感谢|多谢|我是|我想|我还|我刚|我准备|想看|愿意)/u;
@@ -2553,11 +2617,11 @@ export class CoachRateLimiter {
 }
 
 /** 只在持久限流器确认额度后放行；缺绑定、故障或异常协议均返回 503。 */
-export async function checkCoachRateLimit(env, accessCode, ip) {
+export async function checkCoachRateLimit(env, accessCode, ip, ipIsHash = false) {
   const unavailable = { status: 503, message: "批改保护暂时不可用，请稍后再试" };
   if (!env || !env.COACH_LIMITER) return unavailable;
   const entries = [{ key: `code:${await shortHash(accessCode)}`, label: "入口码", max: COACH_RATE_LIMIT.codePerMinute }];
-  if (ip) entries.push({ key: `ip:${await shortHash(ip)}`, label: "IP", max: COACH_RATE_LIMIT.ipPerMinute });
+  if (ip) entries.push({ key: `ip:${ipIsHash ? ip : await shortHash(ip)}`, label: "IP", max: COACH_RATE_LIMIT.ipPerMinute });
   try {
     for (const entry of entries) {
       const id = env.COACH_LIMITER.idFromName(entry.key);
@@ -2957,14 +3021,14 @@ export function unwrapModelEnvelope(value) {
   return value;
 }
 
-async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario, revision = null }, repair = null) {
+async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario, revision = null }, repair = null, jobDeadline = null) {
   if (!env.DEEPSEEK_API_KEY) {
     throw new HttpError(503, "服务未配置", "DeepSeek key 未配置");
   }
 
   // 评分只看当前稿。旧稿与旧建议会造成模型沿用已删除的错误，不能进入评分上下文。
   const userPrompt = buildUserPrompt(voteGap, script, cases, redlineHits, scenario, null);
-  const deadline = repair?.deadline || Date.now() + DEEPSEEK_CONFIG.timeoutMs;
+  const deadline = repair?.deadline || Math.min(jobDeadline || Infinity, Date.now() + DEEPSEEK_CONFIG.timeoutMs);
   const messages = [
     {role:"system", content:SYSTEM_PROMPT},
     {role:"user", content:userPrompt},
@@ -2979,6 +3043,8 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
     })});
   }
 
+  const modelStartedAt = Date.now();
+  let headersAt = null;
   const controller = new AbortController();
   let timer;
   const timeout = new Promise((_resolve, reject) => {
@@ -3011,6 +3077,7 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
         }),
         signal: controller.signal,
       });
+      headersAt = Date.now();
       if (!resp.ok) {
         // Status is sufficient for diagnostics; never log upstream bodies or wait on an error body.
         console.log(`deepseek upstream ${resp.status}`);
@@ -3030,6 +3097,14 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
     throw new HttpError(502, "教练服务连接中断，请稍后重试", `DeepSeek 网络错误: ${err.message}`);
   } finally {
     clearTimeout(timer);
+    console.log(JSON.stringify({event:"coach_model_timing", repair:Boolean(repair),
+      elapsedMs:Date.now()-modelStartedAt,
+      headersMs:headersAt === null ? null : headersAt-modelStartedAt,
+      bodyMs:headersAt === null ? null : Date.now()-headersAt,
+      received:Boolean(data), promptTokens:data?.usage?.prompt_tokens || 0,
+      completionTokens:data?.usage?.completion_tokens || 0,
+      reasoningTokens:data?.usage?.completion_tokens_details?.reasoning_tokens || 0,
+      cachedPromptTokens:data?.usage?.prompt_cache_hit_tokens || 0}));
   }
 
   const content = data?.choices?.[0]?.message?.content;

@@ -114,4 +114,27 @@ rr._onBackEdit();ff._selectScenario(two.c.TRAINING_SCENARIOS[1].id);two.get('inp
 aa._openStage('report');rr._onBackEdit();
 assert.equal(ff._scenario.id,two.c.TRAINING_SCENARIOS[1].id);assert.equal(two.get('input-script').value,'B 全新话术');
 assert.equal(ff._replayCompleted,false,'旧复盘不能解锁新现场回放');
-console.log('PASS workspace recovery: independent branches, fresh scene replay gate, response/passed checkpoints, progress and expired access code');
+// New task transport resumes a pending workspace before restoring its older report.
+{
+ const x=session();x.get('input-script').value='恢复中的新人原稿';x.c.Form._replayCompleted=true;
+ x.c.Form._submitData(x.c.Form.collect());
+ const pending=JSON.parse(x.storage.get(x.c.Report._workspaceKey));
+ let resumed;
+ const next=session(x.storage);next.c.CoachJobs={canResume:()=>true};
+ next.c.Api.submit=(payload)=>{resumed=payload;};
+ next.c.Report._restoreWorkspace();
+ assert.equal(resumed.script,pending.request.script);assert.equal(next.c.App.state.currentView,'report');
+ assert.equal(next.get('report-loading').hidden,false);
+ next.c.Report._cancelWait();
+ const canceled=session(next.storage);canceled.c.CoachJobs={canResume:()=>true};
+ canceled.c.Api.submit=()=>{throw Error('取消等待后刷新不可抢走正在编辑的稿子');};
+ canceled.c.Report._restoreWorkspace();assert.equal(canceled.c.App.state.currentView,'form');
+}
+{
+ const x=session();const current={type:'pending',request:{voteGap:'far',script:'另一标签页的新稿'}};
+ x.storage.set(x.c.Report._workspaceKey,JSON.stringify(current));
+ x.c.Api._active={jobId:'older-job'};x.c.CoachJobs={read:()=>({id:'newer-job'})};
+ assert.equal(x.c.Report._saveWorkspace({type:'passed',request:{script:'旧稿'},report:{verdict:'passed'}}),false);
+ assert.equal(JSON.parse(x.storage.get(x.c.Report._workspaceKey)).request.script,current.request.script);
+}
+console.log('PASS workspace recovery: independent branches, fresh scene replay gate, response/passed checkpoints, progress, expired access code and durable pending tasks');
