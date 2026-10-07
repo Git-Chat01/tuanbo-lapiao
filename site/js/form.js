@@ -6,7 +6,7 @@ var Form = {
   _sceneTimers: [],
   _draftTimer: null,
   _draftsByScenario: {},
-  _freeDraft: { script: "", voteGap: "close" },
+  _freeDraft: { script: "", voteGap: "far" },
   _replayCompleted: false,
   _replayInProgress: false,
   _sceneAdvance: null,
@@ -34,11 +34,6 @@ var Form = {
     document.getElementById("btn-free-mode").addEventListener("click", Form._toggleFreeMode);
     document.getElementById("btn-submit").addEventListener("click", Form._onSubmit);
     document.getElementById("input-script").addEventListener("input", Form._onScriptInput);
-
-    var voteButtons = document.querySelectorAll(".vote-option");
-    for (var i = 0; i < voteButtons.length; i++) {
-      voteButtons[i].addEventListener("click", Form._onVoteClick);
-    }
 
     document.getElementById("btn-scene-pause").addEventListener("click", Form._toggleScenePause);
     document.getElementById("btn-scene-ready").addEventListener("click", function () {
@@ -402,7 +397,6 @@ var Form = {
     document.getElementById("scene-window").hidden = enabled;
     document.getElementById("coach-cue").hidden = enabled;
     document.getElementById("free-mode-note").hidden = !enabled;
-    document.getElementById("free-vote-section").hidden = !enabled;
     document.getElementById("training-goal-title").textContent = enabled
       ? "把你现场真的说过的话写下来"
       : (Form._scenario ? (Form._scenario.preReplayTitle || Form._scenario.title) : "把上票理由说到具体用户身上");
@@ -411,24 +405,9 @@ var Form = {
     Form._syncTrainingMode();
   },
 
-  _onVoteClick: function (event) {
-    var buttons = document.querySelectorAll(".vote-option");
-    for (var i = 0; i < buttons.length; i++) {
-      buttons[i].setAttribute("aria-pressed", String(buttons[i] === event.currentTarget));
-    }
-    Form._freeDraft.voteGap = event.currentTarget.dataset.value;
-    Form._updateInputState();
-    Form._saveDraftSoon();
-  },
-
   _onScriptInput: function () {
     Form._updateInputState();
     Form._saveDraftSoon();
-  },
-
-  _selectedVoteGap: function () {
-    var selected = document.querySelector('.vote-option[aria-pressed="true"]');
-    return selected ? selected.dataset.value : null;
   },
 
   _scenarioPayload: function () {
@@ -456,7 +435,7 @@ var Form = {
 
   collect: function () {
     return {
-      voteGap: App.state.freeMode ? Form._selectedVoteGap() : (Form._scenario ? Form._scenario.voteGap : "close"),
+      voteGap: App.state.freeMode ? "far" : (Form._scenario ? Form._scenario.voteGap : "far"),
       script: document.getElementById("input-script").value.trim(),
       scenario: Form._scenarioPayload(),
       mode: App.state.freeMode ? "free" : (Form._scenario && Form._scenario.phase === "interaction" ? "response" : "guided"),
@@ -662,7 +641,6 @@ var Form = {
     }
     Form._setFreeMode(data.mode === "free" || !data.scenario);
     document.getElementById("input-script").value = data.script || "";
-    if (data.voteGap) Form._setVoteGap(data.voteGap);
     if (data.scenario && !App.state.freeMode && options.replayCompleted !== false) {
       Form._replayCompleted = true;
       Form._renderSceneGuidance(true);
@@ -679,24 +657,15 @@ var Form = {
     clearTimeout(Form._draftTimer);
     Form.stopSceneReplay();
     Form._draftsByScenario = {};
-    Form._freeDraft = { script: "", voteGap: "close" };
+    Form._freeDraft = { script: "", voteGap: "far" };
     Form._scenario = Form._findScenario(DEFAULT_TRAINING_SCENARIO_ID) || TRAINING_SCENARIOS[0] || null;
     Form._renderScenarioPicker();
     Form._renderScenario();
     Form._setFreeMode(false);
     document.getElementById("input-script").value = "";
-    Form._setVoteGap("close");
     Form._updateInputState();
     try { localStorage.removeItem(STORAGE_KEYS.draft); } catch (e) {}
     document.getElementById("draft-status").textContent = "草稿会自动保存";
-  },
-
-  _setVoteGap: function (voteGap) {
-    var buttons = document.querySelectorAll(".vote-option");
-    for (var i = 0; i < buttons.length; i++) {
-      buttons[i].setAttribute("aria-pressed", String(buttons[i].dataset.value === voteGap));
-    }
-    Form._freeDraft.voteGap = voteGap || "close";
   },
 
   _captureCurrentDraft: function () {
@@ -704,7 +673,7 @@ var Form = {
     if (!input) return;
     if (App.state.freeMode) {
       Form._freeDraft.script = input.value;
-      Form._freeDraft.voteGap = Form._selectedVoteGap() || Form._freeDraft.voteGap || "close";
+      Form._freeDraft.voteGap = "far";
     } else if (Form._scenario) {
       Form._draftsByScenario[Form._scenario.id] = input.value;
     }
@@ -756,13 +725,12 @@ var Form = {
         }
         if (draft.freeDraft && typeof draft.freeDraft === "object") {
           Form._freeDraft.script = typeof draft.freeDraft.script === "string" ? draft.freeDraft.script : "";
-          Form._freeDraft.voteGap = ["far", "close", "secured"].indexOf(draft.freeDraft.voteGap) >= 0 ? draft.freeDraft.voteGap : "close";
+          Form._freeDraft.voteGap = "far";
         }
         var restoredScenario = Form._findScenario(draft.selectedScenarioId);
         if (restoredScenario) Form._selectScenario(restoredScenario.id, { skipCapture: true, skipSave: true });
         var free = draft.mode === "free";
         Form._setFreeMode(free);
-        Form._setVoteGap(Form._freeDraft.voteGap);
         document.getElementById("input-script").value = free
           ? Form._freeDraft.script
           : (Form._scenario ? Form._draftsByScenario[Form._scenario.id] || "" : "");
@@ -771,7 +739,6 @@ var Form = {
         if (legacyScenario) Form._selectScenario(legacyScenario.id, { skipCapture: true, skipSave: true });
         Form._setFreeMode(draft.mode === "free");
         document.getElementById("input-script").value = draft.script;
-        if (draft.voteGap) Form._setVoteGap(draft.voteGap);
         Form._captureCurrentDraft();
       }
       document.getElementById("draft-status").textContent = "已恢复上次草稿";

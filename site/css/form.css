@@ -304,32 +304,6 @@
 }
 .presenter-page .coach-cue p { margin: 5px 0 0; }
 
-.presenter-page .free-vote-section {
-  margin: 16px 0;
-}
-.presenter-page .free-vote-section h2 {
-  margin: 0 0 10px;
-  font-size: var(--font-size-md);
-}
-.presenter-page .vote-options {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-}
-.presenter-page .vote-option {
-  min-height: 48px;
-  padding: 4px;
-  border: 1px solid var(--stage-line);
-  border-radius: 9px;
-  color: var(--stage-muted);
-  background: var(--stage-paper);
-}
-.presenter-page .vote-option[aria-pressed="true"] {
-  border-color: var(--stage-red-dark);
-  color: #fffaf7;
-  background: var(--stage-red-dark);
-}
-
 .presenter-page .writing-desk { margin-top: 16px; }
 .presenter-page .writing-desk > label {
   display: block;
