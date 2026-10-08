@@ -52,6 +52,12 @@ jobs:
           node tests/connection-recovery-safety.mjs
           node tests/coach-jobs-safety.mjs
           node tests/coach-jobs-client.mjs
+          node tests/revision-consistency.mjs
+          node tests/revision-progress.mjs
+          node tests/revision-preview.mjs
+          node tests/teaching-check.mjs
+          node tests/teaching-reviews.mjs
+          node tests/teaching-review-ui.mjs
 
   deploy:
     needs: test

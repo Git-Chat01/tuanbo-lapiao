@@ -9,10 +9,11 @@ const mf=new Miniflare(convertV4MiniflareOptions({modules:true,script:bundle.out
  durableObjects:{COACH_LIMITER:{className:'CoachRateLimiter',useSQLite:true},COACH_JOBS:{className:'CoachJob',useSQLite:true}},cf:false}));
 try {
  const kv=await mf.getKVNamespace('CASES');
+ const health=await (await mf.dispatchFetch('https://local.test/health')).json();
  const script='只用于本地任务恢复验证的虚构原稿。';
  // Seed a completed validated-cache result. Runtime test needs no provider secret/network.
  const key=await reviewRecordKey(code,'far',script,null,[]);
- await kv.put(key,JSON.stringify({version:'2026-10-04-report-identity-1',expiresAt:Date.now()+60000,result:{ok:true,report:{verdict:'passed'},usage:{prompt_tokens:0,completion_tokens:0}}}));
+ await kv.put(key,JSON.stringify({version:health.reviewVersion,expiresAt:Date.now()+60000,result:{ok:true,report:{verdict:'passed'},usage:{prompt_tokens:0,completion_tokens:0}}}));
  const id=crypto.randomUUID(),body={accessCode:code,jobId:id,voteGap:'far',script};
  const send=(path,body)=>mf.dispatchFetch('https://local.test'+path,{method:'POST',body:JSON.stringify(body)});
  const created=await send('/api/coach/jobs',body);assert.equal(created.status,202);

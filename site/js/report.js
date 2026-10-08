@@ -682,7 +682,12 @@ var Report = {
     state.previousReport = previousReport;
     state.currentReport = report;
     if (focus) {
-      state.focusAttempts = state.currentFocusKey === focus.key ? state.focusAttempts + 1 : 1;
+      // Completed or inconclusive comparisons are not repeated failed assignments.
+      var revisionCheck = report.revision_check;
+      var restartFocus = previousReport && revisionCheck &&
+        revisionCheck.focus_key === state.currentFocusKey &&
+        ["resolved", "unverified"].indexOf(revisionCheck.status) >= 0;
+      state.focusAttempts = state.currentFocusKey === focus.key && !restartFocus ? state.focusAttempts + 1 : 1;
       state.currentFocusKey = focus.key;
     } else {
       state.focusAttempts = 0;
@@ -1026,6 +1031,17 @@ var Report = {
   _helpPanel: function (report, focus, progress) {
     var challenge = Report._challengeFor(focus);
     var coaching = Report._coachingFor(report, focus);
+    if (coaching && Report._shouldOpenHelp(progress)) {
+      var comparison = Report._el("section", "challenge-help challenge-help--open");
+      comparison.appendChild(Report._el("span", "challenge-help__eyebrow", "同一个问题，再换个角度看"));
+      comparison.appendChild(Report._el("h3", null, "把这两句连着看，重点是意思怎么变了"));
+      comparison.appendChild(Report._challengeRow("原来这样说", coaching.original, "challenge-card__row--evidence"));
+      comparison.appendChild(Report._challengeRow("这次这样改", coaching.example, "challenge-card__row--specific"));
+      comparison.appendChild(Report._el("p", null, coaching.why));
+      var canPreview = Report._coachingPreview(App.state.lastRequest && App.state.lastRequest.script, coaching);
+      comparison.appendChild(Report._el("p", null, "先保留：" + coaching.keep + (canPreview ? " 可以展开上面的整稿预览，看这处修改接回原稿的样子。" : " 先看懂这处意思，再换成你自己的说法。")));
+      return comparison;
+    }
     var helpItems = Report._scenario().id === "novice-revival-far-v1" && coaching
       ? ["先保留原稿里已经说清的部分，把上面列出的同类问题一起改好。", coaching.action + " 改后对照上面的解释，再连起来念一遍。"]
       : Report._helpItemsFor(report, focus);
@@ -1053,6 +1069,122 @@ var Report = {
     });
     panel.appendChild(list);
     return panel;
+  },
+
+  // 预览只拼合可唯一定位且不重叠的原句，绝不猜测替换位置或重写其他内容。
+  _coachingPreview: function (source, coaching) {
+    if (typeof source !== "string" || !source.trim() || source.length > LIMITS.scriptMax || !coaching) return null;
+    if (coaching.related_edits != null && (!Array.isArray(coaching.related_edits) || coaching.related_edits.length > 4)) return null;
+    var edits = [{original:coaching.original, example:coaching.example}].concat(coaching.related_edits || []);
+    var ranges = [];
+    for (var i = 0; i < edits.length; i++) {
+      var edit = edits[i];
+      if (!edit || typeof edit.original !== "string" || !edit.original.trim() || Array.from(edit.original).length > 200 ||
+          typeof edit.example !== "string" || Array.from(edit.example).length > 160) return null;
+      var at = source.indexOf(edit.original);
+      if (at < 0 || source.indexOf(edit.original, at + 1) >= 0) return null;
+      ranges.push({start:at, end:at + edit.original.length, original:edit.original, example:edit.example});
+    }
+    ranges.sort(function (a, b) { return a.start - b.start; });
+    if (ranges.some(function (range, index) { return index > 0 && range.start < ranges[index - 1].end; })) return null;
+    var parts = [], script = "", cursor = 0, selection = null;
+    ranges.forEach(function (range) {
+      var kept = source.slice(cursor, range.start);
+      parts.push({kind:"keep", text:kept});
+      script += kept;
+      if (range.original === range.example) {
+        parts.push({kind:"keep", text:range.original});
+      } else {
+        parts.push({kind:"remove", text:range.original});
+        if (range.example) parts.push({kind:"add", text:range.example});
+        if (!selection) selection = [script.length, script.length + range.example.length];
+      }
+      script += range.example;
+      cursor = range.end;
+    });
+    parts.push({kind:"keep", text:source.slice(cursor)});
+    script += source.slice(cursor);
+    if (!selection || !script.trim() || script.length > LIMITS.scriptMax) return null;
+    return {script:script, parts:parts, selection:selection};
+  },
+
+  _revisionPreview: function (preview, input, draft, onChange) {
+    var panel = Report._el("details", "revision-preview");
+    panel.appendChild(Report._el("summary", null, "看合并后的整稿 · 可采用，也可自己改"));
+    panel.appendChild(Report._el("p", "revision-preview__note", "仅合入本次建议，其他原话保留。这是修改预览，不代表整稿已经通过。"));
+    var legend = Report._el("p", "revision-preview__legend");
+    legend.appendChild(Report._el("span", "revision-preview__removed", "划线：删去"));
+    legend.appendChild(Report._el("span", "revision-preview__added", "底色：换入"));
+    panel.appendChild(legend);
+    var copy = Report._el("div", "revision-preview__script");
+    copy.setAttribute("aria-label", "整稿修改对照，划线为删去，带底色为换入");
+    preview.parts.forEach(function (part) {
+      if (!part.text) return;
+      var tag = part.kind === "remove" ? "del" : part.kind === "add" ? "ins" : "span";
+      copy.appendChild(Report._el(tag, null, part.text));
+    });
+    panel.appendChild(copy);
+    var note = Report._el("p", "revision-preview__state");
+    note.setAttribute("role", "status");
+    panel.appendChild(note);
+    var apply = Report._el("button", "training-secondary revision-preview__apply");
+    apply.type = "button";
+    var undo = Report._el("button", "training-secondary revision-preview__undo");
+    undo.type = "button";
+    panel.appendChild(apply);
+    panel.appendChild(undo);
+    var history = draft.previewUndo;
+    if (!history || history.preview !== preview.script ||
+        ["before", "after"].indexOf(history.active) < 0 ||
+        typeof history.before !== "string" || history.before.length > LIMITS.scriptMax ||
+        typeof history.after !== "string" || history.after.length > LIMITS.scriptMax ||
+        history[history.active] !== input.value) history = null;
+    draft.previewUndo = history;
+    var selection = function () {
+      return [typeof input.selectionStart === "number" ? input.selectionStart : 0,
+        typeof input.selectionEnd === "number" ? input.selectionEnd : 0];
+    };
+    var select = function (range) {
+      if (!Array.isArray(range) || range.length !== 2 || !range.every(Number.isFinite)) range = [0, 0];
+      input.focus();
+      input.setSelectionRange(Math.max(0, Math.min(range[0], input.value.length)), Math.max(0, Math.min(range[1], input.value.length)));
+    };
+    var sync = function () {
+      if (history) history[history.active] = input.value;
+      apply.hidden = Boolean(history);
+      undo.hidden = !history;
+      var changed = input.value !== App.state.lastRequest.script;
+      apply.disabled = input.value === preview.script;
+      apply.textContent = changed ? "用预览替换当前改稿（可撤销）" : "采用到改稿框";
+      if (history) {
+        undo.textContent = history.active === "after" ? "撤销采用，恢复之前的稿子" : "切回采用后的稿子";
+        note.textContent = history.active === "after"
+          ? "已放入改稿框，可以继续修改。撤销会恢复采用前的稿子；当前修改也会保留，可再切回。"
+          : "已恢复采用前的稿子。采用后的修改仍保留，可以再切回。";
+      } else if (apply.disabled) note.textContent = "改稿框已是这份预览，可以继续调整自己的说法。";
+      else note.textContent = changed
+        ? "你已经改过稿子。采用会替换改稿框，当前内容会保留，随后可撤销。"
+        : "采用后仍可调整自己的说法，不会自动提交。";
+    };
+    apply.addEventListener("click", function () {
+      if (apply.disabled || history) return;
+      history = {preview:preview.script, before:input.value, after:preview.script, active:"after", beforeSelection:selection(), afterSelection:preview.selection};
+      draft.previewUndo = history;
+      input.value = preview.script;
+      select(preview.selection);
+      onChange();
+    });
+    undo.addEventListener("click", function () {
+      if (!history) return;
+      history[history.active] = input.value;
+      history[history.active + "Selection"] = selection();
+      history.active = history.active === "after" ? "before" : "after";
+      input.value = history[history.active];
+      select(history[history.active + "Selection"]);
+      onChange();
+    });
+    sync();
+    return {node:panel, sync:sync};
   },
 
   _revisionDesk: function (focus, progress) {
@@ -1127,12 +1259,21 @@ var Report = {
       else if (!valid) state.textContent = "至少保留一句完整的话";
       else state.textContent = "已改动，可以让教练再看";
     };
-    input.addEventListener("input", function () {
+    var previewControl = null;
+    var saveRevision = function () {
       syncCount();
+      if (previewControl) previewControl.sync();
       draft.revision = input.value;
       draft.revisionDirty = true;
       state.textContent += Report._saveWorkspace(draft) ? " · 已自动保存" : " · 本机无法保存，请保留页面";
-    });
+    };
+    var preview = Report._coachingPreview(App.state.lastRequest && App.state.lastRequest.script, coaching);
+    if (preview) {
+      previewControl = Report._revisionPreview(preview, input, draft, saveRevision);
+      previewControl.node.open = progress.focusAttempts >= 2;
+      section.insertBefore(previewControl.node, input);
+    }
+    input.addEventListener("input", saveRevision);
     syncCount();
     button.addEventListener("click", function () {
       Form.submitRevision(input.value);

@@ -336,3 +336,11 @@ node tests/context-response-live.mjs --live
 新版页面改为提交持久任务并短轮询取结果；断网、刷新或重新打开同一浏览器时恢复原任务。主动返回编辑不抢走新稿；任务失败则结束等待，不无限重新调用模型。结果保留 24 小时，生成和复练仍执行完整评分与不可变报告绑定规则。原流式接口继续兼容旧页面。
 
 新增 `COACH_JOBS` SQLite Durable Object 与 `coach-jobs-v1` migration，必须先部署后端再部署页面。任务边界、性能实测依据、分阶段日志及回归命令见 [任务恢复说明](worker/job-recovery.md)。这项改动减少重复生成与重复等待，不代表单次模型生成已经提速。
+
+### 教学一致性与纠错入口（2026-10-08）
+
+本批增加局部采纳识别、必要的语义复核、参与理由示范交付前专项检查，以及可采用/撤销的整稿修改预览。老师后台新增「教学纠错」，收集批改冲突、无效示范和连续三版同点未解决的练习。教师保存的依据与改法仅供核对，不自动加入参考案例。
+
+纠错API沿用X-Admin-Code：GET /api/admin/teaching-reviews（游标分页）、POST /api/admin/teaching-reviews/{id}/resolve、DELETE /api/admin/teaching-reviews/{id}。复用CASES的独立teaching:命名空间；记录30天自动清理，审核不延长保留期；队列约200条上限。后台异常不影响正常评分结果，代码日志只保留诊断类别与耗时，不输出话术全文。
+
+新增6套离线回归已接入CI；专项真实模型检查仅发送虚构样本，不读取线上案例库。详细边界、调用预算与教师校准尚待积累的部分见worker/novice-coaching.md。需要先部署Worker，再发布前端；本地修改不等于已上线。

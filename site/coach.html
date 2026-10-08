@@ -9,7 +9,7 @@
   <meta name="robots" content="noindex, nofollow">
   <title>拉票话术教练 · 后台</title>
   <link rel="stylesheet" href="css/common.css">
-  <link rel="stylesheet" href="css/coach.css">
+  <link rel="stylesheet" href="css/coach.css?v=20261008-teaching1">
 </head>
 <body>
   <div class="coach-container">
@@ -51,7 +51,7 @@
 
       <!-- 右列：案例库清单 -->
       <section class="coach-col coach-col--list">
-        <h2 class="coach-col__title">案例库</h2>
+        <h2 class="coach-col__title">案例与教学纠错</h2>
         <div class="tabs" role="tablist">
           <button type="button" id="tab-auto" class="tab tab--active" role="tab" aria-selected="true">
             自动候选审核
@@ -59,9 +59,15 @@
           <button type="button" id="tab-manual" class="tab" role="tab" aria-selected="false">
             教练投喂清单
           </button>
+          <button type="button" id="tab-teaching" class="tab" role="tab" aria-selected="false">
+            教学纠错
+          </button>
         </div>
         <p id="list-hint" class="list-hint">
           学员过关稿只会作为候选进入这里，未审核不会给 AI 学习。发布真正值得学的；方向不对就拒绝，避免同一稿件再次进入候选。
+        </p>
+        <p id="teaching-hint" class="list-hint" hidden>
+          集中核对反复卡住、反馈矛盾和示范有问题的练习。记录保留 30 天，核对结果不会自动影响批改，未经整理发布不会成为参考案例。
         </p>
 
         <div id="list-container" class="list-container"></div>
@@ -89,7 +95,7 @@
   <div id="toast-container" class="toast-container" aria-live="polite"></div>
 
   <!-- 复用 config.js 的 API_BASE（?api= 覆盖同样可用），coach.js 不依赖手机端其他 js -->
-  <script src="js/config.js?v=20260930-safety2"></script>
-  <script src="js/coach.js?v=20260930-safety2"></script>
+  <script src="js/config.js?v=20261008-teaching1"></script>
+  <script src="js/coach.js?v=20261008-teaching1"></script>
 </body>
 </html>

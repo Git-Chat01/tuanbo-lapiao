@@ -31,6 +31,7 @@ async function loadIndexModule() {
       'import { detectRedline } from "./redlines.js";',
       "const detectRedline = () => [];"
     );
+  source = source.replace(/from "(\.\/[^"]+)"/gu, (_match,path) => 'from "' + new URL('../worker/'+path.slice(2),import.meta.url).href + '"');
   return import(toDataUrl(source));
 }
 
@@ -3686,7 +3687,7 @@ assert.match(
   assert.equal(fixed.coaching.keep,"保留原有优点");
   const conflict={verdict:"almost",interaction_review:{judgment:"misread",reading:"仍然认错到账。"},line_reviews:[{mark:"wrong"}]};
   assert.match(index.getRevisionConflict(conflict,revision,fixedScript,oldReport),/本次不计闯关/);
-  assert.equal(index.getRevisionConflict(conflict,revision,fixedScript+"另外改了内容。",oldReport),"");
+  assert.match(index.getRevisionConflict(conflict,revision,fixedScript+"另外改了内容。",oldReport),/本次不计闯关/,"无关末句改动不能撤销已采纳的冲突保护");
   assert.equal(index.getRevisionConflict(conflict,revision,fixedScript,null),"","不能相信客户端自报的示范");
   index.applyRevisionFeedback(conflict,revision,fixedScript,oldReport);
   assert.equal(conflict.revision_check.status,"still_open");

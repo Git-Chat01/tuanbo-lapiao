@@ -18,6 +18,9 @@ import {
 } from "./cases.js";
 import { detectRedline } from "./redlines.js";
 import { coachJobClass } from "./coach-jobs.js";
+import { assessCoachingAdoption, normalizeCoachingText } from "./revision-consistency.js";
+import { needsExampleCheck, callTeachingCheck, exampleCheckPassed, TEACHING_CHECK_VERSION } from "./teaching-check.js";
+import { enqueueTeachingReview, listTeachingReviews, resolveTeachingReview, deleteTeachingReview, nextTeachingProgress } from "./teaching-reviews.js";
 
 // CORS Origin 白名单：命中则回显该 Origin，未命中回退到第一个
 // （CORS 只约束浏览器跨域读响应，真正的安全门槛是入口码/管理密码，不是这里）
@@ -192,9 +195,9 @@ const DEEPSEEK_CONFIG = {
 
 // 修改评分、安全闸门或案例标准时递增；提示词和模型配置也参与指纹。
 // 只复用已完成的检查，不用缓存把一个未经验证的模型输出变成标准答案。
-const REVIEW_VERSION = "2026-10-04-report-identity-1";
+const REVIEW_VERSION = "2026-10-08-teaching-consistency-1";
 // Transport-only releases must not invalidate completed grading results.
-const SERVICE_VERSION = "2026-10-05-durable-jobs-1";
+const SERVICE_VERSION = "2026-10-08-teaching-1";
 const REVIEW_TTL_SECONDS = 7 * 24 * 60 * 60;
 const reviewStores = new WeakMap();
 
@@ -208,7 +211,7 @@ function selectedReferenceLessons(cases) {
 }
 
 export async function reviewRecordKey(accessCode, voteGap, script, scenario, cases = null) {
-  const inputParts = [REVIEW_VERSION, SYSTEM_PROMPT, DEEPSEEK_CONFIG,
+  const inputParts = [REVIEW_VERSION, TEACHING_CHECK_VERSION, SYSTEM_PROMPT, DEEPSEEK_CONFIG,
     accessCode, voteGap, script, scenario];
   // Omitted cases retain a fallback key for temporary case retrieval failures.
   // Current reviews always pass cases (including []), so a newly published or
@@ -233,10 +236,10 @@ async function reportStub(env, accessCode, reportId) {
 async function reportContext(voteGap, script, scenario) {
   return reportDigest([voteGap, script.trim(), scenario || null]);
 }
-export async function saveDeliveredReview(env, accessCode, voteGap, script, scenario, report) {
+export async function saveDeliveredReview(env, accessCode, voteGap, script, scenario, report, teachingProgress = null) {
   const reportId = crypto.randomUUID();
   const record = { schema: 1, expiresAt: Date.now() + REVIEW_TTL_SECONDS * 1000,
-    context: await reportContext(voteGap, script, scenario), report: {...report, report_id: reportId} };
+    context: await reportContext(voteGap, script, scenario), report: {...report, report_id: reportId}, teachingProgress };
   try {
     const stub = await reportStub(env, accessCode, reportId);
     const response = await stub.fetch(new Request("https://limiter.internal/report", {
@@ -450,7 +453,14 @@ export default {
 };
 
 async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDeadline = null) {
+  const deadline = Math.min(jobDeadline || Infinity, Date.now() + DEEPSEEK_CONFIG.timeoutMs);
   const scenario = sanitizeScenario(body.scenario);
+  const collectIssue = (input) => {
+    if (!env.CASES) return;
+    const task = enqueueTeachingReview(env, {script:body.script, scenario, ...input})
+      .catch(() => console.log("teaching review storage degraded"));
+    ctx.waitUntil(task);
+  };
   // 红线检测（纯词表，不调模型）——命中不拒批，作用在判定与吸收两个闸门
   const redlineHits = detectRedline(body.script);
 
@@ -493,7 +503,8 @@ async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDe
       redlineHits,
       scenario,
       revision: normalizeRevision(body.revision),
-    }, null, jobDeadline);
+      onTeachingIssue: (report, detail) => collectIssue({reason:"example_invalid",report,detail}),
+    }, null, deadline);
 
     // 契约校验 + 缺失字段补默认值
     const report = normalizeReport(result.report, body.script);
@@ -540,12 +551,51 @@ async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDe
       ? structuredClone(savedOnCaseFailure)
       : await reuseReview(env, recordKey, evaluate);
     const evaluatedAt = Date.now();
-    const conflict = getRevisionConflict(result.report, revision, body.script, previous?.report);
-    if (conflict) throw new HttpError(409, conflict, "coach example and recheck conflict");
+    let conflict = getRevisionConflict(result.report, revision, body.script, previous?.report);
+    let semanticRevision = null;
+    const lesson = previous?.report?.coaching;
+    if (!conflict && scenario?.id === NOVICE_SCENARIO.id && revision && lesson &&
+        previous.report.verdict !== "passed" && !provisionalAudienceProbe(lesson) &&
+        revisionFocusState(result.report, lesson.focus_key) === "still_open" &&
+        (assessCoachingAdoption(revision.previousScript,body.script,lesson).status === "needs_review" ||
+         (adoptedCoachExample(revision,body.script,lesson) && coachingTargetScope(result.report,lesson,body.script) === "uncertain"))) {
+      try {
+        const checked = await callTeachingCheck(env, DEEPSEEK_CONFIG, "revision", {
+          previousScript:revision.previousScript, revisedScript:body.script,
+          previousLesson:lesson, currentIssue:{focus_key:lesson.focus_key,
+            diagnosis:result.report.card_why, original:result.report.coaching?.original || "",
+            evidence:result.report.structure_checks?.find(item=>item.key === lesson.focus_key)?.evidence || ""},
+        }, deadline);
+        semanticRevision = checked.check;
+        result.usage.prompt_tokens = (result.usage.prompt_tokens || 0) + checked.usage.prompt_tokens;
+        result.usage.completion_tokens = (result.usage.completion_tokens || 0) + checked.usage.completion_tokens;
+        if (semanticRevision.target_status === "resolved" && ["same_edits","none"].includes(semanticRevision.issue_scope)) {
+          conflict = "你已经用自己的话完成了上次修改，但教练这次又否定了同一处。本次不计练习结果，请保留稿子交给带教核对。";
+        }
+      } catch {
+        // An unavailable comparison must not masquerade as another failed attempt.
+        semanticRevision = {target_status:"uncertain",issue_scope:"uncertain"};
+      }
+    }
+    if (conflict) {
+      collectIssue({reason:"revision_conflict",previousScript:revision.previousScript,
+        previousReport:previous.report,report:result.report,detail:conflict});
+      throw new HttpError(409, conflict, "coach example and recheck conflict");
+    }
     // This alias is only a retrieval fallback; revision comparison uses its exact receipt.
     if (!savedOnCaseFailure) await keepLatestReviewForFallback(env, historyKey, recordKey, result);
     applyRevisionFeedback(result.report, revision, body.script, previous?.report);
-    await saveDeliveredReview(env, body.accessCode, body.voteGap, body.script, scenario, result.report);
+    if (semanticRevision?.target_status === "resolved" && semanticRevision.issue_scope === "elsewhere") {
+      result.report.revision_check = {focus_key:lesson.focus_key,status:"resolved",evidence:semanticRevision.evidence};
+      result.report.revision_note = "上次要求改的地方已经完成；这版还有另一处问题，接着看本次指出的原句。";
+    } else if (semanticRevision?.target_status === "uncertain") {
+      result.report.revision_check = {focus_key:lesson.focus_key,status:"unverified",evidence:""};
+      result.report.revision_note = "你已经调整了表达；暂时无法确认上次修改是否完成，下面仅说明当前稿的问题。";
+    }
+    const progress = nextTeachingProgress(result.report, revision && {...revision,currentScript:body.script},previous);
+    if (progress?.attempts >= 3) collectIssue({reason:"repeated_focus",previousScript:revision?.previousScript,
+      previousReport:previous?.report,report:result.report,detail:"同一重点连续多版仍未解决，请老师核对判断和教法。"});
+    await saveDeliveredReview(env, body.accessCode, body.voteGap, body.script, scenario, result.report, progress);
     console.log(JSON.stringify({event:"coach_timing", preparationMs:preparedAt-startedAt,
       evaluationMs:evaluatedAt-preparedAt, deliveryMs:Date.now()-evaluatedAt,
       totalMs:Date.now()-startedAt, generated}));
@@ -2398,11 +2448,25 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
  * DELETE /api/admin/cases/{id}
  */
 async function handleAdmin(request, env, url, corsHeaders) {
+  corsHeaders = {...corsHeaders,"Cache-Control":"no-store"};
   // 管理密码鉴权（fail-closed，模式与入口码一致）
   const authError = checkAdminCode(request, env);
   if (authError) return jsonResponse({ error: true, message: authError.message }, authError.status, corsHeaders);
 
   try {
+    if (request.method === "GET" && url.pathname === "/api/admin/teaching-reviews") {
+      const result = await listTeachingReviews(env,{limit:Number(url.searchParams.get("limit") || 30),cursor:url.searchParams.get("cursor")});
+      return jsonResponse({ok:true,...result},200,corsHeaders);
+    }
+    const teachingMatch = url.pathname.match(/^\/api\/admin\/teaching-reviews\/(teaching(?::|%3[aA])[a-f0-9]{64})(\/resolve)?$/u);
+    if (teachingMatch && request.method === "POST" && teachingMatch[2]) {
+      const item = await resolveTeachingReview(env,decodeURIComponent(teachingMatch[1]),await readBody(request));
+      return jsonResponse({ok:true,item},200,corsHeaders);
+    }
+    if (teachingMatch && request.method === "DELETE" && !teachingMatch[2]) {
+      await deleteTeachingReview(env,decodeURIComponent(teachingMatch[1]));
+      return jsonResponse({ok:true},200,corsHeaders);
+    }
     // 显式、可恢复的旧库索引回填；每次最多 100 条，不随批改自动扫全库。
     if (request.method === "POST" && url.pathname === "/api/admin/cases/reindex") {
       const body = await readBody(request);
@@ -2471,7 +2535,7 @@ async function handleAdmin(request, env, url, corsHeaders) {
 
     return jsonResponse({ error: true, message: "接口不存在" }, 404, corsHeaders);
   } catch (err) {
-    if (err.publicMessage && [400, 409].includes(err.status)) return jsonResponse({ error: true, message: err.publicMessage }, err.status, corsHeaders);
+    if (err.publicMessage && [400, 404, 409, 503].includes(err.status)) return jsonResponse({ error: true, message: err.publicMessage }, err.status, corsHeaders);
     console.log(`admin error: ${err.message}`);
     return jsonResponse({ error: true, message: "后台出错了，稍后再试" }, 500, corsHeaders);
   }
@@ -2903,8 +2967,7 @@ export function hasCertainAudienceClaim(value) {
 function adoptedCoachExample(value, currentScript, lesson) {
   const revision = normalizeRevision(value);
   if (!revision || !lesson?.original || !lesson?.example || lesson.original === lesson.example) return false;
-  const revised = applyCoachingEdits(revision.previousScript, lesson);
-  return revised !== null && revised.trim() === currentScript.trim();
+  return assessCoachingAdoption(revision.previousScript,currentScript,lesson).status === "adopted";
 }
 
 function provisionalAudienceProbe(lesson) {
@@ -2915,9 +2978,28 @@ function provisionalAudienceProbe(lesson) {
     /(?:想看|想听|想玩|想怎么|想要|哪支|哪段|喜欢).{0,18}(?:吗|么|呢|？|\?|说|告诉)/u.test(lesson.example || "");
 }
 
-function newCoachingTargetsAdoptedExample(report, lesson) {
-  const nextOriginal = String(report.coaching?.original || "").replace(/\s+/gu, "");
-  return !nextOriginal || coachingEdits(lesson).some(edit => String(edit.example || "").replace(/\s+/gu, "").includes(nextOriginal));
+export function coachingTargetScope(report, lesson, currentScript) {
+  const quote = normalizeCoachingText(report.coaching?.original || "");
+  if (!quote) return "same_edits";
+  const examples = coachingEdits(lesson).map(edit=>normalizeCoachingText(edit.example || "")).filter(Boolean);
+  if (examples.some(example=>example.includes(quote))) return "same_edits";
+  // A broader quotation may contain both the adopted change and a new issue.
+  // Its boundaries alone cannot establish that the old assignment is complete.
+  if (examples.some(example=>quote.includes(example))) return "uncertain";
+  const source = normalizeCoachingText(currentScript);
+  const start = source.indexOf(quote);
+  if (start < 0 || source.indexOf(quote,start+1) >= 0) return "uncertain";
+  const end = start + quote.length;
+  for (const example of examples) {
+    for (let at=source.indexOf(example);at>=0;at=source.indexOf(example,at+1)) {
+      if (at < end && at+example.length > start) return "uncertain";
+    }
+  }
+  return "elsewhere";
+}
+
+function newCoachingTargetsAdoptedExample(report, lesson, currentScript) {
+  return coachingTargetScope(report,lesson,currentScript) === "same_edits";
 }
 
 export function getRevisionConflict(report, value, currentScript, previousReport) {
@@ -2927,7 +3009,7 @@ export function getRevisionConflict(report, value, currentScript, previousReport
       !lesson.original || !lesson.example || lesson.original === lesson.example ||
       revisionFocusState(report, lesson.focus_key) !== "still_open" ||
       !adoptedCoachExample(revision, currentScript, lesson)) return "";
-  if (provisionalAudienceProbe(lesson) || !newCoachingTargetsAdoptedExample(report, lesson)) return "";
+  if (provisionalAudienceProbe(lesson) || !newCoachingTargetsAdoptedExample(report, lesson, currentScript)) return "";
   return "你已经采用了上次的示范，但教练复查又否定了同一处，反馈发生冲突。本次不计闯关结果，请保留这版交给带教核对。";
 }
 
@@ -2960,8 +3042,13 @@ export function applyRevisionFeedback(report, value, currentScript, previousRepo
     if (["redline", "persona"].includes(key)) report.revision_note = `上次指出的${label}问题，这版已消除。`;
   } else if (state === "still_open") {
     const lesson = previousReport.coaching;
-    if (adoptedCoachExample(revision, currentScript, lesson) && !newCoachingTargetsAdoptedExample(report, lesson)) {
+    if (adoptedCoachExample(revision, currentScript, lesson) && coachingTargetScope(report,lesson,currentScript) === "elsewhere") {
+      // Finishing the old local assignment does not pass a different current issue.
+      report.revision_check = {focus_key:key, status:"resolved", evidence:currentScript};
       report.revision_note = `上次示范的那句已改；这版还有另一处${label}问题，接着看本次指出的原句。`;
+    } else if (adoptedCoachExample(revision, currentScript, lesson) && coachingTargetScope(report,lesson,currentScript) === "uncertain") {
+      report.revision_check = {focus_key:key,status:"unverified",evidence:""};
+      report.revision_note = "上次建议已经放进稿子；这次引用同时涉及其他内容，暂时无法确认是否是同一处问题。";
     } else if (adoptedCoachExample(revision, currentScript, lesson) && provisionalAudienceProbe(lesson)) {
       report.revision_note = "上次示范已改成询问；还要等观众真实回应，再决定怎么递下一步。";
     } else {
@@ -3021,7 +3108,7 @@ export function unwrapModelEnvelope(value) {
   return value;
 }
 
-async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario, revision = null }, repair = null, jobDeadline = null) {
+async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario, revision = null, onTeachingIssue = null }, repair = null, jobDeadline = null) {
   if (!env.DEEPSEEK_API_KEY) {
     throw new HttpError(503, "服务未配置", "DeepSeek key 未配置");
   }
@@ -3118,22 +3205,34 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
   if (!report || typeof report !== "object" || !Array.isArray(report.line_reviews)) {
     throw new HttpError(502, "报告格式出错，请重试", "报告字段缺失");
   }
+  // A teaching repair can change the suggested edits, never the original grade.
+  // Otherwise a model could escape a failed example check by declaring passed.
+  if (repair?.teachingOnly) {
+    if (!report.coaching || report.coaching.focus_key !== repair.expectedFocus) {
+      const err = new HttpError(502, "教练暂时没有核对清楚同一处改法，这次未判分，原稿已保留。", "teaching repair changed focus");
+      err.retryable = false;
+      throw err;
+    }
+    report = {...structuredClone(repair.report), coaching:report.coaching,
+      direction:{summary:report.coaching.action,examples:[report.coaching.example]}};
+  }
   const rawReport = structuredClone(report);
-  const repairOrFail = async (issue, message, details = []) => {
+  const usage = {prompt_tokens:data?.usage?.prompt_tokens || 0,completion_tokens:data?.usage?.completion_tokens || 0};
+  const repairOrFail = async (issue, message, details = [], teachingOnly = false) => {
     // 单次请求最多修正一次，共用原来的90秒预算；不把冲突报告交给新人。
     if (!repair && deadline - Date.now() >= 20000) {
-      console.log(`coach report repair: ${issue}`);
+      console.log("coach report repair requested");
       try {
-        const corrected = await callDeepSeek(env, {voteGap, script, cases, redlineHits, scenario}, {report:rawReport, issue, details, deadline});
-        corrected.usage.prompt_tokens += data?.usage?.prompt_tokens || 0;
-        corrected.usage.completion_tokens += data?.usage?.completion_tokens || 0;
+        const corrected = await callDeepSeek(env, {voteGap, script, cases, redlineHits, scenario, onTeachingIssue}, {report:rawReport, issue, details, deadline, teachingOnly, expectedFocus:report.coaching?.focus_key});
+        corrected.usage.prompt_tokens += usage.prompt_tokens;
+        corrected.usage.completion_tokens += usage.completion_tokens;
         return corrected;
       } catch (err) {
         err.retryable = false;
         throw err;
       }
     }
-    const err = new HttpError(502, message, issue);
+    const err = new HttpError(502, message, "report validation failed");
     err.retryable = false;
     throw err;
   };
@@ -3173,12 +3272,33 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
     return repairOrFail(qualityIssue, "教练这次判断不一致，未给你判分。原稿已保留，请重试。", qualityDetails);
   }
 
+  if (needsExampleCheck(checked,scenario)) {
+    const revisedScript = applyCoachingEdits(script,checked.coaching);
+    let result;
+    try {
+      result = await callTeachingCheck(env,DEEPSEEK_CONFIG,"example",{
+        previousScript:script,revisedScript,focus_key:checked.coaching.focus_key,
+        diagnosis:checked.card_why,edits:coachingEdits(checked.coaching),
+      },deadline);
+    } catch {
+      onTeachingIssue?.(checked,"示范专项复核未完成，未将这份建议交付给学员。");
+      const err = new HttpError(502,"教练暂时未能核对清楚改法，这次未判分，原稿已保留，请稍后重试。","teaching example check unavailable");
+      err.retryable = false;
+      throw err;
+    }
+    usage.prompt_tokens += result.usage.prompt_tokens;
+    usage.completion_tokens += result.usage.completion_tokens;
+    if (!exampleCheckPassed(result.check)) {
+      onTeachingIssue?.(checked,result.check.reason);
+      return repairOrFail("示范专项复核未通过："+result.check.reason,
+        "教练暂时没有给出可靠的改法，这次未判分，原稿已保留，请交给带教核对。",
+        [{field:"coaching",revisedScript,check:result.check,correction:"仅修正本次教学建议，确保它解决诊断的缺口、保留原稿有效内容，不改变原稿评分来掩盖示范问题。"}], true);
+    }
+  }
+
   return {
     report,
-    usage: {
-      prompt_tokens: data?.usage?.prompt_tokens || 0,
-      completion_tokens: data?.usage?.completion_tokens || 0,
-    },
+    usage,
   };
 }
 
