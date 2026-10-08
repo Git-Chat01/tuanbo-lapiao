@@ -41,6 +41,24 @@
   margin-bottom: var(--space-lg);
 }
 
+/* 后台保留多票况案例录入，选项样式独立于学员已移除的票况选择。 */
+.coach-col--feed .chip-group { display: flex; flex-wrap: wrap; gap: var(--space-sm); }
+.coach-col--feed .chip {
+  min-height: 44px;
+  padding: 8px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-card);
+  font-size: var(--font-size-sm);
+}
+.coach-col--feed .chip[aria-pressed="true"] {
+  border-color: var(--color-primary);
+  background: var(--color-primary-soft);
+  color: var(--color-primary-dark);
+  font-weight: 700;
+}
+.coach-col--feed .chip:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+
 /* ---- 投喂表单 ---- */
 .whygood-input {
   width: 100%;
@@ -60,6 +78,7 @@
 /* ---- tabs ---- */
 .tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-sm);
   margin-bottom: var(--space-md);
 }
@@ -253,6 +272,56 @@
   background: transparent;
   font-weight: 400;
 }
+
+/* 教学纠错：时间线对照与老师记录分开展开，保持长稿清单可扫描。 */
+.teaching-review { min-width: 0; border-left-color: var(--color-warn); overflow-wrap: anywhere; }
+.teaching-review__focus { margin: 8px 0; font-weight: 700; }
+.teaching-review__muted {
+  margin: 8px 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.7;
+}
+.teaching-review summary {
+  min-height: 44px;
+  padding: 12px 0;
+  color: var(--color-primary-dark);
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+  cursor: pointer;
+}
+.teaching-review details { border-top: 1px solid var(--color-border); margin-top: 12px; }
+.teaching-review h3 { font-size: var(--font-size-sm); margin: 16px 0 8px; }
+.teaching-review__label { color: var(--color-text-secondary); font-size: var(--font-size-xs); margin: 10px 0 5px; }
+.teaching-review__copy {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  background: var(--color-bg);
+  border-left: 2px solid var(--color-border);
+  white-space: pre-wrap;
+  line-height: 1.8;
+}
+.teaching-review__example { background: var(--color-good-bg); border-left-color: var(--color-good); }
+.teaching-review__field { display: block; font-size: var(--font-size-sm); font-weight: 600; margin: 12px 0; }
+.teaching-review__input {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  margin-top: 6px;
+  padding: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-card);
+  color: var(--color-text);
+  font: inherit;
+  font-weight: 400;
+  line-height: 1.7;
+  resize: vertical;
+}
+.teaching-review__input:focus-visible,
+.teaching-review summary:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+.teaching-review__input:disabled { background: var(--color-bg); }
+.teaching-review__feedback { margin: 10px 0; color: var(--color-primary-dark); font-size: var(--font-size-sm); line-height: 1.7; }
 
 .case-card__actions button:focus-visible,
 .tab:focus-visible {

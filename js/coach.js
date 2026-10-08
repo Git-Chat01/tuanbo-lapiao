@@ -24,7 +24,7 @@ var Coach = {
   // 当前 tab：auto（自动吸收清单）/ manual（教练投喂清单）
   _tab: "auto",
   // 游标分页状态（按 tab 分开保存）
-  _cursor: { auto: null, manual: null },
+  _cursor: { auto: null, manual: null, teaching: null },
   // 是否加载中（防连点）
   _loading: false,
   // 清单请求世代号：切 tab 时旧响应绝不得渲染到新 tab。
@@ -34,6 +34,8 @@ var Coach = {
   _caseOps: {},
   // 投喂请求锁独立于按钮状态，编辑下一条时不能启动重复请求。
   _feedBusy: false,
+  // 老师切换清单或请求失败时保留本页未保存的核对内容，不另存学员稿件。
+  _teachingDrafts: {},
 
   // ---- 管理密码（仅当前 tab 会话，401 时清缓存重弹） ----
   getAdminCode: function () {
@@ -168,7 +170,7 @@ var Coach = {
     Coach._cursor[tab] = null;
     Coach._showListLoading();
 
-    Coach._request("/api/admin/cases?source=" + tab + "&limit=50")
+    Coach._request(Coach._listPath(tab))
       .then(function (data) {
         if (requestId !== Coach._loadSeq || tab !== Coach._tab) return;
         Coach._renderList(data.items || [], true, data.hasMore);
@@ -178,6 +180,7 @@ var Coach = {
       .catch(function (err) {
         if (requestId === Coach._loadSeq && err.message !== "401") {
           Coach._toast("加载失败，稍后再试");
+          if (tab === "teaching") Coach._showTeachingListError(err);
         }
       })
       .then(function () {
@@ -195,7 +198,7 @@ var Coach = {
     Coach._loading = true;
 
     Coach._request(
-      "/api/admin/cases?source=" + tab + "&limit=50&cursor=" + encodeURIComponent(cursor)
+      Coach._listPath(tab, cursor)
     )
       .then(function (data) {
         if (requestId !== Coach._loadSeq || tab !== Coach._tab) return;
@@ -211,6 +214,20 @@ var Coach = {
       .then(function () {
         if (requestId === Coach._loadSeq) Coach._loading = false;
       });
+  },
+
+  _listPath: function (tab, cursor) {
+    var path = tab === "teaching" ? "/api/admin/teaching-reviews?limit=30" : "/api/admin/cases?source=" + tab + "&limit=50";
+    return path + (cursor ? "&cursor=" + encodeURIComponent(cursor) : "");
+  },
+
+  _showTeachingListError: function (error) {
+    var container = document.getElementById("list-container");
+    while (container.firstChild) container.removeChild(container.firstChild);
+    var message = Coach._el("p", "list-empty", "教学纠错暂时未加载：" + (error.message || "请稍后再试"));
+    message.setAttribute("role", "status");
+    container.appendChild(message);
+    container.appendChild(Coach._actionButton("btn-outline btn-block", "重新加载教学纠错", Coach.loadList));
   },
 
   _showListLoading: function () {
@@ -246,14 +263,155 @@ var Coach = {
         ? "这一页没有可显示的案例，可以继续加载下一页。"
         : Coach._tab === "auto"
           ? "暂时没有自动候选——学员过关稿会先进入这里，等老师审核"
-          : "还没投喂过，用左边喂第一条";
+          : Coach._tab === "teaching"
+            ? "暂时没有需要核对的练习。后续记录会自动进入这里。"
+            : "还没投喂过，用左边喂第一条";
       container.appendChild(empty);
       return;
     }
 
     for (var i = 0; i < items.length; i++) {
-      if (!Coach._hasCaseCard(container, items[i].id)) container.appendChild(Coach._caseCard(items[i]));
+      if (!Coach._hasCaseCard(container, items[i].id)) container.appendChild(Coach._tab === "teaching" ? Coach._teachingCard(items[i]) : Coach._caseCard(items[i]));
     }
+  },
+
+  _teachingLesson: function (target, lesson) {
+    if (!lesson || !lesson.original) {
+      target.appendChild(Coach._el("p", "teaching-review__muted", "这条记录没有上一轮建议。"));
+      return;
+    }
+    var edits = [{original:lesson.original, example:lesson.example}].concat(Array.isArray(lesson.related_edits) ? lesson.related_edits.slice(0, 4) : []);
+    edits.forEach(function (edit, index) {
+      target.appendChild(Coach._el("p", "teaching-review__label", "第 " + (index + 1) + " 处原话"));
+      target.appendChild(Coach._el("p", "teaching-review__copy", edit.original || "未记录"));
+      target.appendChild(Coach._el("p", "teaching-review__label", "教练示范"));
+      target.appendChild(Coach._el("p", "teaching-review__copy teaching-review__example", edit.example || "删除这一处"));
+    });
+    if (lesson.action) target.appendChild(Coach._el("p", "teaching-review__muted", "要求怎么改：" + lesson.action));
+    if (lesson.why) target.appendChild(Coach._el("p", "teaching-review__muted", "给新人的解释：" + lesson.why));
+  },
+
+  _teachingCard: function (item) {
+    var card = Coach._el("article", "case-card teaching-review");
+    card.dataset.id = item.id;
+    var reasons = {revision_conflict:"反馈前后矛盾", repeated_focus:"同一问题反复卡住", example_invalid:"示范需要核对"};
+    var focuses = {user_reason:"参与理由", self_intro:"介绍自己", gratitude:"接住参与", target_user:"点到人", vote_instruction:"当下动作", logic:"逻辑", expression:"表达", mentality:"心态", persona:"自己的语气", redline:"表达风险", line_angle:"说话角度", final_polish:"最后打磨"};
+    var head = Coach._el("div", "case-card__head");
+    head.appendChild(Coach._el("span", "case-card__tag", reasons[item.reason] || "待核对练习"));
+    head.appendChild(Coach._el("span", "case-card__time", Coach._formatTime(item.createdAt)));
+    var badge = Coach._el("span", "case-card__badge");
+    head.appendChild(badge);
+    card.appendChild(head);
+    card.appendChild(Coach._el("p", "teaching-review__focus", "本次关注：" + (focuses[item.focusKey] || "整稿判断")));
+    if (item.detail) card.appendChild(Coach._el("p", "teaching-review__muted", item.detail));
+
+    var evidence = Coach._el("details", "teaching-review__evidence");
+    evidence.appendChild(Coach._el("summary", null, "看原稿、教练建议和这次修改"));
+    evidence.appendChild(Coach._el("h3", null, "1 · 上一版原稿"));
+    evidence.appendChild(Coach._el("p", "teaching-review__copy", item.previousScript || "这条记录来自首次批改，没有上一版。"));
+    evidence.appendChild(Coach._el("h3", null, "2 · 上一次教练建议"));
+    Coach._teachingLesson(evidence, item.previousCoaching);
+    evidence.appendChild(Coach._el("h3", null, "3 · 本次提交稿"));
+    evidence.appendChild(Coach._el("p", "teaching-review__copy", item.script || "未记录"));
+    evidence.appendChild(Coach._el("h3", null, "4 · 本次教练判断"));
+    var report = item.currentReport || {};
+    var verdicts = {passed:"通过", almost:"还差一点", off:"需要修改"};
+    evidence.appendChild(Coach._el("p", "teaching-review__copy", (verdicts[report.verdict] || "未形成有效结果") + (report.verdict_reason ? "：" + report.verdict_reason : "")));
+    if (report.card_why) evidence.appendChild(Coach._el("p", "teaching-review__muted", "指出的问题：" + report.card_why));
+    if (report.revision_note) evidence.appendChild(Coach._el("p", "teaching-review__muted", "复练反馈：" + report.revision_note));
+    if (report.coaching) Coach._teachingLesson(evidence, report.coaching);
+    card.appendChild(evidence);
+
+    var editor = Coach._el("details", "teaching-review__editor");
+    editor.appendChild(Coach._el("summary", null, "填写或查看老师的核对结果"));
+    var fields = {};
+    var correction = Coach._teachingDrafts[item.id] || item.correction || {};
+    var field = function (name, title, tag, maxLength, placeholder) {
+      var label = Coach._el("label", "teaching-review__field", title);
+      var input = Coach._el(tag, "teaching-review__input");
+      input.name = name;
+      if (maxLength) { input.maxLength = maxLength; input.rows = name === "example" ? 4 : 3; }
+      if (placeholder) input.placeholder = placeholder;
+      label.appendChild(input);
+      editor.appendChild(label);
+      fields[name] = input;
+      return input;
+    };
+    var judgment = field("judgment", "老师判断", "select");
+    [["", "请选择判断"], ["correct", "原判合理"], ["false_rejection", "误拦：这处其实已经做到"], ["false_acceptance", "误放：这处仍有真实问题"], ["invalid_advice", "改法无效或无法照做"], ["unclear", "信息不足，暂时不能定"]].forEach(function (choice) {
+      var option = Coach._el("option", null, choice[1]); option.value = choice[0]; judgment.appendChild(option);
+    });
+    field("reason", "判断依据（必填，600 字内）", "textarea", 600, "说清原判是否合理，真正缺口是什么。");
+    field("example", "有效改法（误拦、误放或改法无效时必填，500 字内）", "textarea", 500, "如果已经可用，保留可用原句；确有问题，写出可执行的改法。");
+    field("keep", "哪些内容应保留（选填，300 字内）", "textarea", 300, "写出新人已经做对的内容，避免下次被推翻。");
+    Object.keys(fields).forEach(function (name) { fields[name].value = typeof correction[name] === "string" ? correction[name] : ""; });
+    var feedback = Coach._el("p", "teaching-review__feedback");
+    feedback.setAttribute("role", "status");
+    editor.appendChild(feedback);
+    var actions = Coach._el("div", "case-card__actions");
+    var save = Coach._actionButton("case-card__publish teaching-review__save", "保存核对结果", function () { persist(false); });
+    var remove = Coach._actionButton("case-card__reject teaching-review__delete", "删除这条记录", function () { persist(true); });
+    actions.appendChild(save); actions.appendChild(remove); editor.appendChild(actions);
+    editor.appendChild(Coach._el("p", "teaching-review__muted", "保存只记录老师的核对，不会直接改判或加入参考案例。"));
+    card.appendChild(editor);
+    var read = function () {
+      var value = {};
+      Object.keys(fields).forEach(function (name) { value[name] = fields[name].value.trim(); });
+      return value;
+    };
+    var valid = function (value) {
+      return ["correct", "false_rejection", "false_acceptance", "invalid_advice", "unclear"].indexOf(value.judgment) >= 0 &&
+        value.reason.length > 0 && value.reason.length <= 600 && value.example.length <= 500 && value.keep.length <= 300 &&
+        (["false_rejection", "false_acceptance", "invalid_advice"].indexOf(value.judgment) < 0 || value.example.length > 0);
+    };
+    var sync = function () {
+      var busy = Boolean(Coach._caseOps[item.id]);
+      Object.keys(fields).forEach(function (name) { fields[name].disabled = busy; });
+      save.disabled = busy || !valid(read()); remove.disabled = busy;
+      card.setAttribute("aria-busy", String(busy));
+      badge.textContent = item.status === "reviewed" ? "老师已核对" : "待老师核对";
+      badge.className = "case-card__badge " + (item.status === "reviewed" ? "case-card__badge--published" : "case-card__badge--candidate");
+    };
+    var remember = function () {
+      Coach._teachingDrafts[item.id] = read();
+      feedback.textContent = "尚未保存；切换清单仍会保留本页填写的内容。";
+      sync();
+    };
+    Object.keys(fields).forEach(function (name) { fields[name].addEventListener(name === "judgment" ? "change" : "input", remember); });
+    var persist = function (deleting) {
+      if (Coach._caseOps[item.id]) return;
+      var value = read();
+      if (!deleting && !valid(value)) return;
+      if (deleting && !window.confirm("删除这条练习和老师核对记录？此操作不能撤销。")) return;
+      var startedAt = Coach._loadSeq;
+      Coach._caseOps[item.id] = true;
+      feedback.textContent = deleting ? "正在删除……" : "正在保存……";
+      sync();
+      Promise.resolve().then(function () {
+        return Coach._request("/api/admin/teaching-reviews/" + encodeURIComponent(item.id) + (deleting ? "" : "/resolve"),
+          deleting ? {method:"DELETE"} : {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(value)});
+      }).then(function (data) {
+        if (deleting) {
+          delete Coach._teachingDrafts[item.id];
+          card.remove();
+          if (Coach._tab === "teaching" && !document.getElementById("list-container").querySelector(".case-card")) Coach.loadList();
+        } else {
+          item.status = "reviewed";
+          item.correction = data.item && data.item.correction || value;
+          if (!Coach._teachingDrafts[item.id] || JSON.stringify(Coach._teachingDrafts[item.id]) === JSON.stringify(value)) delete Coach._teachingDrafts[item.id];
+          feedback.textContent = "核对结果已保存，尚未加入参考案例。";
+        }
+      }).catch(function (error) {
+        feedback.textContent = (deleting ? "删除失败：" : "保存失败：") + (error.message === "401" ? "请重新输入管理密码。填写内容仍保留。" : (error.message || "请稍后再试") + "。填写内容仍保留。");
+      }).then(function () {
+        delete Coach._caseOps[item.id];
+        sync();
+        // 切页后重新出现的同一张卡不能停留在旧请求的禁用状态。
+        if (startedAt !== Coach._loadSeq && Coach._tab === "teaching") Coach.loadList();
+      });
+    };
+    sync();
+    return card;
   },
 
   /** 单条案例卡片：manual 保持原 UI；auto 根据 candidate / published / rejected 渲染审核动作。 */
@@ -645,11 +803,12 @@ var Coach = {
   _switchTab: function (tab) {
     if (Coach._tab === tab) return;
     Coach._tab = tab;
-    document.getElementById("tab-auto").classList.toggle("tab--active", tab === "auto");
-    document.getElementById("tab-manual").classList.toggle("tab--active", tab === "manual");
-    document.getElementById("tab-auto").setAttribute("aria-selected", String(tab === "auto"));
-    document.getElementById("tab-manual").setAttribute("aria-selected", String(tab === "manual"));
+    ["auto", "manual", "teaching"].forEach(function (key) {
+      document.getElementById("tab-" + key).classList.toggle("tab--active", tab === key);
+      document.getElementById("tab-" + key).setAttribute("aria-selected", String(tab === key));
+    });
     document.getElementById("list-hint").hidden = tab !== "auto";
+    document.getElementById("teaching-hint").hidden = tab !== "teaching";
     Coach.loadList();
   },
 
@@ -703,6 +862,7 @@ var Coach = {
     document.getElementById("btn-feed").addEventListener("click", Coach._feed);
     document.getElementById("tab-auto").addEventListener("click", function () { Coach._switchTab("auto"); });
     document.getElementById("tab-manual").addEventListener("click", function () { Coach._switchTab("manual"); });
+    document.getElementById("tab-teaching").addEventListener("click", function () { Coach._switchTab("teaching"); });
     document.getElementById("btn-load-more").addEventListener("click", Coach.loadMore);
     document.getElementById("btn-logout").addEventListener("click", function () {
       Coach.clearAdminCode();
