@@ -10,6 +10,7 @@ export function coachJobClass({ generate, authorize, rateLimit, digest }) {
     response(job) {
       return Response.json({
         ok: true, jobId: job.id, state: job.state, expiresAt: job.expiresAt,
+        ...(job.state === "running" ? {phase:job.phase || "reviewing"} : {}),
         ...(job.state === "done" ? {report: job.result.report} : {}),
         ...(job.state === "failed" ? {failure: job.failure} : {}),
       }, {status: job.state === "queued" || job.state === "running" ? 202 : 200});
@@ -66,6 +67,7 @@ export function coachJobClass({ generate, authorize, rateLimit, digest }) {
         return;
       }
       job.state = "running";
+      job.phase = "reviewing";
       await this.ctx.storage.transaction(async txn => {
         await txn.put("job", job);
         await txn.setAlarm(Date.now() + JOB_RUN_MS);
@@ -81,7 +83,16 @@ export function coachJobClass({ generate, authorize, rateLimit, digest }) {
           const denied = await rateLimit(this.env, job.ipHash);
           if (denied) { const err = new Error(denied.message); err.status = denied.status; throw err; }
           if (expired) throw new Error("Job deadline elapsed before generation");
-          return generate({...job.payload, accessCode:this.env.ACCESS_CODE}, this.env, this.ctx, started + JOB_RUN_MS);
+          return generate({...job.payload, accessCode:this.env.ACCESS_CODE}, this.env, this.ctx, started + JOB_RUN_MS, async phase => {
+            if (expired || !["reviewing","recovering","checking_advice"].includes(phase)) return;
+            await this.ctx.storage.transaction(async txn => {
+              const current = await txn.get("job");
+              if (current?.state === "running" && current.id === job.id) {
+                current.phase = phase;
+                await txn.put("job",current);
+              }
+            });
+          });
         })(), new Promise((_, reject) => {
           timer = setTimeout(() => { expired = true; const err = new Error("这次批改超过后台等待时限，原稿已保留，请重试。"); err.status = 504; reject(err); }, JOB_RUN_MS);
         })]);

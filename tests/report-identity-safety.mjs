@@ -48,7 +48,13 @@ async function submit(reportId,stream=false){
  return {status:stream?(body.status||response.status):response.status,body};
 }
 for(const stream of [false,true]){
- assert.equal((await submit(firstId,stream)).status,409,'第一位采纳原示范后被再次否定必须报冲突，不能取另一份报告');
+ const firstReply=await submit(firstId,stream);
+ assert.equal(firstReply.status,200,'第一位采纳原示范后仍能拿到当前稿判断');
+ assert.equal(firstReply.body.report.verdict,'almost','不能因采用示范自动升分');
+ assert.equal(firstReply.body.report.revision_check.focus_key,'user_reason','必须绑定第一位学员的确切凭证，不能取另一份报告');
+ assert.equal(firstReply.body.report.revision_check.status,'unverified','无法裁决的历史冲突不记为学员再次失败');
+ assert.match(firstReply.body.report.revision_note,/不计重复卡关/);
+ assert.ok(firstReply.body.report.report_id);
  const reply=await submit(secondId,stream);
  assert.equal(reply.status,200);
  assert.equal(reply.body.report.revision_check.focus_key,'vote_instruction','忽略客户端伪造方向');

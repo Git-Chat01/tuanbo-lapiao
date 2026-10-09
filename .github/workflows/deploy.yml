@@ -58,6 +58,9 @@ jobs:
           node tests/teaching-check.mjs
           node tests/teaching-reviews.mjs
           node tests/teaching-review-ui.mjs
+          node tests/review-recovery.mjs
+          node tests/review-recovery-route.mjs
+          node tests/review-recovery-ui.mjs
 
   deploy:
     needs: test

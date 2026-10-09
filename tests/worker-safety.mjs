@@ -3490,17 +3490,28 @@ assert.match(
   assert.equal(redline.verdict,"off","语义摘要不能绕过红线");
 }
 
-// Report repair is targeted, revalidated and bounded; a failed repair must not trigger browser retries.
+// Full-report repair and independent short recovery remain bounded and validate separate contracts.
 {
   const savedFetch=globalThis.fetch;
   try {
-    for(const streaming of [false,true]) for(const repairSucceeds of [false,true]) {
+    for(const streaming of [false,true]) for(const mode of ['full_repair','short_recovery','all_fail']) {
       const requests=[];
+      const taskOf=request=>{try{return JSON.parse(request.messages[1].content).task;}catch{return undefined;}};
       const invalid={...structuredClone(upstreamReport),card_why:"你说了“完全不存在的另一段话”"};
+      const recovered={
+        core:[{key:'user_reason',status:'met',quote:'凯哥你想看撒娇我现在来一个',reason:'承接了具体内容意愿'},
+          {key:'vote_instruction',status:'partial',quote:'你愿意就上几张',reason:'还需说清是复活票'}],
+        risks:[],awaiting_response:false,
+        focus:{focus_key:'vote_instruction',keep:'保留承接撒娇意愿的内容',original:'你愿意就上几张',action:'把上几张具体说成上复活票，让刚进房的人知道当前动作',why:'现有邀请没有说清票的用途'},
+        interaction:{reading:'承接观看意愿并邀请支持',why:'当前邀请需要明确票种',next_check:'听对方是否理解当前动作'},
+      };
       globalThis.fetch=async(_url,options)=>{
-        requests.push(JSON.parse(options.body));
-        const report=requests.length===2&&repairSucceeds?upstreamReport:invalid;
-        return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify(report)}}],usage:{prompt_tokens:10,completion_tokens:20}}));
+        const request=JSON.parse(options.body);requests.push(request);
+        const isRecovery=taskOf(request)==='recover_current_review';
+        const report=isRecovery
+          ? (mode==='short_recovery'&&requests.length===4?recovered:invalid)
+          : requests.length===2&&mode==='full_repair'?upstreamReport:invalid;
+        return Response.json({choices:[{finish_reason:'stop',message:{content:JSON.stringify(report)}}],usage:{prompt_tokens:10,completion_tokens:20}});
       };
       const env={COACH_LIMITER:createRateLimiterBinding(index.CoachRateLimiter),ACCESS_CODE:"repair-test",DEEPSEEK_API_KEY:"test-key"};
       const response=await index.default.fetch(new Request("https://local.test/api/coach",{
@@ -3508,18 +3519,43 @@ assert.match(
         body:JSON.stringify({accessCode:env.ACCESS_CODE,voteGap:"close",script:baseScript}),
       }),env,{waitUntil(){}});
       const payload=JSON.parse((await response.text()).trim().split("\n").at(-1));
-      assert.equal(requests.length,2,"最多一次针对报告的修正，不能无限重抽");
+      const recoveryRequests=requests.filter(request=>taskOf(request)==='recover_current_review');
+      assert.equal(requests.length-recoveryRequests.length,2,"完整报告最多修正一次，不能无限重抽");
+      assert.equal(recoveryRequests.length,mode==='full_repair'?0:2,"独立短恢复至多两次，成功后立即停止");
       assert.equal(requests[1].messages[1].content,requests[0].messages[1].content,"修正不改变原稿与现场");
       assert.match(requests[1].messages.at(-1).content,/点评引用了当前稿或现场不存在的原句/);
       assert.deepEqual(JSON.parse(requests[1].messages.at(-1).content).invalidFields.map(item=>[item.field,item.quote]),[["card_why","完全不存在的另一段话"]],"修正必须定位到具体字段和错误引用");
-      if(repairSucceeds){
+      for(const request of recoveryRequests){
+        assert.ok(request.messages.length>=2&&request.messages.length<=3,'恢复只允许原始输入和一条受控契约提示');
+        assert.equal(request.messages.some(item=>item.role==='assistant'),false,'恢复不继承无效报告正文');
+        if(request.messages.length===3){
+          const correction=JSON.parse(request.messages[2].content);
+          assert.equal(correction.task,'retry_current_review');
+          assert.equal(typeof correction.contractIssue,'string');
+          assert.ok(correction.contractIssue.length<=180);
+        }
+        assert.doesNotMatch(JSON.stringify(request.messages),/完全不存在的另一段话/,'错误长报告和错误证据均不能进入短恢复上下文');
+        assert.equal(JSON.parse(request.messages[1].content).currentScript,baseScript,'恢复仍只判断当前原稿');
+        assert.doesNotMatch(request.messages[1].content,/完全不存在的另一段话/,'旧报告错误证据不能污染独立恢复');
+      }
+      if(mode==='full_repair'){
         assert.equal(payload.ok,true);
         assert.equal(payload.report.verdict,"passed");
         assert.equal(payload.usage.prompt_tokens,20,"两次模型用量必须累计");
+      }else if(mode==='short_recovery'){
+        assert.equal(response.status,200);
+        assert.equal(payload.ok,true);
+        assert.equal(payload.report.review_mode,'focused');
+        assert.equal(payload.report.verdict,'almost','恢复按独立核心证据判分，不能默认通过');
+        assert.equal(payload.report.coaching.focus_key,'vote_instruction');
+        assert.equal(payload.report.coaching.mode,'guidance');
+        assert.equal(payload.report.coaching.example,'','未核验的改稿不能伪装成示范');
+        assert.equal(payload.report.structure_checks.find(item=>item.key==='vote_instruction').status,'partial');
+        assert.ok(payload.report.report_id,'恢复结果仍保存不可变报告凭证');
       }else{
-        assert.equal(streaming?payload.status:response.status,502);
-        assert.equal(payload.retryable,false,"修正失败不能再让前端完整重跑");
-        assert.equal(payload.report,undefined,"无效报告不能降级冒充有效分数");
+        assert.equal(streaming?payload.status:response.status,503);
+        assert.equal(payload.report,undefined,"全部模型输出无效时不能伪造有效分数");
+        assert.doesNotMatch(payload.message,/判断不一致|未给你判分/,'内部格式故障不归咎于用户稿件');
       }
     }
   }finally{globalThis.fetch=savedFetch;}
@@ -3710,7 +3746,7 @@ assert.match(
   assert.match(elsewhere.revision_note,/还有另一处/);
 }
 
-// Both JSON and streaming routes surface teacher contradictions as non-scoring business errors.
+// Contradictions retain a validated current assessment when adjudication is unavailable.
 {
   const env={COACH_LIMITER:createRateLimiterBinding(index.CoachRateLimiter),ACCESS_CODE:"route-revision",CASES:new MemoryKV()};
   const oldScript=baseScript.replace("我还差十票","我还差二十票");
@@ -3730,9 +3766,13 @@ assert.match(
         revision:{reportId,previousScript:oldScript,focusKey:"user_reason",instruction:"示范替换"}}),
     }),env,{waitUntil(){}});
     const payload=JSON.parse((await response.text()).trim().split("\n").at(-1));
-    assert.equal(streaming?payload.status:response.status,409);
-    assert.match(payload.message,/反馈发生冲突/);
-    assert.equal(payload.report,undefined,"教练冲突不得伪装成学员失败报告");
+    assert.equal(response.status,200);
+    assert.equal(payload.ok,true);
+    assert.equal(payload.report.verdict,'almost','历史示范不能自动抬高当前稿评分');
+    assert.equal(payload.report.revision_check.status,'unverified','内部裁决不可用时不再记为重复未解决');
+    assert.equal(payload.report.revision_check.focus_key,'user_reason');
+    assert.match(payload.report.revision_note,/不计重复卡关/);
+    assert.ok(payload.report.report_id,'当前判断仍有精确报告凭证');
   }
 }
 

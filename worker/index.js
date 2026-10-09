@@ -19,6 +19,7 @@ import {
 import { detectRedline } from "./redlines.js";
 import { coachJobClass } from "./coach-jobs.js";
 import { assessCoachingAdoption, normalizeCoachingText } from "./revision-consistency.js";
+import { callReviewRecovery, RECOVERY_REVIEW_VERSION } from "./review-recovery.js";
 import { needsExampleCheck, callTeachingCheck, exampleCheckPassed, TEACHING_CHECK_VERSION } from "./teaching-check.js";
 import { enqueueTeachingReview, listTeachingReviews, resolveTeachingReview, deleteTeachingReview, nextTeachingProgress } from "./teaching-reviews.js";
 
@@ -195,9 +196,9 @@ const DEEPSEEK_CONFIG = {
 
 // 修改评分、安全闸门或案例标准时递增；提示词和模型配置也参与指纹。
 // 只复用已完成的检查，不用缓存把一个未经验证的模型输出变成标准答案。
-const REVIEW_VERSION = "2026-10-08-teaching-consistency-1";
+const REVIEW_VERSION = "2026-10-08-review-recovery-1";
 // Transport-only releases must not invalidate completed grading results.
-const SERVICE_VERSION = "2026-10-08-teaching-1";
+const SERVICE_VERSION = "2026-10-08-recovery-1";
 const REVIEW_TTL_SECONDS = 7 * 24 * 60 * 60;
 const reviewStores = new WeakMap();
 
@@ -211,7 +212,7 @@ function selectedReferenceLessons(cases) {
 }
 
 export async function reviewRecordKey(accessCode, voteGap, script, scenario, cases = null) {
-  const inputParts = [REVIEW_VERSION, TEACHING_CHECK_VERSION, SYSTEM_PROMPT, DEEPSEEK_CONFIG,
+  const inputParts = [REVIEW_VERSION, TEACHING_CHECK_VERSION, RECOVERY_REVIEW_VERSION, SYSTEM_PROMPT, DEEPSEEK_CONFIG,
     accessCode, voteGap, script, scenario];
   // Omitted cases retain a fallback key for temporary case retrieval failures.
   // Current reviews always pass cases (including []), so a newly published or
@@ -452,8 +453,11 @@ export default {
   },
 };
 
-async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDeadline = null) {
+async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDeadline = null, onProgress = null) {
   const deadline = Math.min(jobDeadline || Infinity, Date.now() + DEEPSEEK_CONFIG.timeoutMs);
+  // The large report must leave a real budget for a small, independent assessment.
+  const primaryDeadline = deadline - 27000;
+  const phase = async (value) => { try { await onProgress?.(value); } catch { console.log("coach progress storage degraded"); } };
   const scenario = sanitizeScenario(body.scenario);
   const collectIssue = (input) => {
     if (!env.CASES) return;
@@ -487,16 +491,30 @@ async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDe
   const revision = normalizeRevision(body.revision);
   const recordKey = savedOnCaseFailure ? null
     : await reviewRecordKey(body.accessCode, body.voteGap, body.script, scenario, cases);
-  const previous = revision && revision.previousScript !== body.script.trim()
-    ? await readDeliveredReview(env, body.accessCode, revision.reportId, body.voteGap, revision.previousScript, scenario)
-    : null;
+  let previous = null;
+  if (revision && revision.previousScript !== body.script.trim()) {
+    try { previous = await readDeliveredReview(env, body.accessCode, revision.reportId, body.voteGap, revision.previousScript, scenario); }
+    catch (err) {
+      // A history outage does not prevent judging this draft. A forged binding still fails closed.
+      if (err.status !== 503) throw err;
+      console.log("previous review read degraded");
+    }
+  }
+  const recover = async () => {
+    await phase("recovering");
+    return callReviewRecovery(env, {...DEEPSEEK_CONFIG,validateReport:validateRecoveredReview}, {voteGap:body.voteGap,script:body.script,cases,redlineHits,scenario}, deadline);
+  };
   const preparedAt = Date.now();
   let generated = false;
   const evaluate = async () => {
     if (jobDeadline && Date.now() >= jobDeadline) throw new HttpError(504, "批改任务已超时，原稿已保留，请重试。", "job deadline before model");
     generated = true;
-    // 调 DeepSeek 批改
-    const result = await callDeepSeek(env, {
+    await phase("reviewing");
+    let result, report;
+    const primaryUsage = {prompt_tokens:0,completion_tokens:0};
+    const accountUsage = usage => { for (const key of Object.keys(primaryUsage)) if (Number.isFinite(usage?.[key]) && usage[key] >= 0) primaryUsage[key] += usage[key]; };
+    try {
+      result = await callDeepSeek(env, {
       voteGap: body.voteGap,
       script: body.script,
       cases,
@@ -504,22 +522,26 @@ async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDe
       scenario,
       revision: normalizeRevision(body.revision),
       onTeachingIssue: (report, detail) => collectIssue({reason:"example_invalid",report,detail}),
-    }, null, deadline);
-
-    // 契约校验 + 缺失字段补默认值
-    const report = normalizeReport(result.report, body.script);
-
-    // 后端安全闸门：不信任模型对红线与人设卡的最终判定。
-    // 必须在学习候选闸门之前执行，避免不合格稿进入候选池。
-    applyReportSafetyGates(report, redlineHits, {
-      sourceScript: body.script,
-      scenario,
-      voteGap: body.voteGap,
-    });
+      onProgress:phase, onUsage:accountUsage,
+    }, null, primaryDeadline);
+      // guidanceOnly is an internal return flag, never a model-controlled report field.
+      report = result.guidanceOnly ? result.report : normalizeReport(result.report, body.script);
+      result.usage = primaryUsage;
+      if (!result.guidanceOnly) applyReportSafetyGates(report, redlineHits, {
+        sourceScript:body.script, scenario, voteGap:body.voteGap,
+      });
+    } catch (err) {
+      if (!env.DEEPSEEK_API_KEY || (err.status && err.status < 500)) throw err;
+      console.log(JSON.stringify({event:"coach_recovery_requested",status:err.status || 500}));
+      try { result = await recover(); report = result.report; result.usage.prompt_tokens += primaryUsage.prompt_tokens; result.usage.completion_tokens += primaryUsage.completion_tokens; }
+      catch {
+        throw new HttpError(err.status === 504 ? 504 : 503,err.status === 504 ? "教练服务本次超过等待时限，原稿已保留，请稍后再试。" : "批改服务暂时没有返回完整结果，原稿已保留，请稍后再试。","independent assessment unavailable");
+      }
+    }
 
     // 学习候选闸门：只有「过关 + 无红线 + 非人设卡」的稿子才进入候选池。
     // 自动稿不会直接参与后续检索；只有教练发布的案例才是当前判断尺子。
-    if (report.verdict === "passed" && redlineHits.length === 0 && report.card_type !== "persona") {
+    if (report.review_mode !== "focused" && report.verdict === "passed" && redlineHits.length === 0 && report.card_type !== "persona") {
       ctx.waitUntil(
         (async () => {
           try {
@@ -547,14 +569,15 @@ async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDe
   };
 
   const deliver = async () => {
-    const result = savedOnCaseFailure
+    let result = savedOnCaseFailure
       ? structuredClone(savedOnCaseFailure)
       : await reuseReview(env, recordKey, evaluate);
     const evaluatedAt = Date.now();
     let conflict = getRevisionConflict(result.report, revision, body.script, previous?.report);
     let semanticRevision = null;
+    let reconciledConflict = false;
     const lesson = previous?.report?.coaching;
-    if (!conflict && scenario?.id === NOVICE_SCENARIO.id && revision && lesson &&
+    if (!conflict && result.report.review_mode !== "focused" && scenario?.id === NOVICE_SCENARIO.id && revision && lesson &&
         previous.report.verdict !== "passed" && !provisionalAudienceProbe(lesson) &&
         revisionFocusState(result.report, lesson.focus_key) === "still_open" &&
         (assessCoachingAdoption(revision.previousScript,body.script,lesson).status === "needs_review" ||
@@ -565,7 +588,7 @@ async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDe
           previousLesson:lesson, currentIssue:{focus_key:lesson.focus_key,
             diagnosis:result.report.card_why, original:result.report.coaching?.original || "",
             evidence:result.report.structure_checks?.find(item=>item.key === lesson.focus_key)?.evidence || ""},
-        }, deadline);
+        }, deadline - 13000);
         semanticRevision = checked.check;
         result.usage.prompt_tokens = (result.usage.prompt_tokens || 0) + checked.usage.prompt_tokens;
         result.usage.completion_tokens = (result.usage.completion_tokens || 0) + checked.usage.completion_tokens;
@@ -580,7 +603,30 @@ async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDe
     if (conflict) {
       collectIssue({reason:"revision_conflict",previousScript:revision.previousScript,
         previousReport:previous.report,report:result.report,detail:conflict});
-      throw new HttpError(409, conflict, "coach example and recheck conflict");
+      reconciledConflict = true;
+      // A conflict is resolved inside this job, not saved as a permanent learner-facing failure.
+      // Recovered assessments already use the small current-draft contract, so never loop.
+      if (result.report.review_mode !== "focused") {
+        const adjudicationKey = (recordKey || historyKey) + ":revision:" + await reportDigest(previous.report.report_id);
+        result = await reuseReview(env,adjudicationKey,async () => {
+          try {
+            const corrected = await recover();
+            corrected.usage.prompt_tokens += result.usage?.prompt_tokens || 0;
+            corrected.usage.completion_tokens += result.usage?.completion_tokens || 0;
+            return {ok:true,report:corrected.report,usage:corrected.usage};
+          } catch {
+            // Retain a validated current assessment without claiming which earlier view was wrong.
+            // Scope this outcome to the immutable receipt so retries do not repeat paid arbitration.
+            console.log("revision adjudication unavailable; retaining validated current assessment");
+            return result;
+          }
+        });
+        if (result.report.review_mode === "focused") {
+          if (recordKey) await writeReviewRecord(env,recordKey,result);
+          await writeReviewRecord(env,historyKey,result,recordKey);
+        }
+      }
+      semanticRevision = null;
     }
     // This alias is only a retrieval fallback; revision comparison uses its exact receipt.
     if (!savedOnCaseFailure) await keepLatestReviewForFallback(env, historyKey, recordKey, result);
@@ -592,10 +638,25 @@ async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDe
       result.report.revision_check = {focus_key:lesson.focus_key,status:"unverified",evidence:""};
       result.report.revision_note = "你已经调整了表达；暂时无法确认上次修改是否完成，下面仅说明当前稿的问题。";
     }
+    if (reconciledConflict) {
+      const resolved = revisionFocusState(result.report,lesson.focus_key) === "resolved";
+      result.report.revision_check = {focus_key:lesson.focus_key,status:resolved ? "resolved" : "unverified",evidence:resolved ? (result.report.structure_checks?.find(item=>item.key===lesson.focus_key)?.evidence || "") : ""};
+      result.report.revision_note = resolved
+        ? "上次要求改的地方已经完成；本次结论已按当前整稿核对。"
+        : "你已经按上次建议修改，这次不计重复卡关。下面说明本次对当前稿的具体判断和修改方向。";
+    }
     const progress = nextTeachingProgress(result.report, revision && {...revision,currentScript:body.script},previous);
     if (progress?.attempts >= 3) collectIssue({reason:"repeated_focus",previousScript:revision?.previousScript,
       previousReport:previous?.report,report:result.report,detail:"同一重点连续多版仍未解决，请老师核对判断和教法。"});
-    await saveDeliveredReview(env, body.accessCode, body.voteGap, body.script, scenario, result.report, progress);
+    try { await saveDeliveredReview(env, body.accessCode, body.voteGap, body.script, scenario, result.report, progress); }
+    catch (err) {
+      if (err.status !== 503) throw err;
+      // The current judgment is complete. Losing optional history must not erase it.
+      // An absent receipt cannot later be used as trusted revision evidence.
+      result.report.report_id = crypto.randomUUID();
+      result.report.history_available = false;
+      console.log("completed review delivered without history receipt");
+    }
     console.log(JSON.stringify({event:"coach_timing", preparationMs:preparedAt-startedAt,
       evaluationMs:evaluatedAt-preparedAt, deliveryMs:Date.now()-evaluatedAt,
       totalMs:Date.now()-startedAt, generated}));
@@ -643,7 +704,7 @@ async function handleCoachJob(request, env, url, corsHeaders) {
 }
 
 export const CoachJob = coachJobClass({
-  generate:(body, env, ctx, deadline) => generateCoachReview(body, env, ctx, Date.now(), deadline),
+  generate:(body, env, ctx, deadline, onProgress) => generateCoachReview(body, env, ctx, Date.now(), deadline, onProgress),
   digest:reportDigest,
   authorize:async (env, owner) => Boolean(env.ACCESS_CODE) && await reportDigest(env.ACCESS_CODE) === owner,
   rateLimit:(env, ipHash) => checkCoachRateLimit(env, env.ACCESS_CODE, ipHash, true),
@@ -3108,7 +3169,7 @@ export function unwrapModelEnvelope(value) {
   return value;
 }
 
-async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario, revision = null, onTeachingIssue = null }, repair = null, jobDeadline = null) {
+async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario, revision = null, onTeachingIssue = null, onProgress = null, onUsage = null }, repair = null, jobDeadline = null) {
   if (!env.DEEPSEEK_API_KEY) {
     throw new HttpError(503, "服务未配置", "DeepSeek key 未配置");
   }
@@ -3121,6 +3182,7 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
     {role:"user", content:userPrompt},
   ];
   if (repair) {
+    await onProgress?.("recovering");
     messages.push({role:"assistant", content:JSON.stringify(repair.report)});
     messages.push({role:"user", content:JSON.stringify({
       task:"修正上一份报告的校验错误，返回完整JSON。原稿和现场未改变；不是要求改判通过。保持有证据的判断，重新核对相互矛盾之处。",
@@ -3194,6 +3256,7 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
       cachedPromptTokens:data?.usage?.prompt_cache_hit_tokens || 0}));
   }
 
+  onUsage?.(data?.usage);
   const content = data?.choices?.[0]?.message?.content;
   let report;
   try {
@@ -3218,20 +3281,23 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
   }
   const rawReport = structuredClone(report);
   const usage = {prompt_tokens:data?.usage?.prompt_tokens || 0,completion_tokens:data?.usage?.completion_tokens || 0};
+  const guidanceResult = () => ({report:withoutUnverifiedExample(checked),usage,guidanceOnly:true});
   const repairOrFail = async (issue, message, details = [], teachingOnly = false) => {
     // 单次请求最多修正一次，共用原来的90秒预算；不把冲突报告交给新人。
     if (!repair && deadline - Date.now() >= 20000) {
       console.log("coach report repair requested");
       try {
-        const corrected = await callDeepSeek(env, {voteGap, script, cases, redlineHits, scenario, onTeachingIssue}, {report:rawReport, issue, details, deadline, teachingOnly, expectedFocus:report.coaching?.focus_key});
+        const corrected = await callDeepSeek(env, {voteGap, script, cases, redlineHits, scenario, onTeachingIssue, onProgress, onUsage}, {report:rawReport, issue, details, deadline, teachingOnly, expectedFocus:report.coaching?.focus_key});
         corrected.usage.prompt_tokens += usage.prompt_tokens;
         corrected.usage.completion_tokens += usage.completion_tokens;
         return corrected;
       } catch (err) {
+        if (teachingOnly) return guidanceResult();
         err.retryable = false;
         throw err;
       }
     }
+    if (teachingOnly) return guidanceResult();
     const err = new HttpError(502, message, "report validation failed");
     err.retryable = false;
     throw err;
@@ -3273,18 +3339,17 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
   }
 
   if (needsExampleCheck(checked,scenario)) {
+    await onProgress?.("checking_advice");
     const revisedScript = applyCoachingEdits(script,checked.coaching);
     let result;
     try {
-      result = await callTeachingCheck(env,DEEPSEEK_CONFIG,"example",{
+      result = await callTeachingCheck(env,{...DEEPSEEK_CONFIG,onUsage},"example",{
         previousScript:script,revisedScript,focus_key:checked.coaching.focus_key,
         diagnosis:checked.card_why,edits:coachingEdits(checked.coaching),
       },deadline);
     } catch {
       onTeachingIssue?.(checked,"示范专项复核未完成，未将这份建议交付给学员。");
-      const err = new HttpError(502,"教练暂时未能核对清楚改法，这次未判分，原稿已保留，请稍后重试。","teaching example check unavailable");
-      err.retryable = false;
-      throw err;
+      return guidanceResult();
     }
     usage.prompt_tokens += result.usage.prompt_tokens;
     usage.completion_tokens += result.usage.completion_tokens;
@@ -3300,6 +3365,40 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
     report,
     usage,
   };
+}
+
+// Recovery has its own explicitly checked evidence contract. Reuse deterministic
+// source safety rules without inventing line reviews or optional mechanism fields.
+export function validateRecoveredReview(report, input) {
+  const reject = issue => { throw Object.assign(new Error("Recovery safety validation"),{recoveryIssue:issue}); };
+  const source = withoutAttributedQuotedText(input.script);
+  const begging = firstUnnegatedSignal(source,EXPLICIT_BEGGING_SIGNALS);
+  const pity = firstUnnegatedSignal(source,PITY_OR_DEPENDENCY_SIGNALS);
+  const abasement = firstSelfAbasementSignal(source);
+  const severe = abasement || (begging && (pity || firstUnnegatedSignal(source,BEGGING_REINFORCEMENT_SIGNALS)));
+  if ((begging || pity || abasement) && report.verdict === "passed") reject("原稿含明确乞求或自贬，不能通过；按原文核对并给出对应修改。");
+  if (severe && report.verdict !== "off") reject("原稿有明确自贬或叠加乞求，须核对实际姿态风险。");
+  const phase = input.scenario?.phase;
+  const phaseConflict = (phase === "awaiting_drop" && hasAdditionalClaimPressure(source)) ||
+    (phase === "delivery" && hasNewClaimPressure(source)) ||
+    (["result","post_round"].includes(phase) && hasExplicitVoteInstruction(source));
+  if (phaseConflict && report.structure_checks.find(item=>item.key==="vote_instruction")?.status === "met") reject("当前动作与已知阶段冲突，不能把它判为已满足。");
+  if (report.practice_status === "awaiting_response" && hasExplicitVoteInstruction(source)) reject("原稿仍有付费邀请，不能标为单纯等待回应。");
+  const explanations = [report.card_why,report.coaching?.why,report.coaching?.action,
+    report.interaction_review?.reading,report.interaction_review?.why,...report.structure_checks.map(item=>item.evidence)];
+  if (explanations.some(hasCertainAudienceClaim)) reject("不要断言观众心理或行为必然发生；按原文事实解释可能作用。");
+  if (hasIntroducedContentAdvice(report.coaching?.action || "",input.script+scenarioEvidenceText(input.scenario))) reject("教学不要编造原稿未说明的才艺、奖励或能力，沿原有内容给具体调整。");
+  return report;
+}
+
+// This is only called after the complete current-draft judgment has passed its gates.
+// Removing an unverified example must not remove the judgment or invent a replacement.
+export function withoutUnverifiedExample(report) {
+  const safe = structuredClone(report);
+  safe.coaching = {...safe.coaching,mode:"guidance",example:"",related_edits:[],why:safe.card_why};
+  safe.direction = {summary:safe.coaching.action,examples:[]};
+  safe.optional_polish = null;
+  return safe;
 }
 
 export function reconcileExplicitInterest(report, script, scenario) {

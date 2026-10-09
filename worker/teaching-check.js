@@ -67,6 +67,7 @@ export async function callTeachingCheck(env, config, mode, input, deadline, time
     return {check, usage:{prompt_tokens:data?.usage?.prompt_tokens || 0, completion_tokens:data?.usage?.completion_tokens || 0}};
   } finally {
     clearTimeout(timer);
+    config.onUsage?.(data?.usage);
     // Only operational metadata: no script, key, or model response in logs.
     console.log(JSON.stringify({event:"teaching_check_timing", mode, elapsedMs:Date.now()-started,
       received:Boolean(data), promptTokens:data?.usage?.prompt_tokens || 0, completionTokens:data?.usage?.completion_tokens || 0}));

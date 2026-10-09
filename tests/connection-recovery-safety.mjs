@@ -56,7 +56,7 @@ const script='我会机械舞，复活回台后你们选方向，想看就帮我
 function request(stream=false){return new Request('https://local.test/api/coach',{method:'POST',headers:{Accept:stream?'application/x-ndjson':'application/json'},body:JSON.stringify({accessCode:'local-connection-test',voteGap:'far',script,scenario:NOVICE_SCENARIO})});}
 const beforeFetch=globalThis.fetch;
 try{
- for(const streaming of [false,true])for(const [kind,status] of [['headers',502],['body-network',502],['body-timeout',504],['body-json',502],['upstream-status',502]]){
+ for(const streaming of [false,true])for(const [kind,status] of [['headers',503],['body-network',503],['body-timeout',504],['body-json',503],['upstream-status',503]]){
   globalThis.fetch=async()=>{
    if(kind==='headers')throw new TypeError('socket disconnected');
    if(kind==='upstream-status')return {ok:false,status:429,body:{cancel:async()=>{}},text(){throw Error('must not read upstream error bodies');}};

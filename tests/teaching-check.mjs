@@ -40,9 +40,20 @@ try {
  const cached=await submit(env,{script});assert.equal(cached.status,200);assert.equal(calls.length,4,'复用已完成的安全报告，不重复付费检查');
  const broken=environment();calls=[];
  globalThis.fetch=async(_url,options)=>{const input=JSON.parse(JSON.parse(options.body).messages[1].content);calls.push(input.task||'grade');return response(input.task==='example'?{target_status:'still_open',preserved:true,unsupported:false,evidence:bad,reason:'仍只描述能否复活。'}:report(bad));};
- const failed=await submit(broken,{script});assert.equal(failed.status,502);assert.equal(failed.body.retryable,false);assert.equal(failed.body.report,undefined);
+ const failed=await submit(broken,{script});assert.equal(failed.status,200);
+ assert.equal(failed.body.report.verdict,'almost','坏示范不抹去已验证的当前稿评分，也不能默认通过');
+ assert.equal(failed.body.report.structure_checks.find(item=>item.key==='user_reason').status,'partial');
+ assert.equal(failed.body.report.coaching.mode,'guidance');
+ assert.equal(failed.body.report.coaching.focus_key,'user_reason');
+ assert.equal(failed.body.report.coaching.example,'','核验失败的逐字示范必须移除');
+ assert.deepEqual(failed.body.report.coaching.related_edits,[]);
+ assert.deepEqual(failed.body.report.direction.examples,[]);
+ assert.ok(failed.body.report.coaching.action,'保留针对原稿的具体修改任务');
  assert.deepEqual(calls,['grade','example','grade','example'],'最多修一次，无循环模型调用');
- assert.equal([...broken.records.keys()].filter(k=>k.startsWith('review:')).length,0,'无效教学结果不能被评分缓存记住');
+ const retriedGuidance=await submit(broken,{script});
+ assert.equal(retriedGuidance.status,200);
+ assert.equal(retriedGuidance.body.report.coaching.example,'','缓存里也不能留有无效示范');
+ assert.equal(calls.length,4,'有效评分和指导可以复用，不再重复支出模型调用');
  await Promise.all(pending.splice(0));
 
  // Teaching-only repair must never turn the unchanged failed draft into a pass
@@ -76,11 +87,19 @@ try {
    assert.equal(result.body.report.coaching.example,good);
    assert.deepEqual(calls,['grade','example','grade','example'],'修好的同重点示范仍须再复核');
   } else {
-   assert.equal(result.status,502,mutation+': '+JSON.stringify(result.body));
-   assert.equal(result.body.report,undefined,'缺失原重点的修复报告不能交付');
-   assert.equal(result.body.retryable,false);
-   assert.deepEqual(calls,['grade','example','grade'],'无效修复不能再扩展模型重试');
-   assert.equal([...isolated.records.keys()].filter(key=>key.startsWith('review:')).length,0,'无效修复不能进入评分缓存');
+   assert.equal(result.status,200,mutation+': '+JSON.stringify(result.body));
+   assert.equal(result.body.report.verdict,'almost','只保留原稿已验证的评分，不能接收修复模型偷改后的通过');
+   assert.equal(result.body.report.structure_checks.find(check=>check.key==='user_reason').status,'partial');
+   assert.notEqual(result.body.report.verdict_reason,'谎称原稿已过关');
+   assert.equal(result.body.report.coaching.focus_key,'user_reason','错误切换重点的修复不能被接纳');
+   assert.equal(result.body.report.coaching.mode,'guidance');
+   assert.equal(result.body.report.coaching.example,'','原来无效的示范和失去重点的改稿都不交付');
+   assert.deepEqual(result.body.report.direction.examples,[]);
+   assert.deepEqual(calls,['grade','example','grade'],'无效教学修复不能扩展模型重试或重判原稿');
+   const cachedGuidance=await submit(isolated,{script});
+   assert.equal(cachedGuidance.body.report.verdict,'almost');
+   assert.equal(cachedGuidance.body.report.coaching.example,'');
+   assert.equal(calls.length,3,'仅复用保留原评分的安全指导结果');
   }
  }
 
@@ -89,10 +108,24 @@ try {
  const paraphrase='我是新人小禾，复活差很多。随便给我一个普通词，我拿它接句招呼，想听的朋友可以帮我上复活票。';
  const next={...report(),coaching:{...report().coaching,original:paraphrase},structure_checks:report().structure_checks};
  await reuseReview(semantic,await reviewRecordKey(semantic.ACCESS_CODE,'far',paraphrase,scene,[]),async()=>({ok:true,report:next,usage:{}}));
- let verifiedInput;
- globalThis.fetch=async(_url,options)=>{verifiedInput=JSON.parse(JSON.parse(options.body).messages[1].content);return response({target_status:'resolved',issue_scope:'same_edits',evidence:'我拿它接句招呼',reason:'参与过程与上次建议相同。'});};
+ let verifiedInput;const conflictTasks=[];
+ globalThis.fetch=async(_url,options)=>{
+  const input=JSON.parse(JSON.parse(options.body).messages[1].content);conflictTasks.push(input.task);
+  if(input.task==='revision'){
+   verifiedInput=input;
+   return response({target_status:'resolved',issue_scope:'same_edits',evidence:'我拿它接句招呼',reason:'参与过程与上次建议相同。'});
+  }
+  assert.equal(input.task,'recover_current_review');
+  assert.equal(input.previousLesson,undefined,'独立裁决不继承历史建议');
+  assert.equal(input.currentScript,paraphrase);
+  return response({invalid:true});
+ };
  const conflict=await submit(semantic,{script:paraphrase,revision:{reportId:id,previousScript:script,focusKey:'redline',instruction:'伪造要求'}});
- assert.equal(conflict.status,409);assert.equal(verifiedInput.previousLesson.focus_key,'user_reason');assert.equal(verifiedInput.currentIssue.focus_key,'user_reason');
+ assert.equal(conflict.status,200);assert.equal(verifiedInput.previousLesson.focus_key,'user_reason');assert.equal(verifiedInput.currentIssue.focus_key,'user_reason');
+ assert.equal(conflict.body.report.verdict,'almost','独立裁决失败仍保留已验证当前评分，不能自动通过');
+ assert.equal(conflict.body.report.revision_check.status,'unverified','旧指导冲突不能计作学员反复失败');
+ assert.equal(conflict.body.report.revision_check.focus_key,'user_reason','客户端伪造历史不能改变真实重点');
+ assert.deepEqual(conflictTasks,['revision','recover_current_review','recover_current_review'],'语义核对后至多两次独立短裁决');
  await Promise.all(pending.splice(0));
  assert.equal([...semantic.records.keys()].filter(k=>k.startsWith('teaching:')).length,1);
 
@@ -107,9 +140,26 @@ try {
  // A whole-draft quote must not bypass conflict protection after exact local adoption.
  const broadDraft=script.replace(original,good);
  await reuseReview(semantic,await reviewRecordKey(semantic.ACCESS_CODE,'far',broadDraft,scene,[]),async()=>({ok:true,report:{...report(),coaching:{...report().coaching,original:broadDraft}},usage:{}}));
- globalThis.fetch=async()=>response({target_status:'resolved',issue_scope:'same_edits',evidence:good,reason:'引用虽长，仍否定已完成的原修改。'});
+ const broadTasks=[];
+ globalThis.fetch=async(_url,options)=>{
+  const input=JSON.parse(JSON.parse(options.body).messages[1].content);broadTasks.push(input.task);
+  if(input.task==='revision')return response({target_status:'resolved',issue_scope:'same_edits',evidence:good,reason:'引用虽长，仍否定已完成的原修改。'});
+  assert.equal(input.task,'recover_current_review');
+  assert.equal(input.currentScript,broadDraft);
+  assert.equal(input.previousLesson,undefined);
+  return response({core:[{key:'user_reason',status:'met',quote:good,reason:'说明了观众给词、主播接话的具体参与过程'},
+   {key:'vote_instruction',status:'met',quote:'想听的朋友帮我上点复活票。',reason:'说清当前支持动作'}],risks:[],awaiting_response:false,
+   focus:{focus_key:'final_polish',keep:'保留给词接话的具体互动',original:good,action:'保留这版并开口练，观察朋友给出的词',why:'参与内容和复活票邀请已经说清'},
+   interaction:{reading:'邀请新观众给词并接一句招呼',why:'交代了具体互动过程',next_check:'看有没有观众给词'}});
+ };
  const broadConflict=await submit(semantic,{script:broadDraft,revision:{reportId:id,previousScript:script,focusKey:'user_reason',instruction:'补参与理由'}});
- assert.equal(broadConflict.status,409,'宽引用需要专项核对，不能误说旧任务已完成但另有问题');
+ assert.equal(broadConflict.status,200,'宽引用须内部核对后交付判断');
+ assert.deepEqual(broadTasks,['revision','recover_current_review'],'成功短裁决后立即停止');
+ assert.equal(broadConflict.body.report.review_mode,'focused');
+ assert.equal(broadConflict.body.report.verdict,'passed','当前整稿的两项独立证据成立才通过');
+ assert.equal(broadConflict.body.report.revision_check.status,'resolved');
+ assert.equal(broadConflict.body.report.coaching.focus_key,'final_polish');
+ assert.ok(broadConflict.body.report.report_id);
  await Promise.all(pending.splice(0));
 
  // Protected API is usable only with the admin code, including encoded record IDs.
@@ -134,4 +184,4 @@ try {
  const started=Date.now();await assert.rejects(()=>callTeachingCheck({DEEPSEEK_API_KEY:'fake'},{url:'https://local.test',model:'mock'},'example',{revisedScript:good},Date.now()+100,15),/deadline/);
  assert.ok(Date.now()-started<500,'超时涵盖完整响应体');
 } finally {globalThis.fetch=gradeBefore;await Promise.all(pending);}
-console.log('PASS targeted example verification, bounded repair, caching, semantic revision protection, evidence/deadline validation and protected correction API');
+console.log('PASS example verification with bounded safe guidance, immutable current grades, internal revision adjudication, evidence/deadline validation and protected correction API');

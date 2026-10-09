@@ -138,8 +138,16 @@ var CoachJobs = {
             catch (e) { var rendering = new Error("批改已完成，但页面显示失败。请刷新后取回这份结果。"); rendering.terminal = true; throw rendering; }
             CoachJobs.clear(saved.id); return;
           }
-          message(persistent ? "批改已提交，后台正在处理。刷新或重新打开本浏览器仍可取回结果。"
-            : "批改已提交。本浏览器无法保存任务编号，请保留此页面等待结果。");
+          var phaseMessages = {
+            reviewing:"教练正在批改这版话术。",
+            recovering:"正在核对这版的判断。",
+            checking_advice:"正在核对修改建议。",
+          };
+          var phaseMessage = data.state === "running" && Object.prototype.hasOwnProperty.call(phaseMessages, data.phase) ? phaseMessages[data.phase] : "";
+          message(phaseMessage
+            ? phaseMessage + (persistent ? "稍等片刻，结果会在这里显示。" : "请保留此页面等待结果。")
+            : (persistent ? "批改已提交，后台正在处理。刷新或重新打开本浏览器仍可取回结果。"
+              : "批改已提交。本浏览器无法保存任务编号，请保留此页面等待结果。"));
           await pause(2500);
         } catch (err) {
           if (!active()) return;

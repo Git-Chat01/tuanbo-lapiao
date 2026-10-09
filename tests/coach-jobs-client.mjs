@@ -79,4 +79,21 @@ for(const mode of ['body','wrong-id','render']){
  assert.equal(a.c.CoachJobs.save(older,true),false);a.c.CoachJobs.clear(older.id);
  assert.equal(a.c.CoachJobs.read().id,newer.id,'旧标签页不能覆盖或清除新任务指针');
 }
+// Internal review stages keep one immutable task and resolve to the actual report.
+{
+ const phases=['reviewing','recovering','checking_advice','future_phase','__proto__'];
+ const ids=[],urls=[];let calls=0;
+ const a=client((url,options)=>{const body=JSON.parse(options.body),id=body.jobId||url.split('/').at(-1);
+  ids.push(id);urls.push(url);const phase=phases[calls++];
+  return answer(phase?{jobId:id,state:'running',phase}:{jobId:id,state:'done',report});});
+ a.start();await until(()=>a.events.finish===1);
+ assert.equal(a.events.success.length,1);assert.equal(a.events.errors.length,0);
+ assert.equal(new Set(ids).size,1);assert.equal(urls.filter(url=>url.endsWith('/jobs')).length,1);
+ assert.match(a.events.messages[0],/正在批改这版话术/);
+ assert.match(a.events.messages[1],/正在核对这版的判断/);
+ assert.match(a.events.messages[2],/正在核对修改建议/);
+ assert.match(a.events.messages[3],/后台正在处理/);
+ assert.match(a.events.messages[4],/后台正在处理/);
+ assert.doesNotMatch(a.events.messages.join(' '),/不一致|未判分|冲突|object Object/);
+}
 console.log('PASS browser task recovery: lost acceptance, reload, offline, timeout, terminal failure, immutable revision context, cancellation and stale responses');
