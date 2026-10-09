@@ -1,4 +1,4 @@
-// 文字复盘：五项结构看进度，一轮只改一个关键缺口。
+// 文字复盘：按实际核对的项目看进度，一轮只改一个关键缺口。
 // 所有模型内容都通过 textContent 写入，避免把模型输出当成 HTML。
 
 var Report = {
@@ -260,7 +260,8 @@ var Report = {
 
   _mapStatus: function (progress, focus) {
     var challenge = Report._challengeFor(focus);
-    var total = Number(progress.applicableCount) || Report.STRUCTURE.length;
+    var total = Number.isFinite(progress.applicableCount) ? progress.applicableCount : Report.STRUCTURE.length;
+    if (progress.focused) return progress.metCount + "/" + total + " 核心要求已做到";
     return !challenge.number && progress.metCount === total
       ? (progress.applicableCount ? "本拍要求已齐 · 还有加练关" : "五项结构已齐 · 还有加练关")
       : progress.metCount + "/" + total + " 本拍已做到";
@@ -704,6 +705,7 @@ var Report = {
       totalAttempts: state.totalAttempts,
       focusAttempts: state.focusAttempts,
       isFirstResult: !previousReport,
+      focused: report.review_mode === "focused",
     };
     state.lastProgress = progress;
     return progress;
@@ -711,6 +713,17 @@ var Report = {
 
   _checks: function (report) {
     var incoming = Array.isArray(report.structure_checks) ? report.structure_checks : [];
+    // 简短复核只统计服务端实际核对过的核心项，不从总评推算其他项。
+    if (report.review_mode === "focused") {
+      return Report.STRUCTURE.filter(function (definition) {
+        return ["user_reason", "vote_instruction"].indexOf(definition.key) >= 0;
+      }).map(function (definition) {
+        var found = incoming.find(function (item) { return item && item.key === definition.key; });
+        if (!found || ["met", "partial", "missing"].indexOf(found.status) < 0) return null;
+        return {key:definition.key, label:definition.label, status:found.status,
+          evidence:typeof found.evidence === "string" ? found.evidence : ""};
+      }).filter(Boolean);
+    }
     var phase = Report._scenario().phase || "";
     var applicableByPhase = {
       interaction: ["user_reason", "vote_instruction"],
@@ -855,7 +868,7 @@ var Report = {
 
   _structureTrack: function (checks, focus) {
     var track = Report._el("div", "structure-track");
-    track.setAttribute("aria-label", "本轮五项话术结构完成情况");
+    track.setAttribute("aria-label", "本轮话术检查情况");
     checks.forEach(function (check, index) {
       var isCurrent = focus && focus.key === check.key;
       var item = Report._el(
@@ -876,7 +889,7 @@ var Report = {
   _challengeMap: function (checks, focus, progress) {
     var map = Report._el("section", "challenge-map");
     var head = Report._el("div", "challenge-map__head");
-    head.appendChild(Report._el("strong", null, "你的能力地图"));
+    head.appendChild(Report._el("strong", null, progress.focused ? "这版的核心要求" : "你的能力地图"));
     head.appendChild(Report._el("span", null, Report._mapStatus(progress, focus)));
     map.appendChild(head);
 
@@ -920,12 +933,16 @@ var Report = {
     var value = report && report.coaching;
     if (!value || !focus || value.focus_key !== focus.key) return null;
     // 与服务端的有效短带教范围一致，不能把已验证的解释静默丢掉。
-    var limits = { keep: 120, original: 200, action: 120, example: 160, why: 160 };
+    var guidanceOnly = value.mode === "guidance";
+    var limits = { keep: 120, original: 200, action: 120, why: guidanceOnly ? 180 : 160 };
+    if (!guidanceOnly) limits.example = 160;
+    if (guidanceOnly && (value.example !== "" || !Array.isArray(value.related_edits) || value.related_edits.length)) return null;
     if (!Object.keys(limits).every(function (key) {
       return typeof value[key] === "string" && value[key].trim() && Array.from(value[key]).length <= limits[key];
     })) return null;
     var source = App.state.lastRequest && App.state.lastRequest.script;
     if (!source || source.replace(/\s/g, "").indexOf(value.original.replace(/\s/g, "")) < 0) return null;
+    if (guidanceOnly) return value;
     if (value.related_edits != null) {
       if (!Array.isArray(value.related_edits) || value.related_edits.length > 4) return null;
       var spans = [{original:value.original,example:value.example}].concat(value.related_edits);
@@ -953,7 +970,7 @@ var Report = {
       paper.appendChild(Report._challengeRow("你的原话", coaching.original, "challenge-card__row--evidence"));
       paper.appendChild(Report._challengeRow("问题在哪里", (report.interaction_review && report.interaction_review.judgment === "misread" ? report.interaction_review.reading : report.card_why) || Report._focusWhy(report, focus)));
       paper.appendChild(Report._challengeRow("这次只改", coaching.action, "challenge-card__row--solution"));
-      paper.appendChild(Report._challengeRow("可以这样说", coaching.example, "challenge-card__row--specific"));
+      if (coaching.mode !== "guidance") paper.appendChild(Report._challengeRow("可以这样说", coaching.example, "challenge-card__row--specific"));
       (coaching.related_edits || []).forEach(function(edit,index) {
         paper.appendChild(Report._challengeRow("同类问题 · 第 " + (index + 2) + " 处原话", edit.original, "challenge-card__row--evidence"));
         paper.appendChild(Report._challengeRow("这一处一起改", edit.example || "删掉这句，其他内容保留。", "challenge-card__row--specific"));
@@ -1031,7 +1048,7 @@ var Report = {
   _helpPanel: function (report, focus, progress) {
     var challenge = Report._challengeFor(focus);
     var coaching = Report._coachingFor(report, focus);
-    if (coaching && Report._shouldOpenHelp(progress)) {
+    if (coaching && coaching.mode !== "guidance" && Report._shouldOpenHelp(progress)) {
       var comparison = Report._el("section", "challenge-help challenge-help--open");
       comparison.appendChild(Report._el("span", "challenge-help__eyebrow", "同一个问题，再换个角度看"));
       comparison.appendChild(Report._el("h3", null, "把这两句连着看，重点是意思怎么变了"));
@@ -1043,7 +1060,7 @@ var Report = {
       return comparison;
     }
     var helpItems = Report._scenario().id === "novice-revival-far-v1" && coaching
-      ? ["先保留原稿里已经说清的部分，把上面列出的同类问题一起改好。", coaching.action + " 改后对照上面的解释，再连起来念一遍。"]
+      ? [coaching.mode === "guidance" ? coaching.keep : "先保留原稿里已经说清的部分，把上面列出的同类问题一起改好。", coaching.action + " 改后对照上面的解释，再连起来念一遍。"]
       : Report._helpItemsFor(report, focus);
     if (!helpItems.length) return null;
 
@@ -1074,6 +1091,7 @@ var Report = {
   // 预览只拼合可唯一定位且不重叠的原句，绝不猜测替换位置或重写其他内容。
   _coachingPreview: function (source, coaching) {
     if (typeof source !== "string" || !source.trim() || source.length > LIMITS.scriptMax || !coaching) return null;
+    if (coaching.mode === "guidance") return null;
     if (coaching.related_edits != null && (!Array.isArray(coaching.related_edits) || coaching.related_edits.length > 4)) return null;
     var edits = [{original:coaching.original, example:coaching.example}].concat(coaching.related_edits || []);
     var ranges = [];
@@ -1301,7 +1319,7 @@ var Report = {
 
   _fullReview: function (report, checks, focus) {
     var details = Report._el("details", "review-details");
-    details.appendChild(Report._el("summary", null, "为什么这样判断 · 查看完整复盘"));
+    details.appendChild(Report._el("summary", null, report.review_mode === "focused" ? "为什么这样判断 · 查看核心依据" : "为什么这样判断 · 查看完整复盘"));
 
     if (report.audience) {
       var audience = Report._el("p");
@@ -1320,7 +1338,7 @@ var Report = {
     });
     details.appendChild(structureList);
 
-    var reviews = Array.isArray(report.line_reviews) ? report.line_reviews : [];
+    var reviews = report.review_mode !== "focused" && Array.isArray(report.line_reviews) ? report.line_reviews : [];
     if (reviews.length) {
       details.appendChild(Report._el("p", null, "逐句看："));
       details.appendChild(Report._lineReviewList(reviews, focus));
@@ -1479,7 +1497,7 @@ var Report = {
     }
     var section = Report._roundDynamics(report);
     if (!section) {
-      root.hidden = true;
+      root.hidden = !root.children.length;
       return;
     }
     var details = Report._el("details", "review-details");
@@ -1517,8 +1535,8 @@ var Report = {
     }
 
     var head = Report._el("div", "passed-structure-summary__head");
-    head.appendChild(Report._el("strong", null, "本轮能力状态"));
-    head.appendChild(Report._el("span", null, progress.metCount + "/" + progress.applicableCount + " 本拍已做到"));
+    head.appendChild(Report._el("strong", null, progress.focused ? "这版的核心要求" : "本轮能力状态"));
+    head.appendChild(Report._el("span", null, progress.metCount + "/" + progress.applicableCount + (progress.focused ? " 核心要求已做到" : " 本拍已做到")));
     root.appendChild(head);
     root.appendChild(Report._structureTrack(checks, null));
     root.hidden = false;
