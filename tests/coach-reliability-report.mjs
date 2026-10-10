@@ -1,0 +1,37 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {authHeaders,projectEvent,summarizeEvents,queryReliability,WORKER} from '../scripts/coach-reliability.mjs';
+const id=()=>crypto.randomUUID(),version='2026-10-09-storage-bounds-1';
+const event=(jobId,lifecycle,state='running',extra={})=>({$metadata:{id:id(),service:WORKER},timestamp:1,source:{event:'coach_job',schemaVersion:1,jobId,serviceVersion:version,lifecycle,state,
+ status:state==='done'?200:state==='failed'?503:202,reason:state==='done'?'completed':state==='failed'?'generation_failed':'accepted',phase:'reviewing',totalMs:12000,...extra}});
+const a=id(),b=id(),c=id(),d=id();const done=event(a,'terminal','done');
+let summary=summarizeEvents([event(a,'admitted'),done,done,event(b,'terminal','failed'),event(c,'started')]);
+assert.equal(summary.observedJobs,3);assert.equal(summary.observedTerminal,2);assert.equal(summary.succeeded,1);assert.equal(summary.failed,1);assert.equal(summary.unknown,1);assert.equal(summary.observedTerminalSuccessRate,.5);assert.equal(summary.terminalWithoutAdmission,1);
+assert.equal(summary.successTiming.p95Ms,12000);
+summary=summarizeEvents([done,event(a,'terminal','failed'),event(b,'terminal','done',{totalMs:null}),event(c,'terminal','done',{totalMs:70000}),event(d,'persistence_failed')]);
+assert.equal(summary.conflictingTerminal,1);assert.equal(summary.succeeded,2);assert.equal(summary.unknown,2);assert.equal(summary.persistenceFailureJobs,1);assert.equal(summary.successTiming.count,1);assert.equal(summary.successTiming.over60s,1);
+assert.equal(summarizeEvents([]).observedTerminalSuccessRate,null);assert.equal(summarizeEvents([]).status,'no_data');assert.equal(summarizeEvents([done],{complete:false}).status,'incomplete');
+assert.equal(summarizeEvents([done],{serviceVersion:'old'}).status,'no_data');
+assert.equal(projectEvent(event(a,'terminal','done',{status:500})),null);
+assert.equal(projectEvent({source:'bad PRIVATE_RAW'}),null);
+assert.equal(projectEvent({...done,source:JSON.stringify(done.source)}).state,'done');
+const privateEvent=event(a,'terminal','failed',{script:'PRIVATE_DRAFT',reason:'PRIVATE_PROVIDER_ERROR',phase:'PRIVATE_STAGE',owner:'PRIVATE_OWNER'});
+assert.doesNotMatch(JSON.stringify(summarizeEvents([privateEvent])),/PRIVATE_/);
+const accountId='a'.repeat(32),settings={result:{observability:{logs:{enabled:true,persist:true,head_sampling_rate:1}}}};
+let queries=[];
+const request=async(path,body)=>{queries.push({path,body});if(path.endsWith('/settings'))return settings;
+ const rows=queries.length===2?[event(a,'admitted'),done]:[event(b,'terminal','failed')];return {result:{events:{count:3,events:rows}}};};
+summary=await queryReliability({request,accountId,now:100000000,hours:1,pageSize:2});
+assert.equal(summary.status,'observed');assert.equal(summary.failed,1);assert.equal(summary.observedJobs,2);assert.equal(queries.length,3);
+assert.equal(queries[1].body.dry,true);assert.equal(queries[2].body.offsetDirection,'next');assert.ok(queries[2].body.offset);assert.equal(queries[1].body.parameters.filters[0].value,WORKER);
+summary=await queryReliability({request:async()=>({result:{observability:null}}),accountId});assert.equal(summary.status,'unavailable');assert.equal(summary.observedTerminalSuccessRate,undefined);
+summary=await queryReliability({request:async(path)=>path.endsWith('/settings')?settings:{result:{events:{events:[],count:0}}},accountId});assert.equal(summary.status,'no_data');
+summary=await queryReliability({request:async(path)=>path.endsWith('/settings')?settings:{result:{events:{events:[done,done],count:9}}},accountId,pageSize:2,maxPages:1});assert.equal(summary.status,'incomplete');assert.equal(summary.succeeded,1);
+await assert.rejects(queryReliability({request:async(path)=>path.endsWith('/settings')?settings:{result:{}},accountId}),/format/);
+await assert.rejects(queryReliability({request,accountId,hours:0}));
+assert.deepEqual(authHeaders(()=>JSON.stringify({token:'fake-token'})),{Authorization:'Bearer fake-token'});
+let error;try{authHeaders(()=>{throw new Error('PRIVATE_TOKEN_IN_STDERR');});}catch(e){error=e;}
+assert.doesNotMatch(error.message,/PRIVATE_/);assert.match(error.message,/authentication/);
+const config=JSON.parse(readFileSync(new URL('../wrangler.jsonc',import.meta.url),'utf8').replace(/^\s*\/\/.*$/mg,''));
+assert.equal(config.observability.logs.enabled,true);assert.equal(config.observability.logs.head_sampling_rate,1);assert.equal(config.observability.logs.persist,true);assert.equal(config.observability.logs.invocation_logs,false);
+console.log('PASS reliability reporting: real task outcomes, dedupe, unknown/empty/incomplete data, safe projection, pagination and credential handling');

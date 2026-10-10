@@ -56,11 +56,15 @@ jobs:
           node tests/revision-progress.mjs
           node tests/revision-preview.mjs
           node tests/teaching-check.mjs
+          node tests/judgment-evidence.mjs
           node tests/teaching-reviews.mjs
           node tests/teaching-review-ui.mjs
           node tests/review-recovery.mjs
           node tests/review-recovery-route.mjs
           node tests/review-recovery-ui.mjs
+          node tests/storage-deadline-safety.mjs
+          node tests/coach-jobs-observability.mjs
+          node tests/coach-reliability-report.mjs
 
   deploy:
     needs: test

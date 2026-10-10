@@ -29,3 +29,8 @@ Alarms 是至少一次执行。若平台在模型执行期间重启，无法证�
 发布顺序：先部署 `wrangler.jsonc` 的 `COACH_JOBS` 绑定和 `coach-jobs-v1` SQLite migration，再检查健康接口 `serviceVersion=2026-10-05-durable-jobs-1`，最后发布前端。新页面需要新接口，不能先上线页面。旧接口不移除，因此后端先更新不影响现有页面。后续回滚应保留新 DO 类及绑定，避免遗留任务失去读取入口。
 
 平台语义参考：[Durable Object Alarms](https://developers.cloudflare.com/durable-objects/api/alarms/)、[SQLite storage transactions](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)。
+
+
+## 2026-10-09 有界等待与真实任务统计
+
+附属存储、回执、进度和限流已增加独立等待上限；具体降级边界、任务日志字段、只读统计命令及发布验收见 [可靠性运维说明](./reliability-operations.md)。旧版耗时样本仅供对照，不代表本版本线上成功率。

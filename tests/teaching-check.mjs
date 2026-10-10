@@ -103,6 +103,64 @@ try {
   }
  }
 
+ // Every suggested change is checked, including a correct content idea with a missing vote action.
+ const actionScript='我是新人小禾，复活差很多。回台我讲一个今天的小糗事，你们选听开头还是结尾。';
+ const actionOriginal='回台我讲一个今天的小糗事，你们选听开头还是结尾。';
+ const actionExample=actionOriginal+'想听的朋友，方便就帮我上点复活票。';
+ for(const checkFailure of ['still_open','lost_content','invented_ability']) {
+  const actionEnv=environment();calls=[];
+  globalThis.fetch=async(_url,options)=>{
+   const payload=JSON.parse(options.body); const input=JSON.parse(payload.messages[1].content);calls.push(input.task||'grade');
+   if(input.task==='example') {
+    assert.equal(input.focus_key,'vote_instruction','补动作也必须检查，不能只检查参与理由');
+    assert.equal(input.revisedScript,actionScript.replace(actionOriginal,actionExample));
+    return response({target_status:checkFailure==='still_open'?'still_open':'resolved',
+     preserved:checkFailure!=='lost_content',unsupported:checkFailure==='invented_ability',
+     evidence:actionExample,reason:'专项检查发现示范仍有未解决的问题。'});
+   }
+   const value=report(actionExample);
+   value.card_why='已有小糗事内容，但还没说清希望观众怎样帮忙复活。';
+   value.verdict_reason='补一个明确的复活支持动作。';
+   value.coaching={focus_key:'vote_instruction',original:actionOriginal,example:actionExample,
+    keep:'保留小糗事和观众选择。',action:'在小糗事邀请后接复活支持动作。',why:'原来只给了节目选择，修改后说明怎样帮忙复活。'};
+   value.line_reviews=splitHardSentences(actionScript).map(original=>({original,mark:'good',comment:'保留已有的小糗事内容。'}));
+   value.structure_checks.forEach(item=>{item.status=item.key==='vote_instruction'?'partial':'met';item.evidence=actionOriginal;});
+   value.interaction_review={signal_refs:['script:1'],script_refs:[1],judgment:'aligned',reading:'邀请观众选择小糗事的讲法。',why:'有内容和选择，尚缺复活动作。',next_check:'看观众选择。'};
+   return response(value);
+  };
+  const result=await submit(actionEnv,{script:actionScript});
+  assert.equal(result.status,200,JSON.stringify(result.body));
+  assert.equal(result.body.report.verdict,'almost','示范失效不抹去有效的原稿判断');
+  assert.equal(result.body.report.coaching.focus_key,'vote_instruction');
+  assert.equal(result.body.report.coaching.example,'','未解决目标、丢内容、造能力的示范都不能交付');
+  assert.equal(result.body.report.coaching.mode,'guidance');
+  assert.deepEqual(calls,['grade','example','grade','example'],'所有修改重点沿用同一个有界调用次数');
+ }
+
+ // Citation repair must not consume the only repair before an invalid example is checked.
+ for(const unavailableCheck of [false,true]) {
+  const combinedEnv=environment();calls=[];let repairInput;
+  globalThis.fetch=async(_url,options)=>{
+   const payload=JSON.parse(options.body),input=JSON.parse(payload.messages[1].content);calls.push(input.task||'grade');
+   if(input.task==='example') {
+    const stillBad=input.revisedScript.includes(bad);
+    if(unavailableCheck && stillBad)throw Error('synthetic check unavailable');
+    return response({target_status:stillBad?'still_open':'resolved',preserved:true,unsupported:false,
+     evidence:stillBad?bad:good,reason:stillBad?'仍只说能不能复活，没有具体参与过程。':'提供了具体接词过程。'});
+   }
+   const first=calls.filter(x=>x==='grade').length===1;
+   if(!first)repairInput=JSON.parse(payload.messages.at(-1).content);
+   return response({...report(first?bad:good),...(first?{card_why:'你说了“并不存在的四个承诺”'}:{})});
+  };
+  const result=await submit(combinedEnv,{script});
+  assert.equal(result.status,200,JSON.stringify(result.body));
+  assert.equal(result.body.report.verdict,'almost');assert.equal(result.body.report.coaching.example,good);
+  assert.deepEqual(calls,['grade','example','grade','example'],'一次修复同时解决引文与示范，不再多重生成');
+  assert.match(repairInput.validationIssue,/不存在的原句/);
+  if(!unavailableCheck)assert.match(repairInput.validationIssue,/示范专项复核未通过/);
+  assert.doesNotMatch(result.body.report.card_why,/并不存在的四个承诺/,'专项复核不可用也不能把坏判断交付出去');
+ }
+
  // Same-meaning paraphrases use the actual delivered receipt, never forged client advice.
  const semantic=environment();const previous=report();const id=await saveDeliveredReview(semantic,semantic.ACCESS_CODE,'far',script,scene,previous);
  const paraphrase='我是新人小禾，复活差很多。随便给我一个普通词，我拿它接句招呼，想听的朋友可以帮我上复活票。';
@@ -180,6 +238,10 @@ try {
  assert.equal(needsExampleCheck({...report(),verdict:'passed'},NOVICE_SCENARIO),false);
  assert.equal(needsExampleCheck({...report(),practice_status:'awaiting_response'},NOVICE_SCENARIO),false);
  assert.equal(needsExampleCheck(report(),null),false);
+ for(const focus_key of ['vote_instruction','line_angle','mentality','redline','persona'])
+  assert.equal(needsExampleCheck({...report(),coaching:{...report().coaching,focus_key}},NOVICE_SCENARIO),true);
+ assert.equal(needsExampleCheck({...report(),coaching:{...report().coaching,mode:'guidance',example:''}},NOVICE_SCENARIO),false);
+
  globalThis.fetch=async()=>({ok:true,json:()=>new Promise(()=>{})});
  const started=Date.now();await assert.rejects(()=>callTeachingCheck({DEEPSEEK_API_KEY:'fake'},{url:'https://local.test',model:'mock'},'example',{revisedScript:good},Date.now()+100,15),/deadline/);
  assert.ok(Date.now()-started<500,'超时涵盖完整响应体');

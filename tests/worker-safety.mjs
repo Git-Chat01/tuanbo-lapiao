@@ -2536,8 +2536,7 @@ const normalizedAiEvidence = index.normalizeReport(
   }),
   aiPhraseSource
 );
-assert.match(normalizedAiEvidence.ai_flavor, /怀揣舞台梦想/);
-assert.match(normalizedAiEvidence.ai_flavor, /点燃这个舞台/);
+assert.equal(normalizedAiEvidence.ai_flavor, "整体像舞台腔", "程序不能用关键词替模型补人设证据");
 
 const scriptedSpeechSource =
   "虽然有点紧张，但既然站在这里，我就会努力到最后一刻。你投的每一票，都是推着我往前的力量。";
@@ -2551,8 +2550,7 @@ const normalizedScriptedSpeechEvidence = index.normalizeReport(
   }),
   scriptedSpeechSource
 );
-assert.match(normalizedScriptedSpeechEvidence.ai_flavor, /既然站在这里/);
-assert.match(normalizedScriptedSpeechEvidence.ai_flavor, /努力到最后一刻/);
+assert.equal(normalizedScriptedSpeechEvidence.ai_flavor, "整段像事先写好的小作文", "没有真实双处引用就保留证据缺失，交回核对");
 
 // 完整走一次 /api/coach：旧 body 仍 200；新 scenario 作为清洗后的第 5 参传给 prompt。
 const baseScript = "我是小夏，凯哥谢谢你刚才的小心心，凯哥你想看撒娇我现在来一个，你愿意就上几张，我还差十票，家人们一人补一点。";
@@ -3497,7 +3495,8 @@ assert.match(
     for(const streaming of [false,true]) for(const mode of ['full_repair','short_recovery','all_fail']) {
       const requests=[];
       const taskOf=request=>{try{return JSON.parse(request.messages[1].content).task;}catch{return undefined;}};
-      const invalid={...structuredClone(upstreamReport),card_why:"你说了“完全不存在的另一段话”"};
+      const invalid=structuredClone(upstreamReport);
+      invalid.line_reviews[0].comment="你说了“完全不存在的另一段话”";
       const recovered={
         core:[{key:'user_reason',status:'met',quote:'凯哥你想看撒娇我现在来一个',reason:'承接了具体内容意愿'},
           {key:'vote_instruction',status:'partial',quote:'你愿意就上几张',reason:'还需说清是复活票'}],
@@ -3524,7 +3523,7 @@ assert.match(
       assert.equal(recoveryRequests.length,mode==='full_repair'?0:2,"独立短恢复至多两次，成功后立即停止");
       assert.equal(requests[1].messages[1].content,requests[0].messages[1].content,"修正不改变原稿与现场");
       assert.match(requests[1].messages.at(-1).content,/点评引用了当前稿或现场不存在的原句/);
-      assert.deepEqual(JSON.parse(requests[1].messages.at(-1).content).invalidFields.map(item=>[item.field,item.quote]),[["card_why","完全不存在的另一段话"]],"修正必须定位到具体字段和错误引用");
+      assert.deepEqual(JSON.parse(requests[1].messages.at(-1).content).invalidFields.map(item=>[item.field,item.quote]),[["line_reviews[0].comment","完全不存在的另一段话"]],"修正必须定位到具体字段和错误引用");
       for(const request of recoveryRequests){
         assert.ok(request.messages.length>=2&&request.messages.length<=3,'恢复只允许原始输入和一条受控契约提示');
         assert.equal(request.messages.some(item=>item.role==='assistant'),false,'恢复不继承无效报告正文');
@@ -3659,7 +3658,7 @@ assert.match(
   globalThis.fetch=async()=>{
     modelCalls++;
     const report=structuredClone(upstreamReport);
-    report.verdict_reason=`本次批改 ${modelCalls}`;
+    report.echo=`本次批改 ${modelCalls}`;
     report.line_reviews=[{original:globalThis.__lastBuildUserPromptArgs[1],mark:"good",comment:"当前邀请成立。"}];
     return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify(report)}}],usage:{prompt_tokens:1,completion_tokens:1}}),{status:200});
   };
@@ -3674,17 +3673,17 @@ assert.match(
   try{
     globalThis.__retrievedCases=[{source:"manual",whyGood:"公开经验甲"}];
     const initial=await submit(baseScript);
-    assert.equal(initial.report.verdict_reason,"本次批改 1");
+    assert.equal(initial.report.echo,"本次批改 1");
     assert.equal(modelCalls,1);
     globalThis.__retrievedCases=[{source:"manual",whyGood:"公开经验乙"}];
     const refreshed=await submit(baseScript);
-    assert.equal(refreshed.report.verdict_reason,"本次批改 2","新发布经验须得到新报告");
+    assert.equal(refreshed.report.echo,"本次批改 2","新发布经验须得到新报告");
     assert.equal(modelCalls,2);
     const aliasKey=await index.reviewRecordKey(env.ACCESS_CODE,"close",baseScript,null);
     const selectedKey=await index.reviewRecordKey(env.ACCESS_CODE,"close",baseScript,null,globalThis.__retrievedCases);
     assert.equal(JSON.parse(env.CASES.values.get(aliasKey)).sourceKey,selectedKey,"历史别名应记录当前案例指纹");
     const aliasWritesAfterRefresh=env.CASES.putKeys.filter(key=>key===aliasKey).length;
-    assert.equal((await submit(baseScript)).report.verdict_reason,"本次批改 2");
+    assert.equal((await submit(baseScript)).report.echo,"本次批改 2");
     assert.equal(modelCalls,2,"经验未变时同稿仍复用缓存");
     assert.equal(env.CASES.putKeys.filter(key=>key===aliasKey).length,aliasWritesAfterRefresh,
       "同一版本的缓存命中不应反复写历史别名");
@@ -3703,7 +3702,7 @@ assert.match(
     assert.equal(modelCalls,3,"新稿检索故障应进行一次新判断");
     globalThis.__retrieveCasesError=false;
     const historyKey=await index.reviewRecordKey(env.ACCESS_CODE,"close",baseScript,null);
-    assert.equal((await index.readReviewRecord(env,historyKey)).report.verdict_reason,"本次批改 2","降级别名指向此稿最近生成的报告");
+    assert.equal((await index.readReviewRecord(env,historyKey)).report.echo,"本次批改 2","降级别名指向此稿最近生成的报告");
     const revisedScript=baseScript.replace("我还差十票","我现在还差十票");
     const revised=await submit(revisedScript,{reportId:refreshed.report.report_id,previousScript:baseScript,focusKey:"user_reason",instruction:"接住观众兴趣"});
     assert.deepEqual(revised.report.revision_check?.focus_key,"user_reason");

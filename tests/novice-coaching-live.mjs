@@ -29,12 +29,12 @@ globalThis.fetch=async(url,options)=>{
  const modelStarted=Date.now();
  const response=await originalFetch(url,options);
  const prompt=JSON.parse(JSON.parse(options.body).messages[1].content);
- const traceLabel=traceLabels.get(prompt.currentScript);
- const fixture=traceLabel?{id:traceLabel,script:prompt.currentScript}:null;
+ const traceLabel=traceLabels.get(prompt.currentScript || prompt.previousScript || prompt.revisedScript);
+ const fixture=traceLabel?{id:traceLabel,script:prompt.currentScript || prompt.previousScript || prompt.revisedScript}:null;
  if(fixture){
   const n=(rawCounts.get(fixture.id)||0)+1;rawCounts.set(fixture.id,n);
   const data=await response.clone().json();
-  await writeFile(new URL('tmp_results/novice-raw-'+(label?label+'-':'')+fixture.id+'-'+n+'.json',import.meta.url),JSON.stringify({script:fixture.script,report:data.choices?.[0]?.message?.content,ms:Date.now()-modelStarted,usage:data.usage},null,2));
+  await writeFile(new URL('tmp_results/novice-raw-'+(label?label+'-':'')+fixture.id+'-'+n+'.json',import.meta.url),JSON.stringify({script:fixture.script,task:prompt.task || "grade",report:data.choices?.[0]?.message?.content,ms:Date.now()-modelStarted,usage:data.usage,repair:JSON.parse(options.body).messages.slice(2).filter(m=>m.role==="user").map(m=>m.content)},null,2));
  }
  return response;
 };

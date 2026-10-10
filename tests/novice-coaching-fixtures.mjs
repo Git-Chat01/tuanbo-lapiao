@@ -123,3 +123,10 @@ noviceCoachingFixtures.push({
  passed:false,recheck:true,
  lesson:'评论和记名只有动作，没有具体讲述、表演或有内容的回应；不能把记住陌生观众本身默认当成足够的复活理由。'
 });
+
+// Regression from an actual synthetic teacher edit: both graders must use the whole draft.
+noviceCoachingFixtures.push({
+ id:'context-linked-continuation',group:'cross-sentence-context',
+ script:'我是新人小满，刚被刀下去了，复活还差很多。你们扣个满字，我念到谁的名字，谁就丢个词给我，我当场接一句；想让我留在这儿的，把票补上，我接着念下一个。',
+ passed:true,lesson:'已经给出出词接句的具体过程，并承接继续这一过程；不能截断上下文或要求票种、单位、精确缺口。'
+});

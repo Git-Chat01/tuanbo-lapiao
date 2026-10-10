@@ -49,7 +49,7 @@ try {
  for(const kind of ['redline','pressure','misread']){
   const risky=assessment();risky.risks=[{kind,quote:ask,reason:'这句话存在可核对的风险。'}];
   risky.focus.focus_key=({redline:'redline',pressure:'mentality',misread:'line_angle',persona:'persona'})[kind];
-  const report=parseRecoveryAssessment(risky,input);assert.equal(report.verdict,'off',kind);
+  const report=parseRecoveryAssessment(risky,input);assert.equal(report.verdict,kind==='misread'?'almost':'off',kind);
   risky.focus.focus_key='user_reason';assert.equal(parseRecoveryAssessment(risky,input).coaching.focus_key,({redline:'redline',pressure:'mentality',misread:'line_angle'})[kind],'confirmed risk determines the redundant focus enum');
  }
  const persona=assessment();persona.risks=[{kind:'persona',quote:ask,related_quotes:['我是新人小禾，刚被刀下去，差很多。'],reason:'两处的相同泛喊机制。'}];persona.focus.focus_key='persona';

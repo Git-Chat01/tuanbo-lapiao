@@ -18,6 +18,8 @@ import {
 } from "./cases.js";
 import { detectRedline } from "./redlines.js";
 import { coachJobClass } from "./coach-jobs.js";
+import { boundedDependency } from "./deadline.js";
+import { getJudgmentEvidenceIssue, getNoviceRequirementIssue } from "./judgment-evidence.js";
 import { assessCoachingAdoption, normalizeCoachingText } from "./revision-consistency.js";
 import { callReviewRecovery, RECOVERY_REVIEW_VERSION } from "./review-recovery.js";
 import { needsExampleCheck, callTeachingCheck, exampleCheckPassed, TEACHING_CHECK_VERSION } from "./teaching-check.js";
@@ -196,11 +198,14 @@ const DEEPSEEK_CONFIG = {
 
 // 修改评分、安全闸门或案例标准时递增；提示词和模型配置也参与指纹。
 // 只复用已完成的检查，不用缓存把一个未经验证的模型输出变成标准答案。
-const REVIEW_VERSION = "2026-10-08-review-recovery-1";
+const REVIEW_VERSION = "2026-10-09-judgment-evidence-1";
 // Transport-only releases must not invalidate completed grading results.
-const SERVICE_VERSION = "2026-10-08-recovery-1";
+const SERVICE_VERSION = "2026-10-09-judgment-evidence-1";
 const REVIEW_TTL_SECONDS = 7 * 24 * 60 * 60;
 const reviewStores = new WeakMap();
+// These dependencies improve reuse/history but are not allowed to erase or delay
+// a completed judgment indefinitely. The shared request deadline is an upper cap.
+const SUPPORT_WAIT_MS = {cases:1500, cacheRead:750, cacheWrite:500, receipt:1200, progress:200, admission:1500};
 
 // Match buildUserPrompt's actual referenceLessons projection. Only the selected,
 // published lesson text can change the model input; case metadata cannot.
@@ -237,39 +242,52 @@ async function reportStub(env, accessCode, reportId) {
 async function reportContext(voteGap, script, scenario) {
   return reportDigest([voteGap, script.trim(), scenario || null]);
 }
-export async function saveDeliveredReview(env, accessCode, voteGap, script, scenario, report, teachingProgress = null) {
+export async function saveDeliveredReview(env, accessCode, voteGap, script, scenario, report, teachingProgress = null, deadline = Infinity) {
   const reportId = crypto.randomUUID();
-  const record = { schema: 1, expiresAt: Date.now() + REVIEW_TTL_SECONDS * 1000,
-    context: await reportContext(voteGap, script, scenario), report: {...report, report_id: reportId}, teachingProgress };
+  // Snapshot before async work; a late PUT may create an orphan receipt, but it
+  // cannot change the ID/history status of the report already sent to a learner.
+  const reportSnapshot = structuredClone(report);
+  const progressSnapshot = structuredClone(teachingProgress);
   try {
-    const stub = await reportStub(env, accessCode, reportId);
-    const response = await stub.fetch(new Request("https://limiter.internal/report", {
-      method: "PUT", headers: {"Content-Type":"application/json"}, body: JSON.stringify(record),
-    }));
-    if (response.status !== 201) throw new Error("receipt storage failed");
+    await boundedDependency("receipt_write", async signal => {
+      const record = { schema: 1, expiresAt: Date.now() + REVIEW_TTL_SECONDS * 1000,
+        context: await reportContext(voteGap, script, scenario), report: {...reportSnapshot, report_id: reportId}, teachingProgress:progressSnapshot };
+      if (signal.aborted) throw new Error("receipt deadline");
+      const stub = await reportStub(env, accessCode, reportId);
+      if (signal.aborted) throw new Error("receipt deadline");
+      const response = await stub.fetch(new Request("https://limiter.internal/report", {
+        method: "PUT", headers: {"Content-Type":"application/json"}, body: JSON.stringify(record), signal,
+      }));
+      if (response.status !== 201) throw new Error("receipt storage failed");
+      response.body?.cancel().catch(() => {});
+    }, SUPPORT_WAIT_MS.receipt, deadline);
   } catch {
     throw new HttpError(503, "报告暂时未能保存，请重试；已完成的批改会优先复用", "report receipt unavailable");
   }
   report.report_id = reportId;
   return reportId;
 }
-export async function readDeliveredReview(env, accessCode, reportId, voteGap, script, scenario) {
+export async function readDeliveredReview(env, accessCode, reportId, voteGap, script, scenario, deadline = Infinity) {
   if (!reportId) return null; // Old clients never fall back to someone else's latest report.
   let record;
   try {
-    const stub = await reportStub(env, accessCode, reportId);
-    const response = await stub.fetch(new Request("https://limiter.internal/report"));
-    if (response.status === 404) return null;
-    if (!response.ok) throw new Error("receipt read failed");
-    record = await response.json();
-    if (record?.schema !== 1 || record.report?.report_id !== reportId ||
-        !VERDICT_ENUM.includes(record.report?.verdict) || !Number.isSafeInteger(record.expiresAt)) {
-      throw new Error("invalid receipt");
-    }
+    record = await boundedDependency("receipt_read", async signal => {
+      const stub = await reportStub(env, accessCode, reportId);
+      if (signal.aborted) throw new Error("receipt deadline");
+      const response = await stub.fetch(new Request("https://limiter.internal/report", {signal}));
+      if (response.status === 404) { response.body?.cancel().catch(() => {}); return null; }
+      if (!response.ok) { response.body?.cancel().catch(() => {}); throw new Error("receipt read failed"); }
+      const value = await response.json(); // Body reception is inside the same deadline.
+      if (value?.schema !== 1 || value.report?.report_id !== reportId ||
+          !VERDICT_ENUM.includes(value.report?.verdict) || !Number.isSafeInteger(value.expiresAt)) {
+        throw new Error("invalid receipt");
+      }
+      return value;
+    }, SUPPORT_WAIT_MS.receipt, deadline);
   } catch {
     throw new HttpError(503, "暂时无法核对上次报告，请稍后重试，当前稿已保留", "report receipt read unavailable");
   }
-  if (record.expiresAt <= Date.now()) return null;
+  if (!record || record.expiresAt <= Date.now()) return null;
   if (record.context !== await reportContext(voteGap, script, scenario)) {
     throw new HttpError(400, "上次报告与这份原稿或练习背景不一致，请重新检查当前稿", "report context mismatch");
   }
@@ -279,7 +297,7 @@ export async function readDeliveredReview(env, accessCode, reportId, voteGap, sc
 function reviewStore(env) {
   const kv = env.CASES;
   if (!kv || typeof kv.get !== "function" || typeof kv.put !== "function") return null;
-  if (!reviewStores.has(kv)) reviewStores.set(kv, { records: new Map(), pending: new Map() });
+  if (!reviewStores.has(kv)) reviewStores.set(kv, { records: new Map(), pending: new Map(), writes: new Map() });
   return reviewStores.get(kv);
 }
 
@@ -289,13 +307,16 @@ function rememberReview(store, key, record) {
   while (store.records.size > 128) store.records.delete(store.records.keys().next().value);
 }
 
-export async function readReviewRecord(env, key) {
+export async function readReviewRecord(env, key, deadline = Infinity) {
   const store = reviewStore(env);
   if (!store) return null;
   let record = store.records.get(key);
   if (!record) {
-    try { record = await env.CASES.get(key, "json"); }
-    catch { console.log("review read degraded"); }
+    try { record = await boundedDependency("cache_read", () => env.CASES.get(key, "json"), SUPPORT_WAIT_MS.cacheRead, deadline); }
+    catch { /* Cached grading is optional; continue with the current draft. */ }
+    // A concurrent generation may have completed while KV was slow. Never let
+    // an older remote read replace the newer in-memory validated result.
+    record = store.records.get(key) || record;
   }
   if (!record || record.version !== REVIEW_VERSION || !(record.expiresAt > Date.now()) ||
       !VERDICT_ENUM.includes(record.result?.report?.verdict) || !record.result?.ok) {
@@ -306,35 +327,43 @@ export async function readReviewRecord(env, key) {
   return structuredClone(record.result);
 }
 
-async function writeReviewRecord(env, key, result, sourceKey = null) {
+async function writeReviewRecord(env, key, result, sourceKey = null, deadline = Infinity) {
   const store = reviewStore(env);
   if (!store) return;
   const record = { version: REVIEW_VERSION, expiresAt: Date.now() + REVIEW_TTL_SECONDS * 1000,
     result: structuredClone(result), ...(sourceKey ? {sourceKey} : {}) };
   rememberReview(store, key, record);
-  try { await env.CASES.put(key, JSON.stringify(record), { expirationTtl: REVIEW_TTL_SECONDS }); }
-  catch { console.log("review write degraded"); }
+  // Serialize writes of the same key: an older timed-out PUT must not finish
+  // after a newer correction and overwrite it remotely. Callers still stop
+  // waiting at their own deadline; queued writes never mutate delivered reports.
+  if (Date.now() >= deadline) return;
+  const write = (store.writes.get(key) || Promise.resolve()).catch(() => {}).then(() =>
+    env.CASES.put(key, JSON.stringify(record), { expirationTtl: REVIEW_TTL_SECONDS }));
+  store.writes.set(key, write);
+  write.finally(() => { if (store.writes.get(key) === write) store.writes.delete(key); }).catch(() => {});
+  try { await boundedDependency("cache_write", () => write, SUPPORT_WAIT_MS.cacheWrite, deadline); }
+  catch { /* Keep the validated in-memory result available for retries. */ }
 }
 
-async function keepLatestReviewForFallback(env, historyKey, recordKey, result) {
+async function keepLatestReviewForFallback(env, historyKey, recordKey, result, deadline = Infinity) {
   const store = reviewStore(env);
   if (!store) return;
   // Same selected lessons and same script: don't rewrite the alias on every
   // cached request. A newly selected lesson gets a new recordKey and refreshes it.
-  await readReviewRecord(env, historyKey);
+  await readReviewRecord(env, historyKey, deadline);
   if (store.records.get(historyKey)?.sourceKey === recordKey) return;
-  await writeReviewRecord(env, historyKey, result, recordKey);
+  await writeReviewRecord(env, historyKey, result, recordKey, deadline);
 }
 
-export async function reuseReview(env, key, generate) {
+export async function reuseReview(env, key, generate, deadline = Infinity) {
   const store = reviewStore(env);
   if (!store) return generate();
   if (!store.pending.has(key)) {
     const pending = (async () => {
-      const saved = await readReviewRecord(env, key);
+      const saved = await readReviewRecord(env, key, deadline);
       if (saved) return saved;
       const result = await generate(); // 错误绝不保存；复练反馈不写入基础报告。
-      await writeReviewRecord(env, key, result);
+      await writeReviewRecord(env, key, result, null, deadline);
       return result;
     })();
     store.pending.set(key, pending);
@@ -443,7 +472,7 @@ export default {
       return jsonResponse(await generate(), 200, corsHeaders);
     } catch (err) {
       const status = err.status || 500;
-      console.log(`coach error: ${Date.now() - startedAt}ms, status=${status}, ${err.message}`);
+      console.log(`coach error: ${Date.now() - startedAt}ms, status=${status}`);
       return jsonResponse(
         { error: true, message: err.publicMessage || "出错了，请重试", ...(err.retryable === false ? {retryable:false} : {}) },
         status,
@@ -457,7 +486,11 @@ async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDe
   const deadline = Math.min(jobDeadline || Infinity, Date.now() + DEEPSEEK_CONFIG.timeoutMs);
   // The large report must leave a real budget for a small, independent assessment.
   const primaryDeadline = deadline - 27000;
-  const phase = async (value) => { try { await onProgress?.(value); } catch { console.log("coach progress storage degraded"); } };
+  const phase = async (value) => {
+    if (!onProgress) return;
+    try { await boundedDependency("progress_write", () => onProgress(value), SUPPORT_WAIT_MS.progress, deadline); }
+    catch { /* Progress visibility is optional; grading continues. */ }
+  };
   const scenario = sanitizeScenario(body.scenario);
   const collectIssue = (input) => {
     if (!env.CASES) return;
@@ -476,14 +509,13 @@ async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDe
   let cases = [];
   let savedOnCaseFailure = null;
   try {
-    cases = await retrieveCases(env, {
+    cases = await boundedDependency("case_retrieval", () => retrieveCases(env, {
       voteGap: body.voteGap,
       script: body.script,
       scenario,
-    });
+    }), SUPPORT_WAIT_MS.cases, deadline);
   } catch (err) {
-    console.log(`cases retrieve fail (degraded): ${err.message}`);
-    savedOnCaseFailure = await readReviewRecord(env, historyKey);
+    savedOnCaseFailure = await readReviewRecord(env, historyKey, deadline);
   }
 
   // 生成阶段包成一个函数：非流式走原来的 jsonResponse，流式交给 streamCoachResponse。
@@ -493,7 +525,7 @@ async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDe
     : await reviewRecordKey(body.accessCode, body.voteGap, body.script, scenario, cases);
   let previous = null;
   if (revision && revision.previousScript !== body.script.trim()) {
-    try { previous = await readDeliveredReview(env, body.accessCode, revision.reportId, body.voteGap, revision.previousScript, scenario); }
+    try { previous = await readDeliveredReview(env, body.accessCode, revision.reportId, body.voteGap, revision.previousScript, scenario, deadline); }
     catch (err) {
       // A history outage does not prevent judging this draft. A forged binding still fails closed.
       if (err.status !== 503) throw err;
@@ -507,7 +539,7 @@ async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDe
   const preparedAt = Date.now();
   let generated = false;
   const evaluate = async () => {
-    if (jobDeadline && Date.now() >= jobDeadline) throw new HttpError(504, "批改任务已超时，原稿已保留，请重试。", "job deadline before model");
+    if (Date.now() >= deadline) throw new HttpError(504, "批改任务已超时，原稿已保留，请重试。", "job deadline before model");
     generated = true;
     await phase("reviewing");
     let result, report;
@@ -553,7 +585,7 @@ async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDe
             });
             if (id) console.log(`absorb ok: ${id}`);
           } catch (err) {
-            console.log(`absorb fail: ${err.message}`);
+            console.log("absorb storage degraded");
           }
         })()
       );
@@ -571,7 +603,7 @@ async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDe
   const deliver = async () => {
     let result = savedOnCaseFailure
       ? structuredClone(savedOnCaseFailure)
-      : await reuseReview(env, recordKey, evaluate);
+      : await reuseReview(env, recordKey, evaluate, deadline);
     const evaluatedAt = Date.now();
     let conflict = getRevisionConflict(result.report, revision, body.script, previous?.report);
     let semanticRevision = null;
@@ -620,16 +652,16 @@ async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDe
             console.log("revision adjudication unavailable; retaining validated current assessment");
             return result;
           }
-        });
+        }, deadline);
         if (result.report.review_mode === "focused") {
-          if (recordKey) await writeReviewRecord(env,recordKey,result);
-          await writeReviewRecord(env,historyKey,result,recordKey);
+          if (recordKey) await writeReviewRecord(env,recordKey,result,null,deadline);
+          await writeReviewRecord(env,historyKey,result,recordKey,deadline);
         }
       }
       semanticRevision = null;
     }
     // This alias is only a retrieval fallback; revision comparison uses its exact receipt.
-    if (!savedOnCaseFailure) await keepLatestReviewForFallback(env, historyKey, recordKey, result);
+    if (!savedOnCaseFailure) await keepLatestReviewForFallback(env, historyKey, recordKey, result, deadline);
     applyRevisionFeedback(result.report, revision, body.script, previous?.report);
     if (semanticRevision?.target_status === "resolved" && semanticRevision.issue_scope === "elsewhere") {
       result.report.revision_check = {focus_key:lesson.focus_key,status:"resolved",evidence:semanticRevision.evidence};
@@ -648,7 +680,7 @@ async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDe
     const progress = nextTeachingProgress(result.report, revision && {...revision,currentScript:body.script},previous);
     if (progress?.attempts >= 3) collectIssue({reason:"repeated_focus",previousScript:revision?.previousScript,
       previousReport:previous?.report,report:result.report,detail:"同一重点连续多版仍未解决，请老师核对判断和教法。"});
-    try { await saveDeliveredReview(env, body.accessCode, body.voteGap, body.script, scenario, result.report, progress); }
+    try { await saveDeliveredReview(env, body.accessCode, body.voteGap, body.script, scenario, result.report, progress, deadline); }
     catch (err) {
       if (err.status !== 503) throw err;
       // The current judgment is complete. Losing optional history must not erase it.
@@ -704,6 +736,7 @@ async function handleCoachJob(request, env, url, corsHeaders) {
 }
 
 export const CoachJob = coachJobClass({
+  serviceVersion:SERVICE_VERSION,
   generate:(body, env, ctx, deadline, onProgress) => generateCoachReview(body, env, ctx, Date.now(), deadline, onProgress),
   digest:reportDigest,
   authorize:async (env, owner) => Boolean(env.ACCESS_CODE) && await reportDigest(env.ACCESS_CODE) === owner,
@@ -718,28 +751,6 @@ const BARE_SEGMENT_NON_NAMES = new Set([
   "加油", "可以", "好的", "收到", "欢迎", "辛苦", "来了",
   "漂亮", "厉害", "太棒", "没问题", "支持", "真好", "冲", "顶",
 ]);
-const AI_FLAVOR_SOURCE_PHRASES = [
-  "怀揣舞台梦想",
-  "热爱点亮",
-  "每一次投票",
-  "梦想的助力",
-  "见证奇迹",
-  "点燃这个舞台",
-  "托举我的梦想",
-  "助力梦想",
-  "点燃舞台",
-  // 作文朗诵型证据：只在模型已判 persona/AI 味时补足原句，不作为词面硬闸。
-  "既然站在这里",
-  "努力到最后一刻",
-  "每一票",
-  "每一颗星辰",
-  "都能感受到",
-  "推着我往前的力量",
-  "专门来照亮我的",
-  "守护后援第一位成员",
-  "好运陪我闯关到底",
-  "见证这一刻",
-];
 const EXPLICIT_BEGGING_SIGNALS = [
   "就当我求你",
   "真的求你",
@@ -1255,7 +1266,10 @@ function hasClearlyNegatedViewerValue(sentence) {
 function hasIntroducedContentAdvice(advice, sourceScript) {
   return (
     !(VIEWER_CONTENT_PATTERN.test(String(sourceScript || "")) || /机械舞|街舞|民族舞|冷笑话|谐音梗|反转梗|猜字谜|字谜/u.test(String(sourceScript || ""))) &&
-    INTRODUCED_CONTENT_ADVICE_PATTERN.test(String(advice || ""))
+    INTRODUCED_CONTENT_ADVICE_PATTERN.test(String(advice || "")) &&
+    // Mentioning an existing program/choice is not a newly invented performance.
+    // Semantic example verification still checks the complete revised draft.
+    /撒个?娇|新舞|返场|跳(?:一支|一段|个)?(?:舞|舞蹈)|机械舞|街舞|民族舞|唱(?:一首|首)?歌|点歌|点舞|解锁(?:舞|节目|才艺)|(?:加(?:个|一|点)|新增|添加|安排|承诺|补(?:个|一)|换成|改成).{0,12}(?:才艺|表演|整活|节目)|做什么.{0,8}(?:马上|立刻|当场)安排/u.test(String(advice || ""))
   );
 }
 
@@ -1910,7 +1924,10 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
   // 新人稿里没有建立才艺/节目期待时，模型容易条件反射地把“加个才艺诱饵”
   // 当作万能答案。只改模型后来添加的建议，不碰原稿；把下一拍重新锚定在
   // 已发生的反馈和人性驱动上。原稿本来就有才艺时则完整保留顺势承接。
-  const feedbackAdvice = feedbackLedAdvice(ticketProgressSummary);
+  const feedbackAdvice = scenario?.id === NOVICE_SCENARIO.id
+    ? {nextMove:"沿原稿已有的内容补清观众能怎样参与、你会怎样接；不编造已有支持或新才艺。",
+       examples:[]}
+    : feedbackLedAdvice(ticketProgressSummary);
   if (
     report.round_dynamics &&
     hasIntroducedContentAdvice(report.round_dynamics.next_move, observableContext)
@@ -1924,16 +1941,17 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
     if (Array.isArray(report.direction.examples)) {
       report.direction.examples = report.direction.examples.map((example, index) =>
         hasIntroducedContentAdvice(example, observableContext)
-          ? feedbackAdvice.examples[index % feedbackAdvice.examples.length]
+          ? (feedbackAdvice.examples[index % feedbackAdvice.examples.length] || "")
           : example
-      );
+      ).filter(Boolean);
     }
   }
   if (Array.isArray(report.line_reviews)) {
     for (const review of report.line_reviews) {
       if (!review || !hasIntroducedContentAdvice(review.comment, observableContext)) continue;
-      review.comment =
-        "这句的调整重点是先把已经发生的支持说具体，再把下一拍递给仍在观望的人，不必另造内容交换。";
+      review.comment = scenario?.id === NOVICE_SCENARIO.id
+        ? "沿原话已有的内容说明观众可以怎样参与；没有实际支持时，不编造已有支持，也不另加才艺承诺。"
+        : "这句的调整重点是先把已经发生的支持说具体，再把下一拍递给仍在观望的人，不必另造内容交换。";
     }
   }
 
@@ -2057,6 +2075,7 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
   // 显性乞求至少不能毕业，乞求叠加乞怜/依赖或明确自贬时再判整体方向错误。
   // 用户侧交换价值不能洗掉“跪下、施舍”等自贬语义。
   let hasLowPosture = false;
+  let severeLowPosture = false;
   if (sourceScript) {
     const unquotedScript = withoutAttributedQuotedText(sourceScript);
     const beggingSignal = firstUnnegatedSignal(unquotedScript, EXPLICIT_BEGGING_SIGNALS);
@@ -2067,7 +2086,7 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
       BEGGING_REINFORCEMENT_SIGNALS
     );
     hasLowPosture = Boolean(beggingSignal || pitySignal || selfAbasementSignal);
-    const severeLowPosture = Boolean(
+    severeLowPosture = Boolean(
       selfAbasementSignal || (beggingSignal && (pitySignal || reinforcementSignal))
     );
 
@@ -2099,7 +2118,8 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
       report.verdict = "off";
       const signal = selfAbasementSignal || pitySignal || beggingSignal;
       report.verdict_reason = `“${signal}”连同上下文已经构成明确乞求或自贬，这不是委婉请求，整体姿态要重新立。`;
-    } else if (hasLowPosture && report.verdict !== "off") {
+    } else if (hasLowPosture && (report.verdict !== "off" ||
+        (hasInteractionReview && !hasPersonaIssue && !hasDetectedRedline && !hasReportedRedline))) {
       const signal = beggingSignal || pitySignal;
       report.verdict = "almost";
       report.verdict_reason = `“${signal}”属于显性乞求或乞怜，把这一处换回平等请求再过关。`;
@@ -2199,7 +2219,7 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
         line.comment = report.interaction_review.reading;
       }
     }
-    if (report.verdict === "passed") report.verdict = "almost";
+    if (!hasDetectedRedline && !hasReportedRedline && !hasPersonaIssue && !severeLowPosture) report.verdict = "almost";
     report.verdict_reason = report.interaction_review.reading;
   }
 
@@ -2485,6 +2505,14 @@ export function applyReportSafetyGates(report, redlineHits, context = {}) {
       report.optional_polish = null;
     }
   }
+  // A confirmed pass must not present optional polish as a newly missing gate.
+  // Derive the status summary only after all actual grading gates have run.
+  if (hasInteractionReview && report.verdict === "passed" && qualifiesForPassed) {
+    report.card_why = "参与理由和当下动作都已说清，保留这版开口练。";
+    report.verdict_reason = "这版在已知场景里可以使用，开口后再观察真实回应。";
+    report.one_thing = "开口练这版，观察真实回应，再接下一句。";
+    if (report.coaching) report.coaching.focus_key = "final_polish";
+  }
   // 等回应是有效的中间练习状态，不替代付费理由达标，也不能绕过安全检查。
   if (report.practice_status === "awaiting_response") {
     const valid = report.verdict !== "off" && report.verdict !== "passed" &&
@@ -2597,7 +2625,7 @@ async function handleAdmin(request, env, url, corsHeaders) {
     return jsonResponse({ error: true, message: "接口不存在" }, 404, corsHeaders);
   } catch (err) {
     if (err.publicMessage && [400, 404, 409, 503].includes(err.status)) return jsonResponse({ error: true, message: err.publicMessage }, err.status, corsHeaders);
-    console.log(`admin error: ${err.message}`);
+    console.log(`admin error: status=${err.status || 500}`);
     return jsonResponse({ error: true, message: "后台出错了，稍后再试" }, 500, corsHeaders);
   }
 }
@@ -2748,10 +2776,12 @@ export async function checkCoachRateLimit(env, accessCode, ip, ipIsHash = false)
   const entries = [{ key: `code:${await shortHash(accessCode)}`, label: "入口码", max: COACH_RATE_LIMIT.codePerMinute }];
   if (ip) entries.push({ key: `ip:${ipIsHash ? ip : await shortHash(ip)}`, label: "IP", max: COACH_RATE_LIMIT.ipPerMinute });
   try {
+    return await boundedDependency("rate_limit", async signal => {
     for (const entry of entries) {
+      if (signal.aborted) throw new Error("admission deadline");
       const id = env.COACH_LIMITER.idFromName(entry.key);
-      const response = await env.COACH_LIMITER.get(id).fetch(new Request("https://limiter.internal/check", { method: "POST" }));
-      if (!response.ok) return unavailable;
+      const response = await env.COACH_LIMITER.get(id).fetch(new Request("https://limiter.internal/check", { method: "POST", signal }));
+      if (!response.ok) { response.body?.cancel().catch(() => {}); return unavailable; }
       const result = await response.json();
       if (!result || typeof result.allowed !== "boolean") return unavailable;
       if (!result.allowed) {
@@ -2759,8 +2789,9 @@ export async function checkCoachRateLimit(env, accessCode, ip, ipIsHash = false)
       }
     }
     return null;
+    }, SUPPORT_WAIT_MS.admission);
   } catch (err) {
-    console.log(`rate limiter unavailable: ${err.message}`);
+    console.log("rate limiter unavailable");
     return unavailable;
   }
 }
@@ -3020,6 +3051,9 @@ export function hasCertainAudienceClaim(value) {
   for (const match of text.matchAll(pattern)) {
     const prefix = text.slice(Math.max(0,match.index-18),match.index) + match[0].replace(/(?:一定|肯定|必然|必定|自然|只会|只感到)[\s\S]*$/u, "");
     if (/不$/u.test(prefix)) continue;
+    // A hedged exclusive reaction is not a prediction of certainty. Keep the
+    // qualifier local so an earlier "可能" cannot excuse a later "一定".
+    if (/(?:只会|只感到)/u.test(match[0]) && /(?:可能|也许|或许|未必)(?:会|仍|还是)?$/u.test(prefix)) continue;
     if (!/(?:不能|无法|不应|不要|未能|没有依据|并非|不代表|不等于|不保证|尚不能)[^。！？!?；;]{0,24}$/u.test(prefix)) return true;
   }
   return false;
@@ -3192,6 +3226,9 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
     })});
   }
 
+  // Progress/storage may consume the remaining budget. Do not initiate a new
+  // paid upstream request after that budget is already exhausted.
+  if (Date.now() >= deadline) throw new HttpError(504, "教练批改超过等待时限，原稿已保留，请重试", "model deadline before request");
   const modelStartedAt = Date.now();
   let headersAt = null;
   const controller = new AbortController();
@@ -3243,7 +3280,7 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
     if (err.name === "SyntaxError") {
       throw new HttpError(502, "教练返回的结果不完整，请重试", "DeepSeek 响应正文无法解析");
     }
-    throw new HttpError(502, "教练服务连接中断，请稍后重试", `DeepSeek 网络错误: ${err.message}`);
+    throw new HttpError(502, "教练服务连接中断，请稍后重试", "DeepSeek 网络错误");
   } finally {
     clearTimeout(timer);
     console.log(JSON.stringify({event:"coach_model_timing", repair:Boolean(repair),
@@ -3333,33 +3370,50 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
   const checked = normalizeReport(report, script);
   applyReportSafetyGates(checked, redlineHits, {sourceScript: script, scenario, voteGap});
   const qualityDetails = [];
+  // Check the raw evidence before truncation, but do not recheck discarded
+  // optional-polish summaries after a confirmed pass. Collect simultaneous
+  // faults in the single repair, instead of wasting it on just the first quote.
+  const evidenceReport = checked.verdict === "passed"
+    ? {...rawReport,card_why:checked.card_why,verdict_reason:checked.verdict_reason}
+    : rawReport;
+  const evidenceIssue = getJudgmentEvidenceIssue(evidenceReport,script,scenario,qualityDetails);
   const qualityIssue = getReportQualityIssue(checked, script, scenario, qualityDetails);
-  if (qualityIssue) {
-    return repairOrFail(qualityIssue, "教练这次判断不一致，未给你判分。原稿已保留，请重试。", qualityDetails);
+  if (qualityIssue === "缺少有效的短带教") {
+    qualityDetails.push({field:"coaching",original:rawReport.coaching?.original || "",
+      indexedSegments:splitHardSentences(script).map((text,index)=>({index,text})),
+      correction:"coaching 各字段必须完整；original 必须逐字复制上面的连续原文，不加我、不省略词，不改写原句。example 只替换该处，不重复保留部分，不添加未经说明的才艺或结果承诺。"});
   }
-
-  if (needsExampleCheck(checked,scenario)) {
+  let teachingIssue = "", teachingUnavailable = false;
+  const revisedScript = checked.coaching ? applyCoachingEdits(script,checked.coaching) : null;
+  if (needsExampleCheck(checked,scenario) && revisedScript !== null) {
     await onProgress?.("checking_advice");
-    const revisedScript = applyCoachingEdits(script,checked.coaching);
-    let result;
     try {
-      result = await callTeachingCheck(env,{...DEEPSEEK_CONFIG,onUsage},"example",{
+      const result = await callTeachingCheck(env,{...DEEPSEEK_CONFIG,onUsage},"example",{
         previousScript:script,revisedScript,focus_key:checked.coaching.focus_key,
         diagnosis:checked.card_why,edits:coachingEdits(checked.coaching),
       },deadline);
+      usage.prompt_tokens += result.usage.prompt_tokens;
+      usage.completion_tokens += result.usage.completion_tokens;
+      if (!exampleCheckPassed(result.check)) {
+        teachingIssue = "示范专项复核未通过：" + result.check.reason;
+        onTeachingIssue?.(checked,result.check.reason);
+        qualityDetails.push({field:"coaching",revisedScript,check:result.check,
+          correction:"修正同一修改重点的教学建议，解决诊断缺口并保留已有内容，不改变原稿评分来掩盖示范问题。"});
+      }
     } catch {
+      teachingUnavailable = true;
       onTeachingIssue?.(checked,"示范专项复核未完成，未将这份建议交付给学员。");
-      return guidanceResult();
-    }
-    usage.prompt_tokens += result.usage.prompt_tokens;
-    usage.completion_tokens += result.usage.completion_tokens;
-    if (!exampleCheckPassed(result.check)) {
-      onTeachingIssue?.(checked,result.check.reason);
-      return repairOrFail("示范专项复核未通过："+result.check.reason,
-        "教练暂时没有给出可靠的改法，这次未判分，原稿已保留，请交给带教核对。",
-        [{field:"coaching",revisedScript,check:result.check,correction:"仅修正本次教学建议，确保它解决诊断的缺口、保留原稿有效内容，不改变原稿评分来掩盖示范问题。"}], true);
     }
   }
+  // One repair sees both citation/contract and lesson problems. An unavailable
+  // lesson check never allows an invalid original assessment to be delivered.
+  if (evidenceIssue || qualityIssue || teachingIssue) {
+    const uniqueDetails = qualityDetails.filter((item,i,all) => all.findIndex(other =>
+      other.field === item.field && other.quote === item.quote && other.correction === item.correction) === i);
+    return repairOrFail([...new Set([evidenceIssue,qualityIssue,teachingIssue].filter(Boolean))].join("；"),
+      "教练正在核对本次判断与改法，原稿已保留。", uniqueDetails, !evidenceIssue && !qualityIssue);
+  }
+  if (teachingUnavailable) return guidanceResult();
 
   return {
     report,
@@ -3371,6 +3425,8 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
 // source safety rules without inventing line reviews or optional mechanism fields.
 export function validateRecoveredReview(report, input) {
   const reject = issue => { throw Object.assign(new Error("Recovery safety validation"),{recoveryIssue:issue}); };
+  const requirementIssue = getNoviceRequirementIssue(report,input.scenario);
+  if (requirementIssue) reject(requirementIssue);
   const source = withoutAttributedQuotedText(input.script);
   const begging = firstUnnegatedSignal(source,EXPLICIT_BEGGING_SIGNALS);
   const pity = firstUnnegatedSignal(source,PITY_OR_DEPENDENCY_SIGNALS);
@@ -3395,7 +3451,20 @@ export function validateRecoveredReview(report, input) {
 // Removing an unverified example must not remove the judgment or invent a replacement.
 export function withoutUnverifiedExample(report) {
   const safe = structuredClone(report);
-  safe.coaching = {...safe.coaching,mode:"guidance",example:"",related_edits:[],why:safe.card_why};
+  // The failed lesson's action can contain the same invented idea as its example.
+  // Keep the verified diagnosis and source anchor, not an unverified instruction.
+  const actions = {
+    user_reason:"保留原稿已有的内容，把观众能做什么、你会怎样接说具体，再接复活邀请；不编造新能力或已有支持。",
+    vote_instruction:"保留已经说清的内容和互动，只补此刻怎样帮忙复活，给观众自己选择的空间。",
+    redline:"按上面指出的风险，把原稿所有同类要求一起删改；保留真实内容，不换种说法继续逼迫消费。",
+    mentality:"把指出的乞求、自贬或逼迫换成可以拒绝的邀请，其余有效内容保留。",
+    line_angle:"按已给出的事实改正这处说法；没有确认的回应、承诺或支持，不要说成已经发生。",
+    persona:"把指出的几处重复套话收成具体可回应的表达；保留自己的口气，不编造观众喜好或新才艺。",
+  };
+  const action = actions[safe.coaching?.focus_key] || "只调整上面原句中指出的问题，保留已有内容；不编造支持、偏好或能力。";
+  safe.coaching = {...safe.coaching,action,mode:"guidance",example:"",related_edits:[],why:safe.card_why};
+  safe.one_thing = action;
+  if (safe.round_dynamics) safe.round_dynamics.next_move = action;
   safe.direction = {summary:safe.coaching.action,examples:[]};
   safe.optional_polish = null;
   return safe;
@@ -3501,6 +3570,8 @@ export function getReportQualityIssue(report, sourceScript, scenario = null, det
   for (const field of ["_lineReviewsContractValid", "_structureContractValid", "_safetyFieldsContractValid", "_roundDynamicsContractValid"]) {
     if (!report[field]) return `报告证据契约不完整：${field}`;
   }
+  const requirementIssue = getNoviceRequirementIssue(report,scenario);
+  if (requirementIssue) return requirementIssue;
   const core = report.structure_checks.filter(item => ["user_reason", "vote_instruction"].includes(item.key));
   const noRisk = !report.ai_flavor && !report.redline_note && report.card_type !== "persona" &&
     !report.line_reviews.some(item => item.mark === "wrong");
@@ -3528,40 +3599,7 @@ export function getReportQualityIssue(report, sourceScript, scenario = null, det
     const intros = sourceScript.match(/(?:我是|我叫)[^，,。！？!?；;\r\n]{1,24}[，,。！？!?；;]/gu) || [];
     if (revised && intros.some(intro => revised.split(intro).length > sourceScript.split(intro).length)) return "局部示范重复了原稿已经保留的自我介绍，请只替换问题部分";
   }
-  const source = compact(sourceScript);
-  const sceneQuotes = [
-    ...Object.keys(SCENARIO_TEXT_LIMITS).filter(key => key !== "id").map(key => scenario?.[key]),
-    ...(scenario?.timeline || []).map(event => event.text),
-  ].filter(value => typeof value === "string").map(compact);
-  // 模型用引号指称原句时必须来自当前稿，旧句、案例句不可混入批评。
-  // 但不能要求逐字：模型常写概括性引号——实测「身后没家人」指代
-  // 「我身后没有别的家人」，逐字比对会误杀整份报告（真实请求约 18% 因此 502，
-  // 用户白等 20–30 秒一个字都拿不到）。所以补一条宽松判定：引号内字符
-  // 按序都能在原稿里依次找到，就算概括引用；整句在原稿里完全找不到对应才判违规。
-  const quotedFromSource = (quote) => {
-    if (source.includes(quote)) return true;
-    let from = 0;
-    for (const ch of quote) {
-      from = source.indexOf(ch, from);
-      if (from === -1) return false;
-      from += 1;
-    }
-    return true;
-  };
-  const diagnoses = [["verdict_reason", report.verdict_reason], ["card_why", report.card_why], ...report.line_reviews.map((item,i) => [`line_reviews[${i}].comment`, item.comment])];
-  let invalidQuote = false;
-  for (const [field, text] of diagnoses) {
-    for (const match of String(text || "").matchAll(/[“「]([^”」]{4,})[”」]/gu)) {
-      const quote = compact(match[1]);
-      // 指出“你把他的条件听成承诺”时必须允许引用真实现场；不能把
-      // 用户刚说的那句话要求也出现在主播稿里。只认单条事实中的原文。
-      if (!quotedFromSource(quote) && !sceneQuotes.some(fact => fact.includes(quote))) {
-        invalidQuote = true;
-        details.push({field, quote, correction:"此引号内容在原稿及现场找不到。改为真实逐字引用；若只是概括，移除引号并准确说明含义，不假称原话。"});
-      }
-    }
-  }
-  return invalidQuote ? "点评引用了当前稿或现场不存在的原句" : "";
+  return getJudgmentEvidenceIssue(report,sourceScript,scenario,details);
 }
 
 /**
@@ -3877,15 +3915,8 @@ export function normalizeReport(report, sourceScript) {
     }
   }
 
-  let normalizedAiFlavor = str(report.ai_flavor).trim();
-  if (typeof sourceScript === "string" && (report.card_type === "persona" || normalizedAiFlavor)) {
-    const sourcePhrases = AI_FLAVOR_SOURCE_PHRASES.filter((phrase) => sourceScript.includes(phrase));
-    const missingPhrases = sourcePhrases.filter((phrase) => !normalizedAiFlavor.includes(phrase));
-    if (sourcePhrases.length >= 2 && missingPhrases.length > 0) {
-      const namedPhrases = sourcePhrases.slice(0, 2).map((phrase) => `“${phrase}”`).join("、");
-      normalizedAiFlavor = `${normalizedAiFlavor ? `${normalizedAiFlavor}；` : ""}原稿里的${namedPhrases}都是谁念都一样的舞台腔`;
-    }
-  }
+  // Do not manufacture evidence for a model's persona accusation.
+  const normalizedAiFlavor = str(report.ai_flavor).trim();
 
   const normalized = {
     card_type: report.card_type,
@@ -4084,7 +4115,7 @@ function streamCoachResponse(run, corsHeaders, startedAt, ctx) {
         payload = await pending;
       } catch (err) {
         const status = err.status || 500;
-        console.log(`coach error: ${Date.now() - startedAt}ms, status=${status}, ${err.message}`);
+        console.log(`coach error: ${Date.now() - startedAt}ms, status=${status}`);
         payload = { error: true, status, message: err.publicMessage || "出错了，请重试", ...(err.retryable === false ? {retryable:false} : {}) };
       }
       clearInterval(heartbeat);

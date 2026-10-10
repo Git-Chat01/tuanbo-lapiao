@@ -5,6 +5,17 @@
   "name": "tuanbo-lapiao-coach",
   "main": "worker/index.js",
   "compatibility_date": "2026-08-16",
+  // Retain application events for real task outcomes; omit routine invocation logs.
+  "observability": {
+    "redact_query_string": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "persist": true,
+      "invocation_logs": false
+    },
+    "traces": { "enabled": false }
+  },
   "durable_objects": {
     "bindings": [
       { "name": "COACH_LIMITER", "class_name": "CoachRateLimiter" },

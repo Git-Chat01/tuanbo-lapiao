@@ -68,7 +68,7 @@ try{
   else assert.doesNotMatch(body.message,/检查.*网络/,'上游错误不能归咎学员手机');
  }
  // Even a body reader that ignores AbortSignal cannot evade the shared deadline.
- const source=readFileSync(new URL('../worker/index.js',import.meta.url),'utf8').replace('timeoutMs: 90000','timeoutMs: 30').replace(/from "(\.\/[^\"]+)";/g,(_all,path)=>'from "'+new URL('../worker/'+path,import.meta.url).href+'";');
+ const source=readFileSync(new URL('../worker/index.js',import.meta.url),'utf8').replace('timeoutMs: 90000','timeoutMs: 100').replace('deadline - 27000','deadline - 20').replace(/from "(\.\/[^\"]+)";/g,(_all,path)=>'from "'+new URL('../worker/'+path,import.meta.url).href+'";');
  const short=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
  let signal;globalThis.fetch=async(_url,options)=>{signal=options.signal;return {ok:true,json:()=>new Promise(()=>{})};};
  const start=Date.now();const timed=await short.default.fetch(request(),env(),{waitUntil(){}});
