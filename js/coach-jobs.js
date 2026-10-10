@@ -105,7 +105,7 @@ var CoachJobs = {
       if (!active()) return;
       var saved = CoachJobs.read();
       if (!saved || saved.owner !== owner || JSON.stringify(saved.payload) !== JSON.stringify(body)) {
-        saved = {id:CoachJobs.uuid(), owner:owner, payload:body, acknowledged:false, expiresAt:Date.now()+86400000};
+        saved = {id:CoachJobs.uuid(), owner:owner, payload:body, acknowledged:false, startedAt:Date.now(), expiresAt:Date.now()+86400000};
       }
       run.jobId = saved.id;
       var persistent = CoachJobs.save(saved);
@@ -136,6 +136,10 @@ var CoachJobs = {
             // Keep the pointer if rendering/storage fails so this exact report is recoverable.
             try { if (callbacks.onSuccess) callbacks.onSuccess(data.report); }
             catch (e) { var rendering = new Error("批改已完成，但页面显示失败。请刷新后取回这份结果。"); rendering.terminal = true; throw rendering; }
+            if (data.deliverySupported === true && callbacks.onSuccess && window.CoachDelivery) {
+              CoachDelivery.observe({id:saved.id,reportId:data.report.report_id,owner:owner,
+                startedAt:Number.isFinite(saved.startedAt)?saved.startedAt:startedAt,expiresAt:saved.expiresAt,rendered:false});
+            }
             CoachJobs.clear(saved.id); return;
           }
           var phaseMessages = {

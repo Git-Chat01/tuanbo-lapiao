@@ -44,6 +44,7 @@ var App = {
     try { window.scrollTo({ top: 0, behavior: "auto" }); }
     catch (error) { window.scrollTo(0, 0); }
     setTimeout(function () { App._focusViewHeading(name); }, 0);
+    if (window.CoachDelivery) CoachDelivery.check();
   },
 
   _focusViewHeading: function (name) {
