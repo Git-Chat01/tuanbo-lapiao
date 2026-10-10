@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {authHeaders,projectEvent,summarizeEvents,queryReliability,WORKER} from '../scripts/coach-reliability.mjs';
+import {authHeaders,queryTelemetryWithCf,projectEvent,summarizeEvents,queryReliability,WORKER} from '../scripts/coach-reliability.mjs';
 const id=()=>crypto.randomUUID(),version='2026-10-09-storage-bounds-1';
 const event=(jobId,lifecycle,state='running',extra={})=>({$metadata:{id:id(),service:WORKER},timestamp:1,source:{event:'coach_job',schemaVersion:1,jobId,serviceVersion:version,lifecycle,state,
  status:state==='done'?200:state==='failed'?503:202,reason:state==='done'?'completed':state==='failed'?'generation_failed':'accepted',phase:'reviewing',totalMs:12000,...extra}});
@@ -35,3 +35,15 @@ assert.doesNotMatch(error.message,/PRIVATE_/);assert.match(error.message,/authen
 const config=JSON.parse(readFileSync(new URL('../wrangler.jsonc',import.meta.url),'utf8').replace(/^\s*\/\/.*$/mg,''));
 assert.equal(config.observability.logs.enabled,true);assert.equal(config.observability.logs.head_sampling_rate,1);assert.equal(config.observability.logs.persist,true);assert.equal(config.observability.logs.invocation_logs,false);
 console.log('PASS reliability reporting: real task outcomes, dedupe, unknown/empty/incomplete data, safe projection, pagination and credential handling');
+
+const display=event(a,'displayed','done',{clientElapsedMs:71000,reason:'client_displayed'});
+summary=summarizeEvents([event(a,'admitted'),done,display,display,event(b,'admitted'),event(b,'terminal','failed'),event(c,'admitted')]);
+assert.equal(summary.displayConfirmed,1);assert.equal(summary.admissionCohort.total,3);assert.equal(summary.admissionCohort.displayConfirmationRate,1/3);assert.equal(summary.admissionCohort.unsettled,1);assert.equal(summary.clientTiming.over60s,1);
+assert.equal(summarizeEvents([display]).admissionCohort.displayConfirmationRate,null,'missing admission is not a valid denominator');
+assert.equal(summarizeEvents([event(a,'admitted'),display,event(a,'terminal','failed')]).displayConfirmed,0,'contradictory logs cannot inflate confirmation');
+let cliArgs,cliOptions;
+assert.deepEqual(queryTelemetryWithCf({accountId,body:{dry:false},profile:'lapiao-observability'},(_node,args,options)=>{cliArgs=args;cliOptions=options;return JSON.stringify({events:{events:[],count:0}});}),{result:{events:{events:[],count:0}}});
+assert.equal(JSON.parse(cliArgs.at(-1)).dry,true);assert.equal(cliOptions.env.CLOUDFLARE_ACCOUNT_ID,accountId);assert.equal(cliOptions.windowsHide,true);
+assert.throws(()=>queryTelemetryWithCf({accountId,body:{}},()=>{throw Error('PRIVATE_TOKEN');}),/log query unavailable/);
+assert.throws(()=>queryTelemetryWithCf({accountId,body:{},profile:'bad\nPRIVATE_TOKEN'}),/Invalid/);
+console.log('PASS dedicated Cloudflare auth and honest delivery confirmation cohorts');

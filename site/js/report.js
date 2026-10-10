@@ -1549,6 +1549,7 @@ var Report = {
   },
 
   showContent: function (report) {
+    Report._visibleReportId = "";
     Report._stopLoadingMessages();
     document.getElementById("report-loading").hidden = true;
     document.getElementById("report-error").hidden = true;
@@ -1563,6 +1564,7 @@ var Report = {
     if (report.practice_status === "awaiting_response") {
       Report._showWaitingResponse(report, content);
       Report._saveWorkspace(Report._draftFor());
+      Report._visibleReportId = report.report_id || "";
       App.showView("report");
       return;
     }
@@ -1585,6 +1587,7 @@ var Report = {
     details.appendChild(Report._fullReview(report, checks, focus));
     content.appendChild(details);
     Report._saveWorkspace(Report._draftFor());
+    Report._visibleReportId = report.report_id || "";
     App.showView("report");
   },
 
@@ -1663,6 +1666,7 @@ var Report = {
   },
 
   showPassed: function (report) {
+    Report._visibleReportId = "";
     var detailPanel = document.getElementById("passed-details");
     if (detailPanel) detailPanel.open = false;
     Report._stopLoadingMessages();
@@ -1705,10 +1709,12 @@ var Report = {
       saved = {type:"passed", request:App.state.lastRequest, report:report, replayCompleted:true};
     }
     Report._saveWorkspace(saved);
+    Report._visibleReportId = report.report_id || "";
     App.showView("passed");
   },
 
   showLoading: function () {
+    Report._visibleReportId = "";
     var previous = Report._workspace;
     if (previous && previous.type === "pending") previous = previous.previousWorkspace;
     var saved = Report._saveWorkspace({type:"pending", request:App.state.lastRequest, replayCompleted:true, previousWorkspace:previous || null});
@@ -1755,6 +1761,7 @@ var Report = {
   },
 
   showError: function (message) {
+    Report._visibleReportId = "";
     Report._stopLoadingMessages();
     document.getElementById("report-loading").hidden = true;
     document.getElementById("report-content").hidden = true;

@@ -34,6 +34,13 @@ try {
  assert.equal(receipt.status,200,'异步报告仍有不可变的后续改稿回执');
  assert.equal((await send('/api/coach/jobs/'+id,{accessCode:'wrong-code'})).status,401);
  assert.equal((await send('/api/coach/jobs',{...body,script:'不同原稿'})).status,409);
+ // Display acknowledgement never creates another generation and checks the exact receipt.
+ assert.equal((await send('/api/coach/jobs/'+id+'/displayed',{accessCode:'wrong',reportId:result.report.report_id,clientElapsedMs:900})).status,401);
+ assert.equal((await send('/api/coach/jobs/'+id+'/displayed',{accessCode:code,reportId:crypto.randomUUID(),clientElapsedMs:900})).status,409);
+ assert.equal((await send('/api/coach/jobs/'+id+'/displayed',{accessCode:code,reportId:result.report.report_id,clientElapsedMs:-1})).status,400);
+ const displayed={accessCode:code,reportId:result.report.report_id,clientElapsedMs:900};
+ for(let i=0;i<2;i++){const ack=await send('/api/coach/jobs/'+id+'/displayed',displayed);assert.equal(ack.status,200);assert.equal((await ack.json()).displayConfirmed,true);}
+ assert.deepEqual(await (await send('/api/coach/jobs/'+id,{accessCode:code})).json(),result);
  // Missing model configuration becomes a stable failed job rather than endless polling.
  const badId=crypto.randomUUID();await send('/api/coach/jobs',{...body,jobId:badId,script:'另一份没有缓存的测试稿'});
  await new Promise(r=>setTimeout(r,1000));

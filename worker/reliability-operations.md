@@ -1,6 +1,6 @@
 # 批改可靠性：有界等待与任务统计
 
-本轮服务与评分版本为 `2026-10-09-judgment-evidence-1`，包含本次核心判断校验和此前的可靠性修复。本地修复和测试不等于线上已经启用；必须发布 Worker 后核对 `/health` 与远端日志设置。
+本轮服务版本为 `2026-10-10-display-receipt-1`，评分版本仍为 `2026-10-09-judgment-evidence-1`。展示回执不会改变评分标准或清空评分缓存。本地修复和测试不等于线上已经启用；必须发布 Worker 后核对 `/health` 与远端日志设置。
 
 ## 已完成评分不再被附属服务无限拖住
 
@@ -32,14 +32,14 @@
 发布后只读查询：
 
 ```powershell
-node scripts/coach-reliability.mjs --hours 24 --service-version 2026-10-09-judgment-evidence-1
+node scripts/coach-reliability.mjs --hours 24 --service-version 2026-10-10-display-receipt-1
 ```
 
-脚本使用本机已有 Wrangler 登录，令牌仅在内存中向 Cloudflare 官方 API 认证，不保存原始日志或密钥，不读取线上案例库，不调用模型。多账号时显式设置本项目 `CLOUDFLARE_ACCOUNT_ID`。
+配置读取仍使用已有 Wrangler 登录；日志查询由固定版本的官方 `cf` CLI 使用独立 `lapiao-observability` 配置执行，不提取或打印该配置的令牌。当前 Wrangler 登录入口不支持所需日志权限，单纯重新登录不能补齐。脚本不保存原始日志或密钥，不读取线上案例库，不调用模型。多账号时显式设置本项目 `CLOUDFLARE_ACCOUNT_ID`。
 
 统计按任务编号和服务版本去重，输出已观察终态成功比例、失败阶段、成功耗时中位数/P95/最大值、超过60秒的成功任务数、无终态和矛盾终态数量。空数据为 `no_data`；未开启留存为 `unavailable`；分页不完整为 `incomplete`。这些状态不能解释成零故障或100%成功。
 
-这是后台日志证据，不是浏览器实际收到结果的统计，也不是严格审计账本。窗口边界、日志延迟、平台丢失/配额、用户尚未发到后端的网络故障会影响覆盖。上线后先确认真实任务日志能查到，再积累数据；不能只用健康检查、HTTP 200 或少数合成用例向学员承诺稳定。
+后台终态指标只证明后台处理结果；页面展示需结合下文的 displayed 回执，二者都不是严格审计账本。窗口边界、日志延迟、平台丢失/配额、用户尚未发到后端的网络故障会影响覆盖。上线后先确认真实任务日志能查到，再积累数据；不能只用健康检查、HTTP 200 或少数合成用例向学员承诺稳定。
 
 ## 验证与发布核对
 
@@ -50,3 +50,32 @@ node scripts/coach-reliability.mjs --hours 24 --service-version 2026-10-09-judgm
 5. 如果上游仍慢，按真实成功耗时和质量样本评估精简输出；不能仅为缩短耗时更改通过标准。
 
 官方参考：[Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)、[Telemetry query API](https://developers.cloudflare.com/api/resources/workers/subresources/observability/subresources/telemetry/methods/query/)。
+
+## 独立日志授权与已确认状态（2026-10-10）
+
+已完成 Cloudflare 官方 OAuth 设备授权，并以现有生产版本实际查询成功，此前 403 已解除。首次查询过去24小时返回 no_data；这既不代表零故障，也不能证明已收到真实任务日志。
+
+安装项目开发依赖后，首次在本机创建独立配置（需要账户本人在浏览器确认）：
+
+```powershell
+node node_modules/cf/bin/cf auth create lapiao-observability --scopes account:read user:read workers:read workers_observability:write
+node scripts/coach-reliability.mjs --hours 24 --service-version 2026-10-10-display-receipt-1
+```
+
+该 CLI 的凭据由官方工具保管；没有替换 Wrangler 发布登录。查询接口虽然用于读取，官方要求 Workers Observability Write；请求固定 dry=true，不保存查询结果。可用 --cf-profile 指定另一个独立配置。
+
+## 学员端展示回执
+
+- 后端明确支持回执时，前端只在对应报告完成渲染、页面可见且报告视图仍匹配后记录展示；隐藏页、错稿、渲染异常均不确认。
+- 本地队列只包含随机任务/报告编号、入口码哈希和时间；不增加稿件或明文入口码存储。最多50条，最长随原任务保留24小时。
+- 离线或回报超时保留队列，在恢复联网、页面重开或再次可见时重试；每页自动重试有上限，每次等待3秒，完全独立于批改交付。关闭页面且不再回来、存储不可用等情况仍可能缺少回执。
+- 服务端校验入口码、任务归属、报告编号和任务完成状态。事务内首次保存展示时间，事务提交后才记 displayed 事件；重试和多标签页只计一次，不新增模型调用，也不改变原报告。
+- 任务保留创建时的服务版本，避免跨版本继续执行/补报被拆成两次任务；已有旧任务缺少版本时只能按处理版本记录。
+
+统计区分：
+
+1. observedTerminalSuccessRate：日志中已观察到终态的后台完成比例，未终结任务单列。
+2. admissionCohort：仅以本查询窗口观察到 admitted 的任务为分母，分别报告已成功、失败、未终结、展示确认和未确认。displayConfirmationRate 的未确认部分不能解释为失败；新任务还在处理中时比例会暂时偏低。
+3. clientTiming：浏览器报告的首次提交至可见展示耗时，中位数、P95和超过60秒数量。包含断网/重开等待，依赖客户端时钟；不等于模型推理时长。
+
+不能覆盖完全没有到达服务器且从未补报的提交，也不能证明学员认真阅读、判断质量或训练效果。发布后要用一笔已知任务核对实际 admitted → terminal → displayed 日志，再积累真实样本。旧前端尚无回执的阶段不应与新版混算。

@@ -6,9 +6,9 @@ export const WORKER='tuanbo-lapiao-coach';
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const VERSION=/^[a-z0-9._-]{1,80}$/i;
 const PHASES=new Set(['queued','authorizing','rate_limit','reviewing','recovering','checking_advice','saving_result']);
-const REASONS=new Set(['accepted','execution_started','completed','access_revoked','rate_limited','admission_failed','generation_timeout','generation_failed','interrupted','result_storage_failed','start_storage_failed','admission_storage_failed']);
-const LIFE=new Set(['admitted','started','terminal','persistence_failed']);
-const NOTES=['仅统计留存日志中观察到的后台任务，按任务和服务版本去重；不是浏览器成功取回率，也不是严格审计账本。',
+const REASONS=new Set(['accepted','execution_started','completed','access_revoked','rate_limited','admission_failed','generation_timeout','generation_failed','interrupted','result_storage_failed','start_storage_failed','admission_storage_failed','client_displayed']);
+const LIFE=new Set(['admitted','started','terminal','persistence_failed','displayed']);
+const NOTES=['仅统计留存日志中观察到的任务，按任务和服务版本去重；后台完成比例不等于页面展示确认比例，也不是严格审计账本。',
  '窗口边界、日志延迟/丢失、采样或配额可能造成记录缺失。无终态记为未知，不当作成功或失败；没有数据不能认定零故障。'];
 const duration=x=>Number.isFinite(x)&&x>=0?x:null;
 export function projectEvent(raw){
@@ -19,25 +19,31 @@ export function projectEvent(raw){
  const status=Number.isInteger(x.status)&&x.status>=100&&x.status<=599?x.status:null;
  if(!state||!status)return null;
  if(x.lifecycle==='terminal'&&!((state==='done'&&status===200)||(state==='failed'&&status>=400)))return null;
+ if(x.lifecycle==='displayed'&&(state!=='done'||status!==200))return null;
  return {jobId:x.jobId,serviceVersion:typeof x.serviceVersion==='string'&&VERSION.test(x.serviceVersion)?x.serviceVersion:'unknown',
   lifecycle:x.lifecycle,state,status,phase:PHASES.has(x.phase)?x.phase:'unknown',reason:REASONS.has(x.reason)?x.reason:'unknown',
-  queueMs:duration(x.queueMs),executionMs:duration(x.executionMs),totalMs:duration(x.totalMs),timestamp:duration(raw?.timestamp)??0};
+  queueMs:duration(x.queueMs),executionMs:duration(x.executionMs),totalMs:duration(x.totalMs),timestamp:duration(raw?.timestamp)??0,clientElapsedMs:duration(x.clientElapsedMs)};
 }
 export function summarizeEvents(rawEvents,{complete=true,serviceVersion=null}={}){
  const jobs=new Map();let ignored=0;
  for(const raw of rawEvents){const x=projectEvent(raw);if(!x){ignored++;continue;}if(serviceVersion&&x.serviceVersion!==serviceVersion)continue;
-  const key=x.serviceVersion+':'+x.jobId;let job=jobs.get(key);if(!job){job={admitted:false,started:false,terminal:null,conflict:false,persistence:false};jobs.set(key,job);}
+  const key=x.serviceVersion+':'+x.jobId;let job=jobs.get(key);if(!job){job={admitted:false,started:false,terminal:null,displayed:null,conflict:false,persistence:false};jobs.set(key,job);}
   if(x.lifecycle==='admitted')job.admitted=true;
   if(x.lifecycle==='started')job.started=true;
   if(x.lifecycle==='persistence_failed')job.persistence=true;
+  if(x.lifecycle==='displayed'&&!job.displayed)job.displayed=x;
   if(x.lifecycle==='terminal'){
    if(job.terminal&&[ 'state','status','reason' ].some(k=>job.terminal[k]!==x[k]))job.conflict=true;
    if(!job.terminal||x.timestamp>=job.terminal.timestamp)job.terminal=x;
   }
  }
  let succeeded=0,failed=0,unknown=0,conflicting=0,withoutAdmission=0,persistence=0;const durations=[],failures={};
+ const admitted={total:0,succeeded:0,failed:0,unsettled:0,displayConfirmed:0};const clientDurations=[];let displayConfirmed=0;
  for(const job of jobs.values()){
   if(job.persistence)persistence++;
+  if(job.displayed&&job.terminal?.state==='failed')job.conflict=true;
+  if(job.admitted){admitted.total++;if(job.conflict||!job.terminal)admitted.unsettled++;else admitted[job.terminal.state==='done'?'succeeded':'failed']++;}
+  if(job.displayed&&!job.conflict){displayConfirmed++;if(job.admitted)admitted.displayConfirmed++;if(job.displayed.clientElapsedMs!==null)clientDurations.push(job.displayed.clientElapsedMs);}
   if(job.conflict){conflicting++;unknown++;continue;}
   if(!job.terminal){unknown++;continue;}
   if(!job.admitted)withoutAdmission++;
@@ -51,7 +57,26 @@ export function summarizeEvents(rawEvents,{complete=true,serviceVersion=null}={}
   conflictingTerminal:conflicting,terminalWithoutAdmission:withoutAdmission,persistenceFailureJobs:persistence,ignoredEvents:ignored,
   observedTerminalSuccessRate:terminal?succeeded/terminal:null,
   successTiming:{count:durations.length,p50Ms:percentile(.5),p95Ms:percentile(.95),maxMs:percentile(1),over60s:durations.filter(x=>x>60000).length},
-  failures,notes:NOTES};
+  failures,displayConfirmed,admissionCohort:{...admitted,displayUnconfirmed:admitted.total-admitted.displayConfirmed,displayConfirmationRate:admitted.total?admitted.displayConfirmed/admitted.total:null},
+  clientTiming:timingSummary(clientDurations),notes:[...NOTES,'展示确认是页面在可见状态渲染后主动回报；没有回执仍是未确认，不能当作失败或成功。展示比例仅以本窗口已观察到的接收任务为分母，不覆盖未到达服务器的提交。']};
+}
+function timingSummary(values){
+ values.sort((a,b)=>a-b);const at=p=>values.length?values[Math.max(0,Math.ceil(values.length*p)-1)]:null;
+ return {count:values.length,p50Ms:at(.5),p95Ms:at(.95),maxMs:at(1),over60s:values.filter(x=>x>60000).length};
+}
+// The dedicated cf profile can request observability scope that Wrangler's
+// current login command cannot. No token is extracted or printed by this path.
+export function queryTelemetryWithCf({accountId,body,profile='lapiao-observability'},exec=execFileSync){
+ if(!/^[a-f0-9]{32}$/i.test(accountId)||!/^[-a-z0-9_]{1,64}$/i.test(profile))throw Error('Invalid diagnostic authentication options');
+ try{
+  const raw=exec(process.execPath,[fileURLToPath(new URL('../node_modules/cf/bin/cf',import.meta.url)),
+   'o11y','telemetry','query','--profile',profile,'--body',JSON.stringify({...body,dry:true})],
+   {encoding:'utf8',stdio:['ignore','pipe','pipe'],windowsHide:true,timeout:30000,maxBuffer:8*1024*1024,
+    env:{...process.env,CLOUDFLARE_ACCOUNT_ID:accountId}});
+  const data=JSON.parse(raw);if(data.success===false||data.errors?.length)throw Error('Query rejected');
+  const result=data.result||data;if(!Array.isArray(result.events?.events))throw Error('Invalid response');
+  return {result};
+ }catch{throw Error('Cloudflare log query unavailable; check the cf profile authorization (Workers Observability Write).');}
 }
 export async function queryReliability({request,accountId,hours=24,serviceVersion=null,now=Date.now(),pageSize=500,maxPages=20}){
  if(!/^[a-f0-9]{32}$/i.test(accountId)||!Number.isFinite(hours)||hours<1||hours>168||serviceVersion&&!VERSION.test(serviceVersion))throw Error('Invalid diagnostic options');
@@ -88,9 +113,9 @@ export function authHeaders(exec=execFileSync){
  throw Error('Wrangler authentication unavailable; use the existing Cloudflare login.');
 }
 async function main(){
- const args=process.argv.slice(2);if(args.includes('--help')){console.log('node scripts/coach-reliability.mjs [--hours 24] [--service-version VERSION]\nRead-only Cloudflare task outcomes. No model calls.');return;}
- let hours=24,serviceVersion=null;
- for(let i=0;i<args.length;i++){if(args[i]==='--hours')hours=Number(args[++i]);else if(args[i]==='--service-version')serviceVersion=args[++i];else throw Error('Invalid options');}
+ const args=process.argv.slice(2);if(args.includes('--help')){console.log('node scripts/coach-reliability.mjs [--hours 24] [--service-version VERSION] [--cf-profile lapiao-observability]\nRead-only Cloudflare task outcomes. No model calls.');return;}
+ let hours=24,serviceVersion=null,profile='lapiao-observability';
+ for(let i=0;i<args.length;i++){if(args[i]==='--hours')hours=Number(args[++i]);else if(args[i]==='--service-version')serviceVersion=args[++i];else if(args[i]==='--cf-profile')profile=args[++i];else throw Error('Invalid options');}
  if(!Number.isFinite(hours)||hours<1||hours>168||serviceVersion!==null&&(!serviceVersion||!VERSION.test(serviceVersion)))throw Error('Invalid diagnostic options');
  const headers={...authHeaders(),'Content-Type':'application/json'};
  const request=async(path,body)=>{
@@ -102,6 +127,8 @@ async function main(){
  };
  let accountId=process.env.CLOUDFLARE_ACCOUNT_ID;
  if(!accountId){const accounts=await request('/accounts');if(!Array.isArray(accounts.result)||accounts.result.length!==1)throw Error('Set CLOUDFLARE_ACCOUNT_ID to the project account.');accountId=accounts.result[0].id;}
- const summary=await queryReliability({request,accountId,hours,serviceVersion});console.log(JSON.stringify(summary,null,2));
+ const diagnosticRequest=(path,body)=>path==='/accounts/'+accountId+'/workers/observability/telemetry/query'
+  ? queryTelemetryWithCf({accountId,body,profile}) : request(path,body);
+ const summary=await queryReliability({request:diagnosticRequest,accountId,hours,serviceVersion});console.log(JSON.stringify(summary,null,2));
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){main().catch(error=>{console.error(error.message);process.exitCode=1;});}

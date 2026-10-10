@@ -200,7 +200,7 @@ const DEEPSEEK_CONFIG = {
 // 只复用已完成的检查，不用缓存把一个未经验证的模型输出变成标准答案。
 const REVIEW_VERSION = "2026-10-09-judgment-evidence-1";
 // Transport-only releases must not invalidate completed grading results.
-const SERVICE_VERSION = "2026-10-09-judgment-evidence-1";
+const SERVICE_VERSION = "2026-10-10-display-receipt-1";
 const REVIEW_TTL_SECONDS = 7 * 24 * 60 * 60;
 const reviewStores = new WeakMap();
 // These dependencies improve reuse/history but are not allowed to erase or delay
@@ -708,7 +708,8 @@ async function handleCoachJob(request, env, url, corsHeaders) {
     const authError = checkAccessCode(body, env);
     if (authError) return jsonResponse({error:true, message:authError.message}, authError.status, headers);
     const creating = url.pathname === "/api/coach/jobs";
-    const id = creating ? body.jobId : url.pathname.slice("/api/coach/jobs/".length);
+    const displayed = !creating && url.pathname.endsWith("/displayed");
+    const id = creating ? body.jobId : url.pathname.slice("/api/coach/jobs/".length, displayed ? -"/displayed".length : undefined);
     if (typeof id !== "string" || !REPORT_ID_PATTERN.test(id)) {
       return jsonResponse({error:true, message:"批改任务编号无效，请重新提交。"}, 400, headers);
     }
@@ -726,6 +727,14 @@ async function handleCoachJob(request, env, url, corsHeaders) {
       const ip = request.headers.get("CF-Connecting-IP");
       internal = new Request("https://job.internal/task", {method:"PUT", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({id, owner, payload, ipHash:ip ? await shortHash(ip) : ""})});
+    }
+    if (displayed) {
+      if (typeof body.reportId !== "string" || !REPORT_ID_PATTERN.test(body.reportId) ||
+          (body.clientElapsedMs !== null && (!Number.isFinite(body.clientElapsedMs) || body.clientElapsedMs < 0 || body.clientElapsedMs > 86400000))) {
+        return jsonResponse({error:true,message:"展示回执无效"},400,headers);
+      }
+      internal = new Request("https://job.internal/displayed",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({reportId:body.reportId,clientElapsedMs:body.clientElapsedMs})});
     }
     const stub = env.COACH_JOBS.get(env.COACH_JOBS.idFromName(await reportDigest([owner, id])));
     const response = await stub.fetch(internal);

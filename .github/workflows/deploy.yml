@@ -65,6 +65,7 @@ jobs:
           node tests/storage-deadline-safety.mjs
           node tests/coach-jobs-observability.mjs
           node tests/coach-reliability-report.mjs
+          node tests/coach-delivery.mjs
 
   deploy:
     needs: test

@@ -4,13 +4,14 @@ export const JOB_TTL_MS = 24 * 60 * 60 * 1000;
 export const JOB_RUN_MS = 150000;
 
 const LOG_PHASES = new Set(["queued", "authorizing", "rate_limit", "reviewing", "recovering", "checking_advice", "saving_result"]);
-const LOG_REASONS = new Set(["accepted", "execution_started", "completed", "access_revoked", "rate_limited", "admission_failed", "generation_timeout", "generation_failed", "interrupted", "result_storage_failed", "start_storage_failed", "admission_storage_failed"]);
+const LOG_REASONS = new Set(["accepted", "execution_started", "completed", "access_revoked", "rate_limited", "admission_failed", "generation_timeout", "generation_failed", "interrupted", "result_storage_failed", "start_storage_failed", "admission_storage_failed", "client_displayed"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Deliberately select every logged field: never serialize a job, report or error.
 // Logs are best-effort operational evidence, not a billing/accounting ledger.
 function logJob(job, lifecycle, {phase, reason, status}, serviceVersion) {
-  const now = Date.now();
+  const now = lifecycle === "terminal" && Number.isFinite(job.finishedAt) ? job.finishedAt : Date.now();
+  serviceVersion = job.serviceVersion ?? serviceVersion;
   const created = Number.isFinite(job.createdAt) ? job.createdAt : null;
   const started = Number.isFinite(job.startedAt) ? job.startedAt : null;
   const pending = lifecycle === "admitted";
@@ -24,7 +25,8 @@ function logJob(job, lifecycle, {phase, reason, status}, serviceVersion) {
       reason:LOG_REASONS.has(reason) ? reason : "generation_failed",
       status:Number.isInteger(status) && status >= 100 && status <= 599 ? status : 500,
       queueMs:pending ? 0 : started === null ? null : duration(started, created),
-      executionMs:pending ? 0 : duration(now, started), totalMs:duration(now, created)});
+      executionMs:pending ? 0 : duration(now, started), totalMs:duration(now, created),
+      ...(lifecycle === "displayed" ? {clientElapsedMs:Number.isFinite(job.clientElapsedMs) ? job.clientElapsedMs : null} : {})});
   } catch { /* Diagnostic collection must never reject an otherwise valid result. */ }
 }
 
@@ -34,7 +36,7 @@ export function coachJobClass({ generate, authorize, rateLimit, digest, serviceV
 
     response(job) {
       return Response.json({
-        ok: true, jobId: job.id, state: job.state, expiresAt: job.expiresAt,
+        ok: true, jobId: job.id, state: job.state, expiresAt: job.expiresAt, deliverySupported:true,
         ...(job.state === "running" ? {phase:job.phase || "reviewing"} : {}),
         ...(job.state === "done" ? {report: job.result.report} : {}),
         ...(job.state === "failed" ? {failure: job.failure} : {}),
@@ -47,6 +49,21 @@ export function coachJobClass({ generate, authorize, rateLimit, digest, serviceV
         return job && job.expiresAt > Date.now() ? this.response(job)
           : Response.json({error:true, message:"这次批改记录已过期或不存在，原稿仍在，请重新提交。"}, {status:404});
       }
+      if (request.method === "POST" && new URL(request.url).pathname === "/displayed") {
+        const input = await request.json();
+        const result = await this.ctx.storage.transaction(async txn => {
+          const job = await txn.get("job");
+          if (!job || job.expiresAt <= Date.now()) return {status:404};
+          if (job.state !== "done" || !input.reportId || input.reportId !== job.result?.report?.report_id) return {status:409};
+          if (job.displayedAt) return {status:200};
+          job.displayedAt = Date.now();
+          job.clientElapsedMs = Number.isFinite(input.clientElapsedMs) && input.clientElapsedMs >= 0 && input.clientElapsedMs <= JOB_TTL_MS ? input.clientElapsedMs : null;
+          await txn.put("job", job);
+          return {status:200,job};
+        });
+        if (result.job) logJob(result.job,"displayed",{phase:"saving_result",reason:"client_displayed",status:200},serviceVersion);
+        return Response.json({ok:result.status === 200,displayConfirmed:result.status === 200},{status:result.status});
+      }
       if (request.method !== "PUT") return new Response(null, {status:405});
       const input = await request.json();
       const fingerprint = await digest(input.payload);
@@ -56,7 +73,7 @@ export function coachJobClass({ generate, authorize, rateLimit, digest, serviceV
         const saved = await txn.get("job");
         if (saved) return {job:saved, conflict:saved.fingerprint !== fingerprint};
         const job = {id:input.id, owner:input.owner, payload:input.payload,
-          ipHash:input.ipHash, fingerprint, state:"queued", createdAt:Date.now(),
+          ipHash:input.ipHash, fingerprint, serviceVersion, state:"queued", createdAt:Date.now(),
           expiresAt:Date.now() + JOB_TTL_MS};
         await txn.put("job", job);
         await txn.setAlarm(Date.now());
@@ -77,7 +94,7 @@ export function coachJobClass({ generate, authorize, rateLimit, digest, serviceV
       // Remove the draft and IP fingerprint after execution. A later lookup only
       // needs the immutable result; failed jobs never publish partial grading.
       const finished = {id:job.id, owner:job.owner, fingerprint:job.fingerprint,
-        createdAt:job.createdAt, startedAt:job.startedAt, expiresAt:job.expiresAt,
+        createdAt:job.createdAt, startedAt:job.startedAt, finishedAt:Date.now(), serviceVersion:job.serviceVersion ?? serviceVersion, expiresAt:job.expiresAt,
         state:failure ? "failed" : "done", ...(failure ? {failure} : {result})};
       try {
         await this.ctx.storage.transaction(async txn => {
