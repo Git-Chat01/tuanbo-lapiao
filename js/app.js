@@ -29,7 +29,7 @@ var App = {
 
   showView: function (name) {
     if (App.state.currentView === "voice" && name !== "voice" && window.VoiceCoach && VoiceCoach.reset) {
-      VoiceCoach.reset();
+      if (VoiceCoach.suspend) VoiceCoach.suspend(); else VoiceCoach.reset();
     }
     if (name !== "form" && window.Form && Form.stopSceneReplay) {
       Form.stopSceneReplay();
@@ -131,6 +131,7 @@ var App = {
     }
     if (stage === "report") {
       if (!App.state.lastReport) return;
+      if (window.RevisionWorkspace && RevisionWorkspace.open()) return;
       if (window.Report && Report._workspace) {
         Report._workspace.formActive = false;
         Report._saveWorkspace(Report._workspace);
