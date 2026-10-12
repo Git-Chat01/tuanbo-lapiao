@@ -1,6 +1,6 @@
 // 开口教练：真实录音、仅本地回放与客观采集质量检查。
 // DOM 契约：页面提供 <div id="voice-coach-root"></div>。
-// 对外 API：VoiceCoach.init() / VoiceCoach.open({ script, onBack }) / VoiceCoach.reset()。
+// 对外 API：VoiceCoach.init() / VoiceCoach.open({ script, onBack, scriptLabel? }) / VoiceCoach.suspend() / VoiceCoach.reset()。
 
 (function () {
   "use strict";
@@ -16,6 +16,10 @@
     els: {},
     phase: "closed",
     script: "",
+    scriptLabel: "",
+    recordedScript: "",
+    recordedScriptLabel: "",
+    suspended: true,
     onBack: null,
     sessionId: 0,
     stream: null,
@@ -78,6 +82,7 @@
   }
 
   function announce(message, assertive) {
+    if (state.suspended) return;
     var node = assertive ? state.els.alertRegion : state.els.liveRegion;
     if (!node) return;
     if (state.announceTimer) window.clearTimeout(state.announceTimer);
@@ -120,7 +125,7 @@
     var privacyText = make(
       "p",
       "voice-coach__privacy-text",
-      "首次点开始时才会请求麦克风。录音只留在当前页面，不会自动上传；刷新或离开后消失。"
+      "首次点开始时才会请求麦克风。录音只留在当前页面，不会自动上传。返回文字稿查看或微调时会保留；刷新、关闭页面或开始新一轮后消失。"
     );
     append(privacy, privacyMark, privacyText);
 
@@ -194,6 +199,12 @@
     resultTitle.id = "voice-coach-result-title";
     append(resultHead, resultKicker, resultTitle);
 
+    var recordingVersion = make("p", "voice-coach__quality-summary");
+    var recordingScriptDetails = make("details", "voice-coach__prompter");
+    var recordingScriptSummary = make("summary", null, "查看这段录音对应的稿子");
+    var recordingScriptText = make("p", "voice-coach__script");
+    append(recordingScriptDetails, recordingScriptSummary, recordingScriptText);
+
     var audio = document.createElement("audio");
     audio.className = "voice-coach__audio";
     audio.controls = true;
@@ -230,7 +241,9 @@
     var analysisRetry = make("button", "voice-coach__secondary voice-coach__analysis-retry", "重试本地检查");
     analysisRetry.type = "button";
     analysisRetry.hidden = true;
-    append(quality, qualityHead, qualitySummary, metrics, method, analysisRetry);
+    var qualityDetails = make("details", "voice-coach__quality-details");
+    append(qualityDetails, make("summary", null, "查看采集指标与判定依据"), metrics, method);
+    append(quality, qualityHead, qualitySummary, qualityDetails, analysisRetry);
 
     var teacherHandoff = make("aside", "voice-coach__handoff");
     teacherHandoff.appendChild(make("strong", null, "最后交给现场老师"));
@@ -241,7 +254,7 @@
         "先用原声复盘语速、重音和情绪变化；动作、表情以及和主持的配合，仍由老师放回真实现场一起考核。"
       )
     );
-    append(result, resultHead, audio, resultActions, quality, teacherHandoff);
+    append(result, resultHead, recordingVersion, recordingScriptDetails, audio, resultActions, quality, teacherHandoff);
 
     append(
       coach,
@@ -277,6 +290,9 @@
       errorMessage: errorMessage,
       errorRetry: errorRetry,
       result: result,
+      recordingVersion: recordingVersion,
+      recordingScriptDetails: recordingScriptDetails,
+      recordingScriptText: recordingScriptText,
       audio: audio,
       rerecord: rerecord,
       remove: remove,
@@ -525,6 +541,8 @@
 
     var recordingSession = state.sessionId;
     state.chunks = [];
+    state.recordedScript = state.script;
+    state.recordedScriptLabel = state.scriptLabel;
     state.stopReason = "manual";
     state.recordStartedAt = performance.now();
     state.recordedSeconds = 0;
@@ -651,6 +669,7 @@
 
     state.blobUrl = URL.createObjectURL(state.blob);
     state.els.audio.src = state.blobUrl;
+    renderRecordingVersion();
     state.els.result.hidden = false;
     state.els.errorBox.hidden = true;
     state.els.primary.hidden = true;
@@ -663,11 +682,38 @@
     if (state.stopReason === "background") stopMessage = "页面切到后台，已安全停止并保留这一段";
     else if (state.stopReason === "track-ended") stopMessage = "麦克风轨道已结束，已保留结束前的录音";
     else if (state.stopReason === "max") stopMessage = "已录满 60 秒并自动停止，录音已保留";
+    else if (state.stopReason === "navigation") stopMessage = "已停止录音，返回文字稿期间也会保留这一段";
     else if (state.stopReason === "recorder-error") stopMessage = "录音器中途异常，已尽量保留收到的声音";
     setText(state.els.helper, stopMessage + "。先回放确认，再看下方客观证据。");
     announce(stopMessage);
 
     await analyzeRecording(recordingSession);
+  }
+
+  function renderRecordingVersion() {
+    var matches = state.recordedScript === state.script;
+    var label = state.recordedScriptLabel ? "（" + state.recordedScriptLabel + "）" : "";
+    setText(state.els.recordingVersion, matches
+      ? "这段录音对应当前稿" + label + "。返回文字稿再回来，仍可继续回放。"
+      : "这段录音对应修改前的稿子" + label + "。当前稿已调整，请按当前稿重新录一遍。");
+    setText(state.els.recordingScriptText, state.recordedScript);
+    state.els.recordingScriptDetails.hidden = matches;
+    if (matches) state.els.recordingScriptDetails.open = false;
+    setText(state.els.rerecord, matches ? "重新录一遍" : "按当前稿重新录");
+  }
+
+  function showRetainedRecording() {
+    state.els.result.hidden = false;
+    state.els.errorBox.hidden = true;
+    state.els.primary.hidden = true;
+    state.els.countdown.hidden = true;
+    setText(state.els.timer, formatSeconds(state.recordedSeconds, false) + " / 01:00");
+    setText(state.els.statusBadge, state.recordedScript === state.script ? "本页录音已保留" : "保留了修改前的录音");
+    setText(state.els.helper, "录音仍在本页，可以继续回放；采用新稿时请重新录音。");
+    renderRecordingVersion();
+    if (state.metrics) renderMetrics(state.metrics);
+    else if (state.phase === "analysis-error") renderAnalysisError();
+    else renderAnalysisPending();
   }
 
   function renderAnalysisPending() {
@@ -887,7 +933,7 @@
 
   function handleBack() {
     var callback = state.onBack;
-    resetInternal(true);
+    suspend();
     if (typeof callback === "function") callback();
   }
 
@@ -1003,6 +1049,8 @@
     closeAnalysisContext();
     state.metrics = null;
     state.blob = null;
+    state.recordedScript = "";
+    state.recordedScriptLabel = "";
     if (state.els.audio) {
       try {
         state.els.audio.pause();
@@ -1081,6 +1129,8 @@
     state.recordedSeconds = 0;
     state.stopReason = "manual";
     state.script = "";
+    state.scriptLabel = "";
+    state.suspended = true;
     state.onBack = null;
     setPhase(hideRoot ? "closed" : "ready");
     if (state.els.script) setText(state.els.script, "");
@@ -1120,8 +1170,10 @@
     options = options || {};
     if (!init()) return false;
 
-    resetInternal(false);
+    suspend();
+    state.suspended = false;
     state.script = typeof options.script === "string" ? options.script.trim() : "";
+    state.scriptLabel = typeof options.scriptLabel === "string" ? options.scriptLabel.trim() : "";
     state.els.copyScript.disabled = !state.script;
     state.onBack = typeof options.onBack === "function" ? options.onBack : null;
     state.root.hidden = false;
@@ -1131,7 +1183,12 @@
     );
 
     var support = checkSupport();
-    if (!support.ok) showError("当前环境不支持录音", support.message, "重新检查");
+    if (state.blob) showRetainedRecording();
+    else if (state.phase === "stopping" || state.phase === "finalizing") {
+      // stop/dataavailable 可能晚于页面切回；保留当前会话直到本地文件生成。
+      state.els.primary.disabled = true;
+    }
+    else if (!support.ok) showError("当前环境不支持录音", support.message, "重新检查");
     else showReady();
 
     state.focusTimer = window.setTimeout(function () {
@@ -1139,6 +1196,33 @@
       if (state.els.title) state.els.title.focus();
     }, 0);
     return true;
+  }
+
+  function suspend() {
+    if (!state.initialized) return;
+    state.suspended = true;
+    if (state.focusTimer) window.clearTimeout(state.focusTimer);
+    if (state.announceTimer) window.clearTimeout(state.announceTimer);
+    state.focusTimer = null;
+    state.announceTimer = null;
+    clearDeleteConfirmTimer();
+    if (state.els.remove) {
+      state.els.remove.removeAttribute("data-confirm");
+      setText(state.els.remove, "删除本地录音");
+    }
+    if (state.els.audio) {
+      try { state.els.audio.pause(); } catch (error) { /* 播放器已经关闭。 */ }
+    }
+    if (state.phase === "recording") stopRecording("navigation");
+    if (state.phase === "stopping" || state.phase === "finalizing") {
+      // 不等待异步 stop 事件就释放麦克风；保留原会话，供最后的音频块合成。
+      stopTracks(state.stream);
+    } else if (state.phase === "requesting" || state.phase === "countdown") {
+      cancelPreparation("已取消录音准备，返回后可以重新开始。");
+    } else {
+      cleanupCapture();
+    }
+    state.root.hidden = true;
   }
 
   function reset() {
@@ -1149,6 +1233,7 @@
   window.VoiceCoach = {
     init: init,
     open: open,
+    suspend: suspend,
     reset: reset,
   };
 })();

@@ -537,7 +537,9 @@ var Form = {
     App.lockStage("voice");
     var passedScript = document.getElementById("passed-script");
     if (passedScript) passedScript.textContent = "";
-    if (window.VoiceCoach && VoiceCoach.reset) VoiceCoach.reset();
+    if (window.VoiceCoach && VoiceCoach.reset) {
+      if (VoiceCoach.suspend) VoiceCoach.suspend(); else VoiceCoach.reset();
+    }
     App.unlockStage("report");
     App.showView("report");
     Report.showLoading();

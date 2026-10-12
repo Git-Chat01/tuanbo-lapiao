@@ -7,6 +7,7 @@
 // （浏览器侧缺 CORS 头时连错误文案都读不到，前端只能显示"网络错误"）。
 
 import { SYSTEM_PROMPT, buildUserPrompt, NOVICE_SCENARIO } from "./current-review.js";
+import { REVISION_FLOW_VERSION, REVISION_DRAFT_INSTRUCTION, revisionIssues, prepareCompleteRevision, checkRevisionPreservation } from "./complete-revision.js";
 import {
   retrieveCases,
   tryAbsorb,
@@ -200,7 +201,7 @@ const DEEPSEEK_CONFIG = {
 // 只复用已完成的检查，不用缓存把一个未经验证的模型输出变成标准答案。
 const REVIEW_VERSION = "2026-10-09-judgment-evidence-1";
 // Transport-only releases must not invalidate completed grading results.
-const SERVICE_VERSION = "2026-10-10-display-receipt-1";
+const SERVICE_VERSION = "2026-10-12-revision-workspace-1";
 const REVIEW_TTL_SECONDS = 7 * 24 * 60 * 60;
 const reviewStores = new WeakMap();
 // These dependencies improve reuse/history but are not allowed to erase or delay
@@ -217,7 +218,7 @@ function selectedReferenceLessons(cases) {
 }
 
 export async function reviewRecordKey(accessCode, voteGap, script, scenario, cases = null) {
-  const inputParts = [REVIEW_VERSION, TEACHING_CHECK_VERSION, RECOVERY_REVIEW_VERSION, SYSTEM_PROMPT, DEEPSEEK_CONFIG,
+  const inputParts = [REVIEW_VERSION, TEACHING_CHECK_VERSION, RECOVERY_REVIEW_VERSION, REVISION_FLOW_VERSION, SYSTEM_PROMPT, DEEPSEEK_CONFIG,
     accessCode, voteGap, script, scenario];
   // Omitted cases retain a fallback key for temporary case retrieval failures.
   // Current reviews always pass cases (including []), so a newly published or
@@ -553,6 +554,7 @@ async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDe
       redlineHits,
       scenario,
       revision: normalizeRevision(body.revision),
+      withRevisionDraft: scenario?.id === NOVICE_SCENARIO.id,
       onTeachingIssue: (report, detail) => collectIssue({reason:"example_invalid",report,detail}),
       onProgress:phase, onUsage:accountUsage,
     }, null, primaryDeadline);
@@ -568,6 +570,29 @@ async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDe
       try { result = await recover(); report = result.report; result.usage.prompt_tokens += primaryUsage.prompt_tokens; result.usage.completion_tokens += primaryUsage.completion_tokens; }
       catch {
         throw new HttpError(err.status === 504 ? 504 : 503,err.status === 504 ? "教练服务本次超过等待时限，原稿已保留，请稍后再试。" : "批改服务暂时没有返回完整结果，原稿已保留，请稍后再试。","independent assessment unavailable");
+      }
+    }
+
+    if (scenario?.id === NOVICE_SCENARIO.id && report.verdict !== "passed" && report.practice_status !== "awaiting_response") {
+      let complete;
+      try { complete = await prepareCompleteRevision(report,result.revisionDraft,{
+        // Keep the original reconciliation/recovery reserve when comparing revisions.
+        source:body.script,deadline:previous ? primaryDeadline : deadline,
+        grade:async (script,until) => {
+          await phase("checking_advice");
+          const hits = detectRedline(script);
+          const assessment = await callDeepSeek(env,{voteGap:body.voteGap,script,cases,redlineHits:hits,scenario,onUsage:accountUsage},null,until);
+          const checked = assessment.guidanceOnly ? assessment.report : normalizeReport(assessment.report,script);
+          if (!assessment.guidanceOnly) applyReportSafetyGates(checked,hits,{sourceScript:script,scenario,voteGap:body.voteGap});
+          return checked;
+        },
+        preserve:(script,until) => checkRevisionPreservation(env,{...DEEPSEEK_CONFIG,onUsage:accountUsage},
+          {originalScript:body.script,revisedScript:script,scenario},until),
+      });
+      } catch { console.log("optional complete revision unavailable"); }
+      if (complete) {
+        report.revision_plan = complete.plan;
+        if (complete.ready) report.ready_revision = complete.ready;
       }
     }
 
@@ -676,6 +701,20 @@ async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDe
       result.report.revision_note = resolved
         ? "上次要求改的地方已经完成；本次结论已按当前整稿核对。"
         : "你已经按上次建议修改，这次不计重复卡关。下面说明本次对当前稿的具体判断和修改方向。";
+    }
+    if (scenario?.id === NOVICE_SCENARIO.id && result.report.verdict !== "passed" && result.report.practice_status !== "awaiting_response") {
+      if (!result.report.revision_plan) result.report.revision_plan = {issues:revisionIssues(result.report,body.script),script:"",status:"draft"};
+      const ready = result.report.ready_revision;
+      if (ready && ready.script === result.report.revision_plan.script && ready.report?.verdict === "passed" && ready.report.practice_status !== "awaiting_response") {
+        try {
+          await saveDeliveredReview(env,body.accessCode,body.voteGap,ready.script,scenario,ready.report,null,deadline);
+          result.report.revision_plan.status = "ready";
+        } catch {
+          delete result.report.ready_revision;
+          result.report.revision_plan.status = "draft";
+          result.report.revision_plan.review_note = "参考改稿已保留，采用前请再检查一次。";
+        }
+      } else delete result.report.ready_revision;
     }
     const progress = nextTeachingProgress(result.report, revision && {...revision,currentScript:body.script},previous);
     if (progress?.attempts >= 3) collectIssue({reason:"repeated_focus",previousScript:revision?.previousScript,
@@ -3212,7 +3251,7 @@ export function unwrapModelEnvelope(value) {
   return value;
 }
 
-async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario, revision = null, onTeachingIssue = null, onProgress = null, onUsage = null }, repair = null, jobDeadline = null) {
+async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario, revision = null, withRevisionDraft = false, onTeachingIssue = null, onProgress = null, onUsage = null }, repair = null, jobDeadline = null) {
   if (!env.DEEPSEEK_API_KEY) {
     throw new HttpError(503, "服务未配置", "DeepSeek key 未配置");
   }
@@ -3221,7 +3260,7 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
   const userPrompt = buildUserPrompt(voteGap, script, cases, redlineHits, scenario, null);
   const deadline = repair?.deadline || Math.min(jobDeadline || Infinity, Date.now() + DEEPSEEK_CONFIG.timeoutMs);
   const messages = [
-    {role:"system", content:SYSTEM_PROMPT},
+    {role:"system", content:SYSTEM_PROMPT + (withRevisionDraft ? REVISION_DRAFT_INSTRUCTION : "")},
     {role:"user", content:userPrompt},
   ];
   if (repair) {
@@ -3327,13 +3366,13 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
   }
   const rawReport = structuredClone(report);
   const usage = {prompt_tokens:data?.usage?.prompt_tokens || 0,completion_tokens:data?.usage?.completion_tokens || 0};
-  const guidanceResult = () => ({report:withoutUnverifiedExample(checked),usage,guidanceOnly:true});
+  const guidanceResult = () => ({report:withoutUnverifiedExample(checked),usage,guidanceOnly:true,revisionDraft:withRevisionDraft ? rawReport.revision_draft : null});
   const repairOrFail = async (issue, message, details = [], teachingOnly = false) => {
     // 单次请求最多修正一次，共用原来的90秒预算；不把冲突报告交给新人。
     if (!repair && deadline - Date.now() >= 20000) {
       console.log("coach report repair requested");
       try {
-        const corrected = await callDeepSeek(env, {voteGap, script, cases, redlineHits, scenario, onTeachingIssue, onProgress, onUsage}, {report:rawReport, issue, details, deadline, teachingOnly, expectedFocus:report.coaching?.focus_key});
+        const corrected = await callDeepSeek(env, {voteGap, script, cases, redlineHits, scenario, withRevisionDraft, onTeachingIssue, onProgress, onUsage}, {report:rawReport, issue, details, deadline, teachingOnly, expectedFocus:report.coaching?.focus_key});
         corrected.usage.prompt_tokens += usage.prompt_tokens;
         corrected.usage.completion_tokens += usage.completion_tokens;
         return corrected;
@@ -3427,6 +3466,7 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
   return {
     report,
     usage,
+    revisionDraft:withRevisionDraft ? rawReport.revision_draft : null,
   };
 }
 

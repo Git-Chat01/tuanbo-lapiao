@@ -712,3 +712,28 @@
 .presenter-page #passed-details { margin-top: 20px; }
 .presenter-page .coach-thinking .training-secondary { margin: 18px 0 10px; }
 .presenter-page .review-details > summary { min-height: 44px; padding-block: 12px; }
+
+/* 新人整稿修改：一份当前稿，主要操作紧接稿件，依据按需展开。 */
+.presenter-page .revision-workspace h2, .presenter-page .revision-feedback h2, .presenter-page .revision-pending h2 { font-size: var(--font-size-lg); line-height: 1.5; margin-bottom: 12px; }
+.presenter-page .revision-workspace { margin: 20px 0; }
+.presenter-page .current-draft { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.9; font-size: var(--font-size-md); padding: 18px; background: var(--stage-paper, #faf7f1); border: 1px solid var(--stage-line, #ded8ce); border-radius: 10px; }
+.presenter-page .revision-workspace .training-primary { width: 100%; margin-top: 18px; }
+.presenter-page .revision-tweak { width: 100%; margin-top: 10px; }
+.presenter-page .revision-revert { display: block; min-height: 44px; margin-top: 4px; }
+.presenter-page .revision-workspace .revision-count { display: block; text-align: right; margin-top: 6px; }
+.presenter-page .revision-original { margin-top: 18px; }
+.presenter-page .revision-original .current-draft { margin-top: 12px; }
+.presenter-page .revision-feedback { margin: 28px 0 16px; }
+.presenter-page .revision-keep { line-height: 1.7; color: var(--stage-muted, #6e6460); margin-bottom: 16px; }
+.presenter-page .revision-issues { padding-left: 22px; }
+.presenter-page .revision-issue { padding: 12px 0; border-bottom: 1px solid var(--stage-line, #ded8ce); overflow-wrap: anywhere; }
+.presenter-page .revision-issue:last-child { border-bottom: 0; }
+.presenter-page .revision-issue > strong { font-size: var(--font-size-md); }
+.presenter-page .revision-issue p { margin-top: 8px; line-height: 1.7; font-size: var(--font-size-sm); }
+.presenter-page .revision-issue blockquote { padding: 8px 12px; margin: 10px 0 6px; border-left: 2px solid var(--stage-line, #ded8ce); font-size: var(--font-size-sm); line-height: 1.7; }
+.presenter-page .revision-issue__action { color: var(--stage-red, #b72c31); }
+.presenter-page .revision-progress-note { padding: 12px 16px; background: var(--color-good-bg); line-height: 1.7; }
+.presenter-page .revision-remaining { margin-top: 20px; }
+.presenter-page .revision-pending { margin: 24px 0; }
+.presenter-page .revision-pending .review-details { margin-top: 16px; }
+.presenter-page .voice-coach__quality-details > summary { min-height: 44px; padding: 12px 0; cursor: pointer; }

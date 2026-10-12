@@ -1,4 +1,4 @@
-// 文字复盘：按实际核对的项目看进度，一轮只改一个关键缺口。
+// 文字复盘：新人使用统一改稿区；旧练习保留原有报告兼容。
 // 所有模型内容都通过 textContent 写入，避免把模型输出当成 HTML。
 
 var Report = {
@@ -158,6 +158,12 @@ var Report = {
     if (saved.coaching) App.state.coaching = saved.coaching;
     if (saved.report.practice_status !== "awaiting_response" && App.state.coaching && App.state.coaching.lastProgress) App.state.coaching.currentReport = saved.report;
     App.unlockStage("report");
+    if (window.RevisionWorkspace && RevisionWorkspace.supports(saved.report,saved.request)) {
+      var draft = RevisionWorkspace.draft(saved.report);
+      RevisionWorkspace.save(draft,request.script);
+      Report.showContent(saved.report);
+      return true;
+    }
     if (saved.report.verdict === "passed") Report.showPassed(saved.report);
     else Report.showContent(saved.report);
     Form.restore(request, {replayCompleted:replayCompleted !== false});
@@ -190,7 +196,7 @@ var Report = {
       if (saved.type === "pending" && saved.previousWorkspace) {
         var pendingForm = saved.formDraft;
         if (Report._recoverPreviousWorkspace(pendingForm ? pendingForm.request : saved.request, pendingForm ? pendingForm.replayCompleted : true)) {
-          App.showView("form");
+          if (!window.RevisionWorkspace || !RevisionWorkspace.supports(App.state.lastReport,App.state.lastRequest)) App.showView("form");
           return;
         }
       }
@@ -208,7 +214,7 @@ var Report = {
         if (saved.report.verdict === "passed") Report.showPassed(saved.report);
         else Report.showContent(saved.report);
       }
-      if (formDraft && saved.formActive) App.showView("form");
+      if (formDraft && saved.formActive && (!window.RevisionWorkspace || !RevisionWorkspace.supports(saved.report,saved.request))) App.showView("form");
     } catch (error) { Report._clearWorkspace(); }
   },
   _cancelWait: function () {
@@ -221,8 +227,11 @@ var Report = {
       App.lockStage("report");
       Form.restore(request, {replayCompleted:true});
     }
-    App.showView("form");
-    if (window.CoachJobs) Report._saveFormDraft(request, true);
+    if (window.RevisionWorkspace && RevisionWorkspace.supports(App.state.lastReport,App.state.lastRequest)) Report.showContent(App.state.lastReport);
+    else {
+      App.showView("form");
+      if (window.CoachJobs) Report._saveFormDraft(request, true);
+    }
     App.toast("已取消等待，原稿仍在，可以继续修改");
   },
   // 按原文字符建立索引；模型引用只忽略空白，不猜测或自动替换原句。
@@ -1555,6 +1564,9 @@ var Report = {
     document.getElementById("report-error").hidden = true;
     document.getElementById("btn-retry").hidden = true;
     document.getElementById("btn-back-edit").disabled = false;
+    document.getElementById("btn-back-edit").hidden = false;
+    var pendingContext = document.getElementById("revision-pending-context");
+    if (pendingContext) pendingContext.hidden = true;
     Report._showRedlineBanner(report.redline_note);
 
     var content = document.getElementById("report-content");
@@ -1569,6 +1581,14 @@ var Report = {
       return;
     }
     var progress = Report._recordResult(report);
+    if (window.RevisionWorkspace && RevisionWorkspace.supports(report,App.state.lastRequest)) {
+      Report._showRedlineBanner("");
+      document.getElementById("btn-back-edit").hidden = true;
+      RevisionWorkspace.render(report,content,progress);
+      Report._visibleReportId = report.report_id || "";
+      App.showView("report");
+      return;
+    }
     var checks = progress.checks;
     var focus = progress.focus;
     content.appendChild(Report._heading(report, focus, progress));
@@ -1666,6 +1686,7 @@ var Report = {
   },
 
   showPassed: function (report) {
+    if (window.RevisionWorkspace && RevisionWorkspace.supports(report,App.state.lastRequest)) return Report.showContent(report);
     Report._visibleReportId = "";
     var detailPanel = document.getElementById("passed-details");
     if (detailPanel) detailPanel.open = false;
@@ -1718,6 +1739,10 @@ var Report = {
     var previous = Report._workspace;
     if (previous && previous.type === "pending") previous = previous.previousWorkspace;
     var saved = Report._saveWorkspace({type:"pending", request:App.state.lastRequest, replayCompleted:true, previousWorkspace:previous || null});
+    var context = document.getElementById("revision-pending-context");
+    if (context && context.parentNode) context.parentNode.removeChild(context);
+    if (window.RevisionWorkspace) RevisionWorkspace.pending(document.getElementById("view-report"),App.state.lastRequest,previous);
+    document.getElementById("btn-back-edit").hidden = false;
     var draftStatus = document.getElementById("loading-draft-status");
     if (draftStatus) draftStatus.textContent = saved ? "本次原稿已保存在这台设备，取消或刷新后可继续编辑。" : "本机无法保存草稿，取消可返回编辑；请暂时保留页面。";
     Report._showRedlineBanner("");
@@ -1766,6 +1791,7 @@ var Report = {
     document.getElementById("report-loading").hidden = true;
     document.getElementById("report-content").hidden = true;
     document.getElementById("btn-back-edit").disabled = false;
+    document.getElementById("btn-back-edit").hidden = false;
     Report._showRedlineBanner("");
 
     var errorBox = document.getElementById("report-error");
@@ -1778,9 +1804,10 @@ var Report = {
 
   _onBackEdit: function () {
     Report._stopLoadingMessages();
+    if (window.RevisionWorkspace && RevisionWorkspace.open(true)) return;
     var base = App.state.form || App.state.lastRequest;
     if (Report._recoverPreviousWorkspace(base, true)) {
-      App.showView("form");
+      if (!window.RevisionWorkspace || !RevisionWorkspace.supports(App.state.lastReport,App.state.lastRequest)) App.showView("form");
       return;
     }
     var input = document.getElementById("revision-script");
@@ -1832,6 +1859,7 @@ var Report = {
   },
 
   _onStartVoice: function () {
+    if (window.RevisionWorkspace && RevisionWorkspace.start()) return;
     var waiting = App.state.lastReport && App.state.lastReport.practice_status === "awaiting_response";
     var script = waiting ? App.state.lastRequest.script : document.getElementById("passed-script").textContent;
     if (!script || !window.VoiceCoach) {

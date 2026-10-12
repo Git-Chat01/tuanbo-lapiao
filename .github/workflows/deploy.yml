@@ -66,6 +66,9 @@ jobs:
           node tests/coach-jobs-observability.mjs
           node tests/coach-reliability-report.mjs
           node tests/coach-delivery.mjs
+          node tests/complete-revision.mjs
+          node tests/revision-workspace-flow.mjs
+          node tests/voice-session-continuity.mjs
 
   deploy:
     needs: test

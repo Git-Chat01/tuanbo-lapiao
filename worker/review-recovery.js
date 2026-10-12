@@ -124,6 +124,7 @@ export function parseRecoveryAssessment(value, input, options = {}) {
     card_why:target.reason, verdict_reason:verdict === "passed" ? "参与理由和当下动作已经说清，可以开口练并观察回应。" : target.reason,
     audience:"", echo:lesson.keep, one_thing:lesson.action, coaching:lesson,
     direction:{summary:lesson.action, examples:[]}, structure_checks:core.map(item => ({key:item.key,status:item.status,evidence:item.quote ? `“${item.quote}”${item.reason}` : item.reason})),
+    revision_findings:risks.map(item => ({key:RISK_FOCUS[item.kind],original:item.quote,why:item.reason,action:"按这处实际问题调整，保留原有有效内容。"})),
     line_reviews:[], interaction_review:{...interaction, judgment:risks.some(item => item.kind === "misread") ? "misread" : "aligned",script_refs:[],signal_refs:[]},
     round_dynamics:null, optional_polish:null, practice_status:value.awaiting_response ? "awaiting_response" : null,
     ai_flavor:risks.filter(item => item.kind === "persona").map(item => `${[item.quote,...item.related_quotes].map(q => `“${q}”`).join("、")}${item.reason}`).join("；"),
