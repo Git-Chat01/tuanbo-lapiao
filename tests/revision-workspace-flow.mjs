@@ -101,4 +101,52 @@ for(const kind of ["missing-receipt","mismatched-script","not-passed","awaiting"
   x.c.localStorage.setItem=()=>{throw Error("quota");};x.byClass("revision-tweak").click();x.edit(own);
   assert.equal(x.byClass("revision-submit").disabled,false);assert.match(x.get("revision-state").textContent,/无法保存/);
 }
-console.log("PASS revision workspace: exact-text approval, free micro-edits, all issues, one draft, refresh/cancel preservation, waiting context, no duplicate help, safe text rendering");
+// Full generation remains a visible, resumable task; it never substitutes the old single-focus preview.
+{
+  const x=session(),plain=readyReport();delete plain.revision_plan;delete plain.ready_revision;
+  x.c.App.getAccessCode=()=>"synthetic-code";
+  let pending=false;
+  x.c.CoachJobs={canResume:()=>pending,read:()=>null};
+  x.c.Api.submit=(data,callbacks)=>{x.calls.push({data,callbacks});x.c.Api._inFlight=true;pending=true;};
+  x.c.Api.cancel=()=>{x.c.Api._inFlight=false;x.calls.at(-1).callbacks.onFinish();};
+  render(x,plain);
+  assert.equal(x.get("revision-script").value,originalScript,"absence of full draft cannot masquerade as a one-sentence rewrite");
+  x.c.RevisionWorkspace.autoGenerate(plain);
+  assert.equal(x.calls.length,1);assert.equal(x.calls[0].data.completeRevision.reportId,plain.report_id);
+  assert.equal(x.byClass("revision-generate").disabled,true);assert.equal(x.byClass("revision-submit").disabled,true);
+  assert.ok(x.get("report-content").textContent.includes("不用自己逐个改"));
+  x.c.RevisionWorkspace.autoGenerate(plain);assert.equal(x.calls.length,1,"no duplicate auto generation");
+  // Opening then closing the editor before completion must not leave the unapproved undo baseline.
+  x.byClass("revision-tweak").click();x.byClass("revision-tweak").click();
+  const attempts=x.c.App.state.coaching.totalAttempts;
+  const finished=readyReport();x.calls[0].callbacks.onSuccess(finished);x.c.Api._inFlight=false;pending=false;x.calls[0].callbacks.onFinish();
+  assert.equal(x.get("revision-script").value,revisedScript);assert.equal(x.get("current-draft-title").textContent,"教练改好的完整稿");
+  assert.equal(x.c.Report._workspace.beforeEdit,undefined,"automatic adoption clears the original-script undo baseline");
+  assert.equal(x.c.App.state.coaching.totalAttempts,attempts,"teaching completion is not another failed learner attempt");
+  assert.equal(x.byClass("revision-submit").textContent,"用这版开始练习");
+  assert.equal(x.byClass("revision-complete-panel"),undefined,"completed scripts lead directly to practice without another generation step");
+  // A late regeneration cannot overwrite wording the learner edits while waiting.
+  x.c.RevisionWorkspace.generate();x.byClass("revision-tweak").click();x.edit(own);
+  x.calls[1].callbacks.onSuccess(finished);x.c.Api._inFlight=false;pending=false;x.calls[1].callbacks.onFinish();
+  assert.equal(x.get("revision-script").value,own);assert.ok(x.get("report-content").textContent.includes("采用这份完整改稿"));
+  x.c.RevisionWorkspace.generate();x.calls[2].callbacks.onError(503,"完整改稿暂时不可用");x.c.Api._inFlight=false;x.calls[2].callbacks.onFinish();
+  assert.equal(x.get("revision-script").value,own);assert.ok(x.get("report-content").textContent.includes("采用这份完整改稿"));
+  // Refresh while the independent task is pending resumes the same immutable job payload.
+  x.c.RevisionWorkspace.generate();
+  const refreshed=session(x.storage);refreshed.c.App.getAccessCode=()=>"synthetic-code";
+  refreshed.c.CoachJobs={canResume:()=>true,read:()=>null};refreshed.c.Report._restoreWorkspace();
+  refreshed.c.RevisionWorkspace.autoGenerate(refreshed.c.App.state.lastReport);
+  assert.equal(refreshed.calls.length,1);assert.deepEqual(JSON.parse(JSON.stringify(refreshed.calls[0].data)),JSON.parse(JSON.stringify(x.calls[3].data)));
+  // Preserve the task pointer when local report storage fails; do not endlessly auto-poll it in this tab.
+  const oldSave=refreshed.c.localStorage.setItem;
+  refreshed.c.localStorage.setItem=()=>{throw Error("storage unavailable");};
+  assert.equal(refreshed.calls[0].callbacks.onSuccess(finished),false);
+  assert.equal(refreshed.c.Report._workspace.completeSaveFailed,true);
+  const count=refreshed.calls.length;refreshed.c.RevisionWorkspace.autoGenerate(refreshed.c.App.state.lastReport);assert.equal(refreshed.calls.length,count);
+  refreshed.c.localStorage.setItem=oldSave;
+  const before=refreshed.get("revision-script").value;
+  refreshed.calls[0].callbacks.onSuccess({...finished,report_id:"33333333-3333-4333-8333-333333333333"});
+  assert.equal(refreshed.get("revision-script").value,before,"wrong-receipt late result cannot overwrite current draft");
+  x.c.Report._onNewRound();assert.equal(x.c.Api._inFlight,false);assert.equal(x.c.RevisionWorkspace._active,null);assert.equal(x.c.App.state.lastReport,null);
+}
+console.log("PASS revision workspace: all-issue full generation, independent retry/resume, no single-focus fallback, no extra attempts, no lost edits, exact-text approval and refresh/cancel preservation");

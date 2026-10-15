@@ -7,7 +7,7 @@
 // （浏览器侧缺 CORS 头时连错误文案都读不到，前端只能显示"网络错误"）。
 
 import { SYSTEM_PROMPT, buildUserPrompt, NOVICE_SCENARIO } from "./current-review.js";
-import { REVISION_FLOW_VERSION, REVISION_DRAFT_INSTRUCTION, revisionIssues, prepareCompleteRevision, checkRevisionPreservation } from "./complete-revision.js";
+import { REVISION_FLOW_VERSION, generateRevisionDraft, revisionIssues, prepareCompleteRevision, checkRevisionPreservation } from "./complete-revision.js";
 import {
   retrieveCases,
   tryAbsorb,
@@ -201,7 +201,7 @@ const DEEPSEEK_CONFIG = {
 // 只复用已完成的检查，不用缓存把一个未经验证的模型输出变成标准答案。
 const REVIEW_VERSION = "2026-10-09-judgment-evidence-1";
 // Transport-only releases must not invalidate completed grading results.
-const SERVICE_VERSION = "2026-10-12-revision-workspace-1";
+const SERVICE_VERSION = "2026-10-14-complete-revision-2";
 const REVIEW_TTL_SECONDS = 7 * 24 * 60 * 60;
 const reviewStores = new WeakMap();
 // These dependencies improve reuse/history but are not allowed to erase or delay
@@ -464,7 +464,7 @@ export default {
         );
       }
 
-      const generate = () => generateCoachReview(body, env, ctx, startedAt);
+      const generate = () => body.completeRevision ? generateCompleteRevisionReview(body,env,ctx) : generateCoachReview(body, env, ctx, startedAt);
 
       // 只有前端会带这个头；脚本、测试、旧页面不带 → 保持纯 JSON 与原有状态码语义。
       const wantsStream = (request.headers.get("Accept") || "").includes("application/x-ndjson");
@@ -554,7 +554,6 @@ async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDe
       redlineHits,
       scenario,
       revision: normalizeRevision(body.revision),
-      withRevisionDraft: scenario?.id === NOVICE_SCENARIO.id,
       onTeachingIssue: (report, detail) => collectIssue({reason:"example_invalid",report,detail}),
       onProgress:phase, onUsage:accountUsage,
     }, null, primaryDeadline);
@@ -570,29 +569,6 @@ async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDe
       try { result = await recover(); report = result.report; result.usage.prompt_tokens += primaryUsage.prompt_tokens; result.usage.completion_tokens += primaryUsage.completion_tokens; }
       catch {
         throw new HttpError(err.status === 504 ? 504 : 503,err.status === 504 ? "教练服务本次超过等待时限，原稿已保留，请稍后再试。" : "批改服务暂时没有返回完整结果，原稿已保留，请稍后再试。","independent assessment unavailable");
-      }
-    }
-
-    if (scenario?.id === NOVICE_SCENARIO.id && report.verdict !== "passed" && report.practice_status !== "awaiting_response") {
-      let complete;
-      try { complete = await prepareCompleteRevision(report,result.revisionDraft,{
-        // Keep the original reconciliation/recovery reserve when comparing revisions.
-        source:body.script,deadline:previous ? primaryDeadline : deadline,
-        grade:async (script,until) => {
-          await phase("checking_advice");
-          const hits = detectRedline(script);
-          const assessment = await callDeepSeek(env,{voteGap:body.voteGap,script,cases,redlineHits:hits,scenario,onUsage:accountUsage},null,until);
-          const checked = assessment.guidanceOnly ? assessment.report : normalizeReport(assessment.report,script);
-          if (!assessment.guidanceOnly) applyReportSafetyGates(checked,hits,{sourceScript:script,scenario,voteGap:body.voteGap});
-          return checked;
-        },
-        preserve:(script,until) => checkRevisionPreservation(env,{...DEEPSEEK_CONFIG,onUsage:accountUsage},
-          {originalScript:body.script,revisedScript:script,scenario},until),
-      });
-      } catch { console.log("optional complete revision unavailable"); }
-      if (complete) {
-        report.revision_plan = complete.plan;
-        if (complete.ready) report.ready_revision = complete.ready;
       }
     }
 
@@ -737,6 +713,90 @@ async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDe
   return deliver();
 }
 
+// Independent durable teaching task: never repeats or replaces the original verdict.
+export async function generateCompleteRevisionReview(body,env,ctx,jobDeadline=null,onProgress=null) {
+  const deadline=Math.min(jobDeadline || Infinity,Date.now()+90000);
+  const scenario=sanitizeScenario(body.scenario);
+  if(scenario?.id!==NOVICE_SCENARIO.id || !REPORT_ID_PATTERN.test(body.completeRevision?.reportId || ""))
+    throw new HttpError(400,"整稿修改需要对应的批改记录，请先检查当前稿。","invalid complete revision binding");
+  const saved=await readDeliveredReview(env,body.accessCode,body.completeRevision.reportId,body.voteGap,body.script,scenario,deadline);
+  if(!saved)throw new HttpError(410,"这份批改记录已过期，请重新检查原稿后生成整稿。","complete revision parent expired");
+  const report=structuredClone(saved.report);
+  delete report.ready_revision;delete report.revision_plan;delete report.complete_retry_context;
+  const issues=revisionIssues(report,body.script),usage={prompt_tokens:0,completion_tokens:0};
+  if(!issues.length)return {ok:true,report,usage};
+  report.revision_plan={issues,script:"",status:"unavailable",review_note:"完整改稿暂未生成，可以点击重试；原稿批改已保留。"};
+  const account=part=>{for(const key of Object.keys(usage))if(Number.isFinite(part?.[key])&&part[key]>=0)usage[key]+=part[key];};
+  let cases=[];
+  try{cases=await boundedDependency("case_retrieval",()=>retrieveCases(env,{voteGap:body.voteGap,script:body.script,scenario}),SUPPORT_WAIT_MS.cases,deadline);}catch{}
+  const config={...DEEPSEEK_CONFIG,onUsage:account};
+  let previousDraft="",remainingIssues=[],previousChanges=[];
+  if(body.completeRevision.attemptReportId) {
+    if(!REPORT_ID_PATTERN.test(body.completeRevision.attemptReportId))throw new HttpError(400,"上次整稿记录无效，请重新检查原稿。","invalid rewrite attempt");
+    const attempt=await readDeliveredReview(env,body.accessCode,body.completeRevision.attemptReportId,body.voteGap,body.script,scenario,deadline);
+    if(!attempt || attempt.report.complete_parent_report_id!==body.completeRevision.reportId)throw new HttpError(400,"上次整稿记录与这份原稿不一致。","rewrite attempt binding mismatch");
+    const plan=attempt.report.complete_retry_context || attempt.report.revision_plan;
+    previousDraft=plan?.script || "";remainingIssues=plan?.remaining_issues || [];previousChanges=plan?.changes || [];
+  }
+  for(let attempt=0;attempt<2;attempt++) {
+    if(deadline-Date.now()<15000)break;
+    try {
+      if(onProgress)try{await boundedDependency("progress_write",()=>onProgress("checking_advice"),SUPPORT_WAIT_MS.progress,deadline);}catch{}
+      const candidate=previousDraft && !remainingIssues.length
+        ? {script:previousDraft,changes:previousChanges}
+        : await generateRevisionDraft(env,config,{source:body.script,scenario,issues,previousDraft,remainingIssues},deadline-12000);
+      let preservationIssue=null;
+      const complete=await prepareCompleteRevision(report,candidate,{source:body.script,deadline,maxCheckMs:40000,
+        grade:async(script,until)=>{
+          const hits=detectRedline(script);
+          try {
+            // Use the same independently validated recovery as the ordinary review route.
+            const result=await callDeepSeek(env,{voteGap:body.voteGap,script,cases,redlineHits:hits,scenario,onUsage:account},null,until-20000);
+            const checked=result.guidanceOnly ? result.report : normalizeReport(result.report,script);
+            if(!result.guidanceOnly)applyReportSafetyGates(checked,hits,{sourceScript:script,scenario,voteGap:body.voteGap});
+            return checked;
+          } catch (error) {
+            if(!env.DEEPSEEK_API_KEY || (error.status && error.status<500))throw error;
+            const recovered=await callReviewRecovery(env,{...DEEPSEEK_CONFIG,validateReport:validateRecoveredReview},
+              {voteGap:body.voteGap,script,cases,redlineHits:hits,scenario},until);
+            account(recovered.usage);return recovered.report;
+          }
+        },
+        preserve:(script,until)=>checkRevisionPreservation(env,{...config,onRejected:value=>{preservationIssue={key:"revision_preservation",original:value.evidence,why:value.reason,action:"修正这处偏离原稿的内容，保留原稿事实和能力边界。"};}},{originalScript:body.script,revisedScript:script,scenario,issues},until),
+      });
+      if(complete?.plan.script){
+        previousDraft=complete.plan.script;previousChanges=candidate.changes;remainingIssues=complete.plan.remaining_issues || [];
+        report.revision_plan={...complete.plan,changes:candidate.changes};
+        if(complete.ready){
+          try {
+            await saveDeliveredReview(env,body.accessCode,body.voteGap,complete.ready.script,scenario,complete.ready.report,null,deadline);
+            report.ready_revision=complete.ready;report.revision_plan.status="ready";
+          } catch {report.revision_plan.review_note="完整改稿已保留，复核记录暂未保存，请再试一次。";}
+          break;
+        }
+        if(!remainingIssues.length)break;
+      } else {
+        // Retain rejected candidates only in the private retry receipt, never in learner output.
+        previousDraft=candidate.script;previousChanges=candidate.changes;
+        remainingIssues=preservationIssue ? [preservationIssue] : [];
+      }
+    } catch (error) {
+      if(error.revisionRepair) {previousDraft=error.revisionRepair.script;remainingIssues=error.revisionRepair.remainingIssues;previousChanges=[];}
+      console.log("complete revision attempt unavailable");
+    }
+  }
+  if((report.revision_plan.script || previousDraft) && report.revision_plan.status!=="ready") {
+    const attemptReport={...structuredClone(report),complete_parent_report_id:body.completeRevision.reportId,
+      complete_retry_context:{script:previousDraft || report.revision_plan.script,changes:previousChanges,remaining_issues:remainingIssues}};
+    try {
+      const attemptId=await saveDeliveredReview(env,body.accessCode,body.voteGap,body.script,scenario,attemptReport,null,deadline);
+      report.revision_plan.attempt_report_id=attemptId;
+    } catch { /* Original result and current reference remain usable; a retry may need to regenerate. */ }
+  }
+  // Absence is explicit and retryable; no local one-sentence substitution is called a complete draft.
+  return {ok:true,report,usage};
+}
+
 // Only the public handler can select an object. Entry code + unguessable UUID
 // scope every read/write; neither credential nor draft is put in URLs or logs.
 async function handleCoachJob(request, env, url, corsHeaders) {
@@ -763,6 +823,14 @@ async function handleCoachJob(request, env, url, corsHeaders) {
       if (error) return jsonResponse({error:true, message:error.message}, error.status, headers);
       const payload = {voteGap:body.voteGap, script:body.script.trim(),
         scenario:sanitizeScenario(body.scenario), revision:normalizeRevision(body.revision)};
+      if (body.completeRevision !== undefined) {
+        if (payload.scenario?.id !== NOVICE_SCENARIO.id || !REPORT_ID_PATTERN.test(body.completeRevision?.reportId || "") ||
+            (body.completeRevision?.attemptReportId !== undefined && !REPORT_ID_PATTERN.test(body.completeRevision.attemptReportId))) {
+          return jsonResponse({error:true,message:"整稿修改需要对应的批改记录，请先检查当前稿。"},400,headers);
+        }
+        payload.completeRevision = {reportId:body.completeRevision.reportId};
+        if(body.completeRevision.attemptReportId)payload.completeRevision.attemptReportId=body.completeRevision.attemptReportId;
+      }
       const ip = request.headers.get("CF-Connecting-IP");
       internal = new Request("https://job.internal/task", {method:"PUT", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({id, owner, payload, ipHash:ip ? await shortHash(ip) : ""})});
@@ -785,7 +853,9 @@ async function handleCoachJob(request, env, url, corsHeaders) {
 
 export const CoachJob = coachJobClass({
   serviceVersion:SERVICE_VERSION,
-  generate:(body, env, ctx, deadline, onProgress) => generateCoachReview(body, env, ctx, Date.now(), deadline, onProgress),
+  generate:(body, env, ctx, deadline, onProgress) => body.completeRevision
+    ? generateCompleteRevisionReview(body,env,ctx,deadline,onProgress)
+    : generateCoachReview(body, env, ctx, Date.now(), deadline, onProgress),
   digest:reportDigest,
   authorize:async (env, owner) => Boolean(env.ACCESS_CODE) && await reportDigest(env.ACCESS_CODE) === owner,
   rateLimit:(env, ipHash) => checkCoachRateLimit(env, env.ACCESS_CODE, ipHash, true),
@@ -3251,7 +3321,7 @@ export function unwrapModelEnvelope(value) {
   return value;
 }
 
-async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario, revision = null, withRevisionDraft = false, onTeachingIssue = null, onProgress = null, onUsage = null }, repair = null, jobDeadline = null) {
+async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario, revision = null, onTeachingIssue = null, onProgress = null, onUsage = null }, repair = null, jobDeadline = null) {
   if (!env.DEEPSEEK_API_KEY) {
     throw new HttpError(503, "服务未配置", "DeepSeek key 未配置");
   }
@@ -3260,7 +3330,7 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
   const userPrompt = buildUserPrompt(voteGap, script, cases, redlineHits, scenario, null);
   const deadline = repair?.deadline || Math.min(jobDeadline || Infinity, Date.now() + DEEPSEEK_CONFIG.timeoutMs);
   const messages = [
-    {role:"system", content:SYSTEM_PROMPT + (withRevisionDraft ? REVISION_DRAFT_INSTRUCTION : "")},
+    {role:"system", content:SYSTEM_PROMPT},
     {role:"user", content:userPrompt},
   ];
   if (repair) {
@@ -3366,13 +3436,13 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
   }
   const rawReport = structuredClone(report);
   const usage = {prompt_tokens:data?.usage?.prompt_tokens || 0,completion_tokens:data?.usage?.completion_tokens || 0};
-  const guidanceResult = () => ({report:withoutUnverifiedExample(checked),usage,guidanceOnly:true,revisionDraft:withRevisionDraft ? rawReport.revision_draft : null});
+  const guidanceResult = () => ({report:withoutUnverifiedExample(checked),usage,guidanceOnly:true});
   const repairOrFail = async (issue, message, details = [], teachingOnly = false) => {
     // 单次请求最多修正一次，共用原来的90秒预算；不把冲突报告交给新人。
     if (!repair && deadline - Date.now() >= 20000) {
       console.log("coach report repair requested");
       try {
-        const corrected = await callDeepSeek(env, {voteGap, script, cases, redlineHits, scenario, withRevisionDraft, onTeachingIssue, onProgress, onUsage}, {report:rawReport, issue, details, deadline, teachingOnly, expectedFocus:report.coaching?.focus_key});
+        const corrected = await callDeepSeek(env, {voteGap, script, cases, redlineHits, scenario, onTeachingIssue, onProgress, onUsage}, {report:rawReport, issue, details, deadline, teachingOnly, expectedFocus:report.coaching?.focus_key});
         corrected.usage.prompt_tokens += usage.prompt_tokens;
         corrected.usage.completion_tokens += usage.completion_tokens;
         return corrected;
@@ -3466,7 +3536,6 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
   return {
     report,
     usage,
-    revisionDraft:withRevisionDraft ? rawReport.revision_draft : null,
   };
 }
 

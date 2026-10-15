@@ -10,6 +10,7 @@ var CoachJobs = {
     var body = {voteGap:value.voteGap, script:value.script};
     if (value.scenario) body.scenario = value.scenario;
     if (value.revision) body.revision = value.revision;
+    if (value.completeRevision) body.completeRevision = value.completeRevision;
     return body;
   },
   read: function () {
@@ -134,13 +135,14 @@ var CoachJobs = {
           if (data.state === "done") {
             if (!data.report || !data.report.report_id || ["passed","almost","off"].indexOf(data.report.verdict) < 0) throw new Error("Incomplete report");
             // Keep the pointer if rendering/storage fails so this exact report is recoverable.
-            try { if (callbacks.onSuccess) callbacks.onSuccess(data.report); }
+            var retained = false;
+            try { if (callbacks.onSuccess) retained = callbacks.onSuccess(data.report) === false; }
             catch (e) { var rendering = new Error("批改已完成，但页面显示失败。请刷新后取回这份结果。"); rendering.terminal = true; throw rendering; }
             if (data.deliverySupported === true && callbacks.onSuccess && window.CoachDelivery) {
               CoachDelivery.observe({id:saved.id,reportId:data.report.report_id,owner:owner,
                 startedAt:Number.isFinite(saved.startedAt)?saved.startedAt:startedAt,expiresAt:saved.expiresAt,rendered:false});
             }
-            CoachJobs.clear(saved.id); return;
+            if (!retained) CoachJobs.clear(saved.id); return;
           }
           var phaseMessages = {
             reviewing:"教练正在批改这版话术。",

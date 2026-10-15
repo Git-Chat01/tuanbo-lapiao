@@ -37,6 +37,30 @@ const answer=(body,status=200)=>Promise.resolve({ok:status<400,status,text:async
  const b=client(fetch,map);b.start();await until(()=>b.events.finish===1);
  assert.equal(urls.filter(u=>u.endsWith('/jobs')).length,1);assert.equal(b.events.success.length,1);
 }
+// A displayed complete draft whose workspace could not save remains recoverable after reload.
+{
+ const map=new Map(),urls=[],ids=[];
+ const completePayload={voteGap:'far',script:payload.script,completeRevision:{reportId:crypto.randomUUID(),attemptReportId:crypto.randomUUID()}};
+ const fetch=(url,options)=>{
+  const body=JSON.parse(options.body),id=body.jobId||url.split('/').at(-1);urls.push(url);ids.push(id);
+  if(body.jobId)assert.deepEqual(body.completeRevision,completePayload.completeRevision,'retry context crosses the jobs transport unchanged');
+  return answer({jobId:id,state:'done',report,deliverySupported:false});
+ };
+ const a=client(fetch,map);
+ a.c.Api.submit(completePayload,{onSuccess(value){a.events.success.push(value);return false;},
+  onError:(status,message)=>a.events.errors.push({status,message}),onFinish:()=>a.events.finish++});
+ await until(()=>a.events.finish===1);
+ assert.equal(a.events.success.length,1);assert.equal(a.events.errors.length,0,'local persistence failure is not a model or network failure');
+ assert.equal(a.c.Api._inFlight,false,'the retained recovery pointer must not lock subsequent interaction');
+ const retained=a.c.CoachJobs.read();assert.ok(retained);assert.equal(retained.acknowledged,true);
+ assert.deepEqual(JSON.parse(JSON.stringify(retained.payload)),completePayload);
+ const b=client(fetch,map);b.start(completePayload);await until(()=>b.events.finish===1);
+ assert.equal(b.events.success.length,1);assert.equal(b.events.errors.length,0);
+ assert.equal(urls.filter(url=>url.endsWith('/jobs')).length,1,'reload reads the completed task without another generation');
+ assert.equal(new Set(ids).size,1,'the same completed result is restored');
+ assert.equal(b.c.CoachJobs.read(),null,'the pointer clears only after the restored callback accepts persistence');
+ assert.equal(map.size,0);
+}
 // Explicit job failure is terminal. A deliberate retry gets a new ID.
 {
  const ids=[];const a=client((_u,o)=>{const id=JSON.parse(o.body).jobId;ids.push(id);return answer({jobId:id,state:'failed',failure:{status:502,message:'批改失败'}});});

@@ -17,7 +17,7 @@ function logJob(job, lifecycle, {phase, reason, status}, serviceVersion) {
   const pending = lifecycle === "admitted";
   const duration = (end, start) => start === null ? null : Math.max(0, end - start);
   try {
-    console.log({event:"coach_job", schemaVersion:1, lifecycle,
+    console.log({event:job.taskKind === "complete_revision" ? "complete_revision_job" : "coach_job", schemaVersion:1, lifecycle,
       serviceVersion:typeof serviceVersion === "string" && /^[a-z0-9._-]{1,80}$/i.test(serviceVersion) ? serviceVersion : null,
       jobId:typeof job.id === "string" && UUID.test(job.id) ? job.id : null,
       state:["queued", "running", "done", "failed"].includes(job.state) ? job.state : "queued",
@@ -36,7 +36,7 @@ export function coachJobClass({ generate, authorize, rateLimit, digest, serviceV
 
     response(job) {
       return Response.json({
-        ok: true, jobId: job.id, state: job.state, expiresAt: job.expiresAt, deliverySupported:true,
+        ok: true, jobId: job.id, state: job.state, expiresAt: job.expiresAt, deliverySupported:job.taskKind !== "complete_revision",
         ...(job.state === "running" ? {phase:job.phase || "reviewing"} : {}),
         ...(job.state === "done" ? {report: job.result.report} : {}),
         ...(job.state === "failed" ? {failure: job.failure} : {}),
@@ -72,14 +72,14 @@ export function coachJobClass({ generate, authorize, rateLimit, digest, serviceV
       try { result = await this.ctx.storage.transaction(async txn => {
         const saved = await txn.get("job");
         if (saved) return {job:saved, conflict:saved.fingerprint !== fingerprint};
-        const job = {id:input.id, owner:input.owner, payload:input.payload,
+        const job = {id:input.id, owner:input.owner, payload:input.payload, taskKind:input.payload?.completeRevision ? "complete_revision" : "review",
           ipHash:input.ipHash, fingerprint, serviceVersion, state:"queued", createdAt:Date.now(),
           expiresAt:Date.now() + JOB_TTL_MS};
         await txn.put("job", job);
         await txn.setAlarm(Date.now());
         return {job, admitted:true};
       }); } catch (err) {
-        logJob({id:input.id, state:"queued"}, "persistence_failed", {phase:"queued", reason:"admission_storage_failed", status:503}, serviceVersion);
+        logJob({id:input.id, state:"queued", taskKind:input.payload?.completeRevision ? "complete_revision" : "review"}, "persistence_failed", {phase:"queued", reason:"admission_storage_failed", status:503}, serviceVersion);
         throw err;
       }
       // Outside the transaction: retries of its callback or of PUT cannot count
@@ -93,7 +93,7 @@ export function coachJobClass({ generate, authorize, rateLimit, digest, serviceV
     async finish(job, result, failure, {reason, phase} = {}) {
       // Remove the draft and IP fingerprint after execution. A later lookup only
       // needs the immutable result; failed jobs never publish partial grading.
-      const finished = {id:job.id, owner:job.owner, fingerprint:job.fingerprint,
+      const finished = {id:job.id, owner:job.owner, fingerprint:job.fingerprint, taskKind:job.taskKind,
         createdAt:job.createdAt, startedAt:job.startedAt, finishedAt:Date.now(), serviceVersion:job.serviceVersion ?? serviceVersion, expiresAt:job.expiresAt,
         state:failure ? "failed" : "done", ...(failure ? {failure} : {result})};
       try {

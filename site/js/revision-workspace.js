@@ -32,8 +32,7 @@ var RevisionWorkspace = {
         form.voteGap === draft.request.voteGap && (form.mode || "guided") === (draft.request.mode || "guided");
       if (same) { draft.revision = form.script; draft.revisionDirty = form.script !== draft.request.script; }
       if (!draft.revisionDirty) {
-        var preview = Report._coachingPreview(draft.request.script,report.coaching);
-        draft.revision = RevisionWorkspace.candidate(report) || (preview && preview.script) || draft.request.script;
+        draft.revision = RevisionWorkspace.candidate(report) || draft.request.script;
       }
       draft.completeRevisionInitialized = true;
       draft.editing = Boolean(draft.revisionDirty);
@@ -97,10 +96,38 @@ var RevisionWorkspace = {
 
     if (items.length) {
       var feedback = el("section","revision-feedback");
-      feedback.appendChild(el("h2",null,"原稿问题与修改说明 · " + items.length));
+      feedback.appendChild(el("h2",null,"本稿已确认的修改问题 · " + items.length));
       if (report.coaching && report.coaching.keep) feedback.appendChild(el("p","revision-keep","保留：" + report.coaching.keep));
-      feedback.appendChild(RevisionWorkspace.issueList(items,request.script));
+      feedback.appendChild(RevisionWorkspace.issueList(items.map(function(issue,index){
+        var change=plan && Array.isArray(plan.changes) && plan.changes.find(function(item){return item.issue===index;});
+        return change ? Object.assign({},issue,{action:change.why}) : issue;
+      }),request.script));
 
+    }
+    var busy = function () {return RevisionWorkspace._active === report;};
+    if (report.verdict !== "passed" && (busy() || draft.completeError || !plan || plan.status !== "ready" || draft.revision.trim() !== RevisionWorkspace.candidate(report))) {
+      var completePanel = el("section","revision-complete-panel");
+      completePanel.appendChild(el("h2",null,"教练帮你一次改完整"));
+      var completeStatus = el("p","revision-desk__hint");completeStatus.setAttribute("role","status");
+      completeStatus.textContent = draft.completeError || (busy() ? "正在一起处理整稿问题并复核，你可以先看下方说明，不用自己逐个改。" :
+        (RevisionWorkspace.candidate(report) ? (plan.status === "ready" ? "完整改稿已按原标准复核通过，可直接采用，也可以微调。" : "完整参考稿已生成，仍有待复核项；可以让教练继续改完整。") :
+        (draft.completeError || (draft.completeAttempted ? "这次完整改稿未生成，原稿批改已保留，可以重试。" : "将集中处理下方已确认的问题，生成一份完整改稿。"))));
+      completePanel.appendChild(completeStatus);
+      var generate = el("button","training-secondary revision-generate",busy() ? "正在生成完整改稿…" :
+        (draft.completeSaveFailed ? "重试保存完整改稿" : plan && plan.status === "ready" ? "重新生成完整改稿（可选）" : (RevisionWorkspace.candidate(report) ? "帮我把剩余问题一起改好" : (draft.completeAttempted ? "重新生成完整改稿" : "帮我改好完整稿"))));generate.type="button";generate.disabled=busy();
+      generate.addEventListener("click",function(){RevisionWorkspace.generate();});if(!plan || plan.status!=="ready" || busy() || draft.completeError)completePanel.appendChild(generate);
+      if(busy()) {
+        var cancel=el("button","training-secondary-link","暂时停止等待");cancel.type="button";
+        cancel.addEventListener("click",function(){draft.completeWaiting=false;draft.completeError="已停止等待，完整改稿任务仍可继续取回。";Api.cancel();Report._saveWorkspace(draft);Report.showContent(report);});completePanel.appendChild(cancel);
+      }
+      if(RevisionWorkspace.candidate(report) && draft.revision.trim()!==RevisionWorkspace.candidate(report)) {
+        var offer=el("details","review-details");offer.appendChild(el("summary",null,"查看教练改好的完整稿"));
+        offer.appendChild(el("div","current-draft",RevisionWorkspace.candidate(report)));
+        var adopt=el("button","training-secondary","采用这份完整改稿");adopt.type="button";adopt.disabled=busy();
+        adopt.addEventListener("click",function(){draft.beforeEdit=draft.revision;draft.editing=false;RevisionWorkspace.save(draft,RevisionWorkspace.candidate(report));Report.showContent(report);});
+        offer.appendChild(adopt);completePanel.appendChild(offer);
+      }
+      root.appendChild(completePanel);
     }
     var desk = el("section","revision-desk revision-workspace");
     var deskTitle = el("h2",null,"当前稿"); deskTitle.id = "current-draft-title"; desk.appendChild(deskTitle);
@@ -119,10 +146,11 @@ var RevisionWorkspace = {
       title.textContent = approved ? "这版可以开口练" : "把这版集中改好";
       summary.textContent = approved ? "完整稿已检查通过，可以直接练，也可以调整成自己的说法。"
         : "必要修改已集中列在下方，完整稿检查通过后就能开口练。";
+      deskTitle.textContent = value === RevisionWorkspace.candidate(report) ? "教练改好的完整稿" : "当前稿";
       clean.textContent = input.value;
       clean.hidden = Boolean(draft.editing); input.hidden = !draft.editing; count.hidden = !draft.editing;
       count.textContent = value.length + " / " + LIMITS.scriptMax;
-      primary.disabled = !valid || (!approved && value === request.script.trim());
+      primary.disabled = busy() || !valid || (!approved && value === request.script.trim());
       primary.textContent = approved ? "用这版开始练习" : "检查这版完整话术";
       tweak.textContent = draft.editing ? "收起编辑，查看整稿" : "我想微调几句";
       revert.hidden = typeof draft.beforeEdit !== "string" || draft.beforeEdit === input.value;
@@ -176,6 +204,57 @@ var RevisionWorkspace = {
     root.appendChild(detail);
     var newRound = el("button","training-secondary-link","另写一份新话术"); newRound.type = "button"; newRound.addEventListener("click",Report._onNewRound); root.appendChild(newRound);
     sync(); RevisionWorkspace.save(draft,input.value);
+    if (window.CoachJobs) setTimeout(function(){RevisionWorkspace.autoGenerate(report);},0);
+  },
+  _active: null,
+  completePayload: function (report,request) {
+    var saved=Report._workspace;
+    if(saved && saved.report===report && saved.completeWaiting && saved.completePayloadForJob)return saved.completePayloadForJob;
+    var completeRevision={reportId:report.report_id};
+    if(report.revision_plan && report.revision_plan.attempt_report_id)completeRevision.attemptReportId=report.revision_plan.attempt_report_id;
+    return {script:request.script,voteGap:request.voteGap,scenario:request.scenario,completeRevision:completeRevision};
+  },
+  autoGenerate: function (report) {
+    if(App.state.lastReport!==report || !RevisionWorkspace.supports(report,App.state.lastRequest) || report.verdict==="passed" || Api._inFlight) return;
+    var draft=RevisionWorkspace.draft(report);
+    var payload=RevisionWorkspace.completePayload(report,App.state.lastRequest);
+    var resume=draft.completeWaiting && !draft.completeSaveFailed && CoachJobs.canResume(payload);
+    if(resume || (!draft.completeAttempted && !RevisionWorkspace.candidate(report) && report.history_available!==false)) RevisionWorkspace.generate();
+  },
+  generate: function () {
+    var report=App.state.lastReport,request=App.state.lastRequest;
+    if(!RevisionWorkspace.supports(report,request) || report.verdict==="passed" || Api._inFlight) return;
+    if(!App.getAccessCode()){App.showAccessModal(function(){RevisionWorkspace.generate();});return;}
+    if(report.history_available===false || !report.report_id) {Form._submitData(Object.assign({},request));return;}
+    var draft=RevisionWorkspace.draft(report),baseline=draft.revision;
+    var payload=RevisionWorkspace.completePayload(report,request);
+    draft.completePayloadForJob=payload;draft.completeSaveFailed=false;
+    draft.completeAttempted=true;draft.completeWaiting=true;draft.completeError="";
+    RevisionWorkspace._active=report;Report._saveWorkspace(draft);Report.showContent(report);
+    Api.submit(payload,{
+      onSuccess:function (result) {
+        if(App.state.lastReport!==report) return;
+        if(result.report_id!==report.report_id || result.verdict!==report.verdict) {draft.completeError="整稿结果与当前原稿不一致，请重试。";draft.completeWaiting=false;return;}
+        report.revision_plan=result.revision_plan;delete report.ready_revision;
+        if(result.ready_revision)report.ready_revision=result.ready_revision;
+        var candidate=RevisionWorkspace.candidate(report);
+        if(candidate && draft.revision===baseline && !draft.editing) {delete draft.beforeEdit;RevisionWorkspace.save(draft,candidate);}
+        draft.completeWaiting=false;draft.completeError="";
+        if(!Report._saveWorkspace(draft)){draft.completeSaveFailed=true;draft.completeWaiting=true;draft.completeError="完整改稿已完成，但本机暂时无法保存，请保留页面。";return false;}
+      },
+      onError:function(status,message){
+        if(App.state.lastReport!==report)return;
+        draft.completeWaiting=false;draft.completeError=message || "完整改稿暂未生成，原稿批改已保留。";
+        if(status===401)App.showAccessModal(null,{invalid:true,clear:true});
+        if(status===410)report.history_available=false;
+        Report._saveWorkspace(draft);
+      },
+      onRetry:function(){},
+      onFinish:function(){
+        if(RevisionWorkspace._active===report)RevisionWorkspace._active=null;
+        if(App.state.lastReport===report && App.state.currentView==="report")Report.showContent(report);
+      },
+    });
   },
   open: function (edit) {
     if (!RevisionWorkspace.supports(App.state.lastReport,App.state.lastRequest)) return false;
