@@ -120,6 +120,8 @@ var Api = {
       if (payload.revision.reportId) body.revision.reportId = payload.revision.reportId;
     }
 
+    if (payload.completeRevision) body.completeRevision = payload.completeRevision;
+
     // 前端超时保险。旧 WebView 没有 AbortController 时用 Promise.race 降级，
     // 不让一个同步 ReferenceError 把 _inFlight 永久锁住。
     // 总预算在首次请求和 502/504 自动重试之间共享，不会因为重试把时长翻倍。

@@ -1910,6 +1910,8 @@ var Report = {
   },
 
   _onNewRound: function () {
+    if (window.Api) Api.cancel();
+    if (window.RevisionWorkspace) RevisionWorkspace._active = null;
     Report._clearWorkspace();
     Report._stopLoadingMessages();
     if (window.VoiceCoach && VoiceCoach.reset) VoiceCoach.reset();
