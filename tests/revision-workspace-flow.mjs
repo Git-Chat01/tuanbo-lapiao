@@ -4,7 +4,7 @@ import {readFileSync} from "node:fs";
 import {fixtureReport,originalScript,revisedScript} from "./helpers/revision-fixtures.mjs";
 
 function session(storage=new Map()) {
-  const elements=new Map(),calls=[],voice=[],timers=new Map();let next=0;
+  const elements=new Map(),calls=[],voice=[],timers=new Map(),intervals=new Map(),scrolls=[];let next=0,documentRef;
   function node(tag="div") {
     const item={tag,children:[],events:{},attributes:{},style:{},dataset:{},value:"",hidden:false,disabled:false,
       classList:{add(){},remove(){},toggle(){}},get firstChild(){return this.children[0]||null;},
@@ -13,7 +13,7 @@ function session(storage=new Map()) {
       removeChild(child){this.children.splice(this.children.indexOf(child),1);child.parentNode=null;},
       setAttribute(k,v){this.attributes[k]=String(v);},getAttribute(k){return this.attributes[k];},removeAttribute(k){delete this.attributes[k];},
       addEventListener(k,fn){this.events[k]=fn;},querySelector(){return null;},querySelectorAll(){return [];},
-      focus(){this.focused=true;},setSelectionRange(){},click(){if(!this.disabled)this.events.click?.();}};
+      focus(){this.focused=true;documentRef.activeElement=this;},setSelectionRange(start,end){this.selectionStart=start;this.selectionEnd=end;},click(){if(!this.disabled)this.events.click?.();}};
     let content="";
     Object.defineProperty(item,"textContent",{get(){return content+this.children.map(x=>x.textContent).join("");},set(v){content=String(v);this.children=[];}});
     Object.defineProperty(item,"innerHTML",{set(){throw Error("do not render model HTML");}});
@@ -22,11 +22,11 @@ function session(storage=new Map()) {
   }
   const get=id=>{if(!elements.has(id))elements.set(id,node());return elements.get(id);};
   const c=vm.createContext({console,URL,URLSearchParams,
-    setTimeout:fn=>{timers.set(++next,fn);return next;},clearTimeout:id=>timers.delete(id),setInterval:()=>++next,clearInterval(){},
+    setTimeout:fn=>{timers.set(++next,fn);return next;},clearTimeout:id=>timers.delete(id),setInterval:fn=>{intervals.set(++next,fn);return next;},clearInterval:id=>intervals.delete(id),
     localStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},
     document:{createElement:node,createTextNode:t=>({textContent:t}),getElementById:get,querySelector:()=>null,querySelectorAll:()=>[],addEventListener(){}},
   });
-  c.window=c;c.location={hostname:"127.0.0.1",search:"?api=http://localhost:8787"};c.scrollTo=()=>{};
+  documentRef=c.document;c.window=c;c.location={hostname:"127.0.0.1",search:"?api=http://localhost:8787"};c.scrollTo=(...args)=>scrolls.push(args);
   for(const name of ["config","app","form","report","revision-workspace"])vm.runInContext(readFileSync(new URL("../site/js/"+name+".js",import.meta.url),"utf8"),c);
   c.Form._scenario=c.TRAINING_SCENARIOS.find(x=>x.id==="novice-revival-far-v1");
   c.Form._renderScenarioPicker=()=>{};c.Form._renderScenario=()=>{};c.Form._renderSceneGuidance=()=>{};c.Form._applyProgress=()=>{};c.Form._showSceneHistory=()=>{};
@@ -34,7 +34,7 @@ function session(storage=new Map()) {
   c.VoiceCoach={open:data=>voice.push(data),suspend(){},reset(){}};
   const all=item=>[item,...item.children.flatMap(all)];
   const byClass=cls=>all(get("report-content")).find(x=>(x.className||"").split(" ").includes(cls));
-  return {c,get,storage,calls,voice,all,byClass,node,edit(value){const input=get("revision-script");input.value=value;input.events.input();}};
+  return {c,get,storage,calls,voice,all,byClass,node,intervals,scrolls,edit(value){const input=get("revision-script");input.value=value;input.events.input();}};
 }
 function readyReport() {
   const report=fixtureReport();report.report_id="11111111-1111-4111-8111-111111111111";
@@ -124,7 +124,7 @@ for(const kind of ["missing-receipt","mismatched-script","not-passed","awaiting"
   assert.equal(x.c.Report._workspace.beforeEdit,undefined,"automatic adoption clears the original-script undo baseline");
   assert.equal(x.c.App.state.coaching.totalAttempts,attempts,"teaching completion is not another failed learner attempt");
   assert.equal(x.byClass("revision-submit").textContent,"用这版开始练习");
-  assert.equal(x.byClass("revision-complete-panel"),undefined,"completed scripts lead directly to practice without another generation step");
+  assert.equal(x.byClass("revision-complete-panel").hidden,true,"completed scripts lead directly to practice without another generation step");
   // A late regeneration cannot overwrite wording the learner edits while waiting.
   x.c.RevisionWorkspace.generate();x.byClass("revision-tweak").click();x.edit(own);
   x.calls[1].callbacks.onSuccess(finished);x.c.Api._inFlight=false;pending=false;x.calls[1].callbacks.onFinish();
@@ -149,4 +149,73 @@ for(const kind of ["missing-receipt","mismatched-script","not-passed","awaiting"
   assert.equal(refreshed.get("revision-script").value,before,"wrong-receipt late result cannot overwrite current draft");
   x.c.Report._onNewRound();assert.equal(x.c.Api._inFlight,false);assert.equal(x.c.RevisionWorkspace._active,null);assert.equal(x.c.App.state.lastReport,null);
 }
+
+// Live status, IME input and open explanations survive same-report asynchronous updates.
+{
+  const x=session(),plain=readyReport();delete plain.revision_plan;delete plain.ready_revision;
+  x.c.App.getAccessCode=()=>"synthetic-code";
+  x.c.CoachJobs={canResume:()=>false,read:()=>null};
+  x.c.Api.submit=(data,callbacks)=>{x.calls.push({data,callbacks});x.c.Api._inFlight=true;};
+  render(x,plain);x.byClass("revision-tweak").click();
+  const editor=x.get("revision-script"),original=x.byClass("revision-original"),evidence=x.byClass("revision-evidence");
+  original.open=true;evidence.open=true;editor.focus();editor.setSelectionRange(5,9);editor.scrollTop=48;
+  const scrollCount=x.scrolls.length;
+  x.c.RevisionWorkspace.generate();
+  assert.equal(x.get("revision-script")===editor,true,"starting generation must not remount the editor");
+  assert.equal(x.c.document.activeElement===editor,true);assert.equal(x.scrolls.length,scrollCount);
+  assert.equal(x.intervals.size,1,"one clock per active task");
+  const start=Date.now()-12000;
+  x.calls[0].callbacks.onRetry("连接暂时中断，正在重新查询这次批改，不用重复提交。",{startedAt:start});
+  assert.match(x.byClass("revision-complete-panel").textContent,/连接暂时中断/);
+  assert.match(x.byClass("revision-elapsed").textContent,/距本次提交 1[2-3] 秒/);
+  assert.equal(x.c.Report._workspace.completeStartedAt,start);
+  editor.events.compositionstart();editor.value=own; // Browser IME has not emitted its final input event yet.
+  x.calls[0].callbacks.onSuccess(readyReport());x.c.Api._inFlight=false;x.calls[0].callbacks.onFinish();
+  assert.equal(x.get("revision-script")===editor,true,"completion must preserve the actual textarea, including IME");
+  assert.equal(editor.value,own);assert.equal(editor.selectionStart,5);assert.equal(editor.selectionEnd,9);assert.equal(editor.scrollTop,48);
+  assert.equal(x.c.document.activeElement===editor,true);assert.equal(x.scrolls.length,scrollCount);
+  assert.equal(original.open,true);assert.equal(evidence.open,true);assert.equal(x.byClass("revision-original")===original,true);
+  assert.equal(x.intervals.size,0);assert.equal(x.byClass("revision-copy").disabled,true);
+  assert.match(x.byClass("revision-feedback").textContent,/正在微调的当前稿需重新检查/);
+  assert.doesNotMatch(x.byClass("revision-feedback").textContent,/原稿这 2 处已改好/);
+  editor.events.compositionend();assert.equal(x.c.Report._workspace.revision,own);
+  const adopt=x.all(x.get("report-content")).find(n=>n.tag==="button" && n.textContent==="采用这份完整改稿");
+  adopt.click();assert.equal(editor.value,revisedScript);assert.equal(x.byClass("revision-copy").disabled,false);
+  assert.match(x.byClass("revision-feedback").textContent,/原稿这 2 处已改好/);
+  let copied; x.c.Report.copyScript=value=>{copied=value;};x.byClass("revision-copy").click();assert.equal(copied,revisedScript);
+  x.byClass("revision-tweak").click();x.edit(own);x.byClass("revision-copy").click();assert.equal(copied,revisedScript,"unreviewed edits cannot be copied as an approved full script");
+  // A late auth error must not steal focus back from the entry-code dialog.
+  x.c.RevisionWorkspace.generate();const modal=x.node("input");
+  x.c.App.showAccessModal=()=>modal.focus();x.calls[1].callbacks.onError(401,"入口码已失效");x.c.Api._inFlight=false;x.calls[1].callbacks.onFinish();
+  assert.equal(x.c.document.activeElement===modal,true);assert.equal(x.intervals.size,0);
+  const displayed=x.byClass("revision-complete-panel").textContent;x.c.Report._onNewRound();
+  x.calls[1].callbacks.onRetry("不应显示的旧消息");assert.equal(x.byClass("revision-complete-panel").textContent,displayed);
+}
+
+
+// Stopping the wait pauses polling, retains the task, and resumes its original clock and payload.
+{
+  const x=session(),plain=readyReport();delete plain.revision_plan;delete plain.ready_revision;
+  let pending=false;const startedAt=Date.now()-15000;
+  x.c.App.getAccessCode=()=>"synthetic-code";
+  x.c.CoachJobs={canResume:()=>pending,read:()=>pending?{startedAt}:null};
+  x.c.Api.submit=(data,callbacks)=>{x.calls.push({data,callbacks});pending=true;x.c.Api._inFlight=true;};
+  x.c.Api.cancel=()=>{x.c.Api._inFlight=false;x.calls.at(-1).callbacks.onFinish();};
+  render(x,plain);x.c.RevisionWorkspace.generate();
+  const editor=x.get("revision-script");
+  const stop=x.all(x.get("report-content")).find(n=>n.tag==="button" && n.textContent==="暂时停止等待");stop.click();
+  assert.equal(x.c.RevisionWorkspace._active,null);assert.equal(x.intervals.size,0);assert.equal(pending,true);
+  assert.equal(x.byClass("revision-generate").textContent,"继续取回完整改稿");
+  x.c.RevisionWorkspace.autoGenerate(plain);assert.equal(x.calls.length,1,"stopped polling must not restart automatically");
+  x.byClass("revision-generate").click();assert.equal(x.calls.length,2);
+  assert.equal(JSON.stringify(x.calls[0].data),JSON.stringify(x.calls[1].data));
+  assert.equal(x.c.Report._workspace.completeStartedAt,startedAt);assert.equal(x.intervals.size,1);
+  assert.equal(x.get("revision-script")===editor,true);assert.match(x.byClass("revision-elapsed").textContent,/距本次提交 1[5-6] 秒/);
+  const refreshed=session(x.storage);refreshed.c.App.getAccessCode=()=>"synthetic-code";
+  refreshed.c.CoachJobs={canResume:()=>true,read:()=>({startedAt})};refreshed.c.Report._restoreWorkspace();
+  refreshed.c.RevisionWorkspace.autoGenerate(refreshed.c.App.state.lastReport);
+  assert.equal(refreshed.c.Report._workspace.completeStartedAt,startedAt);assert.equal(refreshed.calls.length,1);
+  assert.equal(JSON.stringify(refreshed.calls[0].data),JSON.stringify(x.calls[0].data));
+}
+
 console.log("PASS revision workspace: all-issue full generation, independent retry/resume, no single-focus fallback, no extra attempts, no lost edits, exact-text approval and refresh/cancel preservation");

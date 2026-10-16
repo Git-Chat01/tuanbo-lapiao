@@ -121,3 +121,16 @@ for(const mode of ['body','wrong-id','render']){
  assert.doesNotMatch(a.events.messages.join(' '),/不一致|未判分|冲突|object Object/);
 }
 console.log('PASS browser task recovery: lost acceptance, reload, offline, timeout, terminal failure, immutable revision context, cancellation and stale responses');
+
+
+// Complete-revision status uses real server phases and keeps the acknowledged task clock on resume.
+{
+ const p={script:payload.script,voteGap:"far",completeRevision:{reportId:crypto.randomUUID()}},map=new Map();let done=false;
+ const a=client((url,options)=>{const b=JSON.parse(options.body);return answer({jobId:b.jobId||url.split('/').at(-1),state:done?'done':'running',phase:'checking_advice',...(done?{report}:{})});},map);
+ const seen=[];
+ a.c.Api.submit(p,{onRetry:(message,context)=>seen.push({message,context}),onFinish:()=>a.events.finish++});
+ await until(()=>seen.length>0);assert.match(seen[0].message,/正在生成并复核完整稿/);
+ const started=seen[0].context.startedAt;assert.equal(started,a.c.CoachJobs.read().startedAt);a.c.Api.cancel();
+ const again=[];a.c.Api.submit(p,{onRetry:(message,context)=>again.push({message,context}),onFinish:()=>a.events.finish++});
+ await until(()=>again.length>0);assert.equal(again[0].context.startedAt,started);done=true;await until(()=>a.events.finish===2);
+}

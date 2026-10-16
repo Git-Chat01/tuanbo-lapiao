@@ -263,7 +263,7 @@ var Report = {
       number: 0,
       title: focus && focus.label ? focus.label : "补上关键一拍",
       standard: "让这一处落到具体的人、具体的现场和可执行的动作上。",
-      method: "只改教练指出的这一处，其他已经做到的内容先保留。",
+      method: "对照教练指出的问题修改，保留已经做到的内容。",
     };
   },
 
@@ -851,27 +851,27 @@ var Report = {
       return "你已经拿下本拍 " + progress.metCount + "/" + progress.applicableCount + " 项。这一关刚刚松了一点，先把它补稳。";
     }
     if (labels.length && progress.isFirstResult) {
-      return "第一次挑战已经拿下“" + labels.join("、") + "”。不用从头重写，现在只补一个缺口。";
+      return "这版已经做到“" + labels.join("、") + "”。保留已做到的内容，对照建议继续完善。";
     }
     if (labels.length) {
-      return "刚刚新拿下“" + labels.join("、") + "”。上一关已经结束，现在只看这一关。";
+      return "刚刚新拿下“" + labels.join("、") + "”。保留这些内容，再对照本稿建议完善。";
     }
     if (progress.metCount > 0) {
-      return "你已经拿下本拍 " + progress.metCount + "/" + progress.applicableCount + " 项。已经做到的先保留，这次只攻“" + focus.label + "”。";
+      return "你已经拿下本拍 " + progress.metCount + "/" + progress.applicableCount + " 项。保留已做到的内容，重点检查“" + focus.label + "”。";
     }
-    return "这不是整篇都不行。先只拿下“" + focus.label + "”，其他地方这一轮先不动。";
+    return "保留原稿已有的内容，重点检查“" + focus.label + "”，并结合下方说明调整。";
   },
 
   _heading: function (report, focus, progress) {
     var heading = Report._el("header", "review-heading");
     var challenge = Report._challengeFor(focus);
     var eyebrow = "话术陪练 · 第 " + progress.totalAttempts + " 版";
-    var title = "这次解决一个问题";
+    var title = "这版的修改建议";
     heading.setAttribute("aria-live", "polite");
     heading.appendChild(Report._el("span", null, eyebrow));
     heading.appendChild(Report._el("h1", null, title));
     var coaching = Report._coachingFor(report, focus);
-    heading.appendChild(Report._el("p", "review-heading__progress", coaching ? coaching.keep : "已经做到的先保留，这次解决一个问题。"));
+    heading.appendChild(Report._el("p", "review-heading__progress", coaching ? coaching.keep : "保留已做到的内容，对照建议完善这版。"));
     return heading;
   },
 
@@ -973,12 +973,12 @@ var Report = {
   _focusPaper: function (report, focus, progress) {
     var coaching = Report._coachingFor(report, focus);
     var paper = Report._el("section", "focus-paper focus-paper--compact" + (report.redline_note ? " focus-paper--redline" : ""));
-    paper.setAttribute("aria-label", "这次解决一个问题");
+    paper.setAttribute("aria-label", "这版的修改建议");
     var direction = Report._specificDirectionFor(report, focus) || Report._solutionFor(report, focus);
     if (coaching) {
       paper.appendChild(Report._challengeRow("你的原话", coaching.original, "challenge-card__row--evidence"));
       paper.appendChild(Report._challengeRow("问题在哪里", (report.interaction_review && report.interaction_review.judgment === "misread" ? report.interaction_review.reading : report.card_why) || Report._focusWhy(report, focus)));
-      paper.appendChild(Report._challengeRow("这次只改", coaching.action, "challenge-card__row--solution"));
+      paper.appendChild(Report._challengeRow("修改建议", coaching.action, "challenge-card__row--solution"));
       if (coaching.mode !== "guidance") paper.appendChild(Report._challengeRow("可以这样说", coaching.example, "challenge-card__row--specific"));
       (coaching.related_edits || []).forEach(function(edit,index) {
         paper.appendChild(Report._challengeRow("同类问题 · 第 " + (index + 2) + " 处原话", edit.original, "challenge-card__row--evidence"));
@@ -987,7 +987,7 @@ var Report = {
       paper.appendChild(Report._challengeRow("为什么这样改", coaching.why));
     } else {
       paper.appendChild(Report._challengeRow("问题在哪里", report.card_why || Report._focusWhy(report, focus)));
-      paper.appendChild(Report._challengeRow("这次只改", Report._shortFeedback(direction, 65, "只改教练指出的这一处，其他先保留。"), "challenge-card__row--solution"));
+      paper.appendChild(Report._challengeRow("修改建议", Report._shortFeedback(direction, 65, "对照已确认的问题修改，保留已有内容。"), "challenge-card__row--solution"));
       paper.appendChild(Report._challengeRow("为什么", Report._shortFeedback(Report._focusWhy(report, focus), 100, "先把这一处说清，让观众听懂你的意思。")));
     }
     return paper;
@@ -1558,6 +1558,7 @@ var Report = {
   },
 
   showContent: function (report) {
+    if (window.RevisionWorkspace && RevisionWorkspace.supports(report,App.state.lastRequest) && RevisionWorkspace.refresh(report)) return;
     Report._visibleReportId = "";
     Report._stopLoadingMessages();
     document.getElementById("report-loading").hidden = true;
@@ -1570,6 +1571,10 @@ var Report = {
     Report._showRedlineBanner(report.redline_note);
 
     var content = document.getElementById("report-content");
+    if (window.RevisionWorkspace) {
+      content.classList.remove("has-practice-dock");
+      RevisionWorkspace._stopClock();
+    }
     Report._clear(content);
     content.hidden = false;
 

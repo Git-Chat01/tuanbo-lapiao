@@ -264,7 +264,7 @@ function testUnchangedDraftCannotRestartTheSameChallenge() {
   context.Form.validate = () => null;
   context.Form._updateInputState();
   assert.equal(submitButton.disabled, true, "返回初稿页时原文提交按钮应真实禁用");
-  assert.equal(submitLabel.textContent, "先改动一处");
+  assert.equal(submitLabel.textContent, "修改后再提交");
 
   context.Form.collect = () => ({ script: "上一份已经改动过的话术" });
   context.Form._updateInputState();

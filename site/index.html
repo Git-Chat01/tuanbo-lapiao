@@ -7,10 +7,10 @@
   <!-- 本地联调只放行 wrangler dev 默认端口 8787；线上页面即使被诱导填 ?api= 也连不出去 -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self' https://lapiao.aivar.cc http://127.0.0.1:8787 http://localhost:8787; object-src 'none'; form-action 'self'; base-uri 'self'">
   <title>场练 · 团播新人排练台</title>
-  <link rel="stylesheet" href="css/common.css">
-  <link rel="stylesheet" href="css/form.css?v=20261007-far1">
-  <link rel="stylesheet" href="css/report.css?v=20261014-complete2">
-  <link rel="stylesheet" href="css/voice.css">
+  <link rel="stylesheet" href="css/common.css?v=20261015-ux1">
+  <link rel="stylesheet" href="css/form.css?v=20261015-ux1">
+  <link rel="stylesheet" href="css/report.css?v=20261015-ux1">
+  <link rel="stylesheet" href="css/voice.css?v=20261015-ux1">
 </head>
 <body class="presenter-page">
   <div class="training-shell">
@@ -22,11 +22,11 @@
 
     <nav class="training-steps" aria-label="本轮训练步骤">
       <button type="button" class="training-step is-active" data-stage="form" aria-current="step">
-        <span class="training-step__number">01</span><span>写话术</span>
+        <span class="training-step__number">01</span><span class="training-step__label">写话术</span>
       </button>
       <span class="training-step__line" aria-hidden="true"></span>
       <button type="button" class="training-step" data-stage="report" disabled>
-        <span class="training-step__number">02</span><span>改明白</span>
+        <span class="training-step__number">02</span><span>改整稿</span>
       </button>
       <span class="training-step__line" aria-hidden="true"></span>
       <button type="button" class="training-step" data-stage="voice" disabled>
@@ -37,14 +37,11 @@
     <main class="training-main">
       <section id="view-form" class="training-view training-view--active" aria-labelledby="training-goal-title">
         <div class="training-goal">
-          <span>今天只练</span>
-          <h1 id="training-goal-title">复活差得多，你准备怎么说？</h1>
+          <h1 id="training-goal-title">写下你准备说的话</h1>
         </div>
 
         <section id="novice-context" class="novice-context" aria-label="这次练习的背景">
-          <p class="novice-context__label">就练你最常遇到的情况</p>
-          <p class="novice-context__main">刚被刀下去，复活还差很多。<br>你是新人，没有固定支持你的老用户。</p>
-          <p class="novice-context__note">面对还不熟悉你的观众，把你准备说的话写下来。</p>
+          <p class="novice-context__main">你是新人，刚被刀下去，复活还差很多，也没有固定支持你的老用户。</p>
         </section>
         <aside id="legacy-draft-note" class="legacy-draft-note" hidden>
           <p>已保留上次练习的原背景和草稿。</p>
@@ -106,12 +103,10 @@
         </aside>
 
         <section class="writing-desk" aria-labelledby="script-label">
-          <label id="script-label" for="input-script">你现在会怎么开口？</label>
-          <div class="structure-prompt" aria-label="练习方法">
-            <span>先写自己的话</span><span>集中改好整稿</span><span>通过后开口练</span>
-          </div>
-          <textarea id="input-script" class="script-input" maxlength="500" rows="5"
-                    placeholder="不用先想标准答案，就按你平时说话的方式写。教练会告诉你哪里要改、怎么改、为什么。"></textarea>
+          <label id="script-label" for="input-script">你的拉票话术</label>
+          <p id="writing-help" class="writing-help">教练会集中指出问题，并给你一份完整改稿。</p>
+          <textarea id="input-script" class="script-input" maxlength="500" rows="5" aria-describedby="writing-help"
+                    placeholder="按你平时说话的方式写，不用先想标准答案。"></textarea>
           <div class="writing-desk__foot"><span id="draft-status">草稿会自动保存</span><span id="script-count">0 / 500</span></div>
         </section>
 
@@ -199,14 +194,14 @@
 
   <div id="toast-container" class="toast-container" aria-live="polite"></div>
 
-  <script src="js/config.js?v=20261008-recovery1"></script>
-  <script src="js/app.js?v=20261014-complete2"></script>
-  <script src="js/form.js?v=20261014-complete2"></script>
-  <script src="js/coach-delivery.js?v=20261010-display1"></script>
-  <script src="js/coach-jobs.js?v=20261014-complete2"></script>
-  <script src="js/api.js?v=20261014-complete2"></script>
-  <script src="js/report.js?v=20261014-complete2"></script>
-  <script src="js/revision-workspace.js?v=20261014-complete2"></script>
-  <script src="js/voice.js?v=20261014-complete2"></script>
+  <script src="js/config.js?v=20261015-ux1"></script>
+  <script src="js/app.js?v=20261015-ux1"></script>
+  <script src="js/form.js?v=20261015-ux1"></script>
+  <script src="js/coach-delivery.js?v=20261015-ux1"></script>
+  <script src="js/coach-jobs.js?v=20261015-ux1"></script>
+  <script src="js/api.js?v=20261015-ux1"></script>
+  <script src="js/report.js?v=20261015-ux1"></script>
+  <script src="js/revision-workspace.js?v=20261015-ux1"></script>
+  <script src="js/voice.js?v=20261015-ux1"></script>
 </body>
 </html>
