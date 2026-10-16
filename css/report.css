@@ -742,3 +742,16 @@
 .revision-complete-panel h2 { font-size: 1.05rem; margin: 0 0 .6rem; }
 .revision-complete-panel button { min-height: 48px; margin-top: .5rem; }
 .revision-complete-panel .revision-generate { width: 100%; }
+
+/* Keep the adopted script and next action readable without obscuring the editor. */
+.presenter-page .revision-desk__head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; margin-bottom: 8px; }
+.presenter-page .revision-desk__head h2 { margin: 0; }
+.presenter-page .revision-copy { min-height: 44px; padding: 8px 0; border: 0; background: transparent; }
+.presenter-page .revision-copy:disabled { color: var(--stage-muted); opacity: .65; }
+.presenter-page .revision-elapsed { margin: 10px 0; color: var(--stage-muted); font-size: var(--font-size-sm); font-variant-numeric: tabular-nums; }
+.presenter-page .revision-feedback.is-resolved h2 { color: #146545; }
+.presenter-page .revision-feedback.is-resolved .revision-issue__action { color: #146545; }
+.presenter-page #report-content.has-practice-dock { padding-bottom: calc(90px + env(safe-area-inset-bottom, 0px)); }
+.presenter-page .has-practice-dock > .revision-primary-slot { position: fixed; z-index: 20; bottom: 0; left: 50%; transform: translateX(-50%); width: min(100%, 430px); padding: 12px 18px calc(12px + env(safe-area-inset-bottom, 0px)); background: var(--stage-canvas); border-top: 1px solid var(--stage-line); }
+.presenter-page .has-practice-dock > .revision-primary-slot .training-primary { margin: 0; }
+.presenter-page .revision-offer .current-draft { margin-top: 12px; }

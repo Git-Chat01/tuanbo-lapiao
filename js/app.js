@@ -104,6 +104,10 @@ var App = {
     };
   },
 
+  _hasRevisionWorkspace: function () {
+    return Boolean(window.RevisionWorkspace && RevisionWorkspace.supports(App.state.lastReport, App.state.lastRequest));
+  },
+
   _syncStage: function (activeStage) {
     var activeIndex = App._stageOrder.indexOf(activeStage);
     var buttons = document.querySelectorAll(".training-step");
@@ -111,6 +115,15 @@ var App = {
       var buttonStage = buttons[i].dataset.stage;
       var buttonIndex = App._stageOrder.indexOf(buttonStage);
       var isActive = buttonStage === activeStage;
+      if (buttonStage === "form") {
+        var completedDraft = activeStage !== "form" && App._hasRevisionWorkspace();
+        buttons[i].disabled = completedDraft;
+        buttons[i].classList.toggle("is-submitted", completedDraft);
+        var label = buttons[i].querySelector(".training-step__label");
+        if (label) label.textContent = completedDraft ? "原稿已交" : "写话术";
+        if (completedDraft) buttons[i].setAttribute("aria-label", "原稿已提交，在改整稿中修改当前稿");
+        else buttons[i].removeAttribute("aria-label");
+      }
       buttons[i].classList.toggle("is-active", isActive);
       buttons[i].classList.toggle("is-complete", buttonIndex >= 0 && buttonIndex < activeIndex);
       if (isActive) buttons[i].setAttribute("aria-current", "step");
@@ -125,6 +138,7 @@ var App = {
       return;
     }
     if (stage === "form") {
+      if (App._hasRevisionWorkspace() && App.state.currentView !== "form") return;
       if (App.state.currentView !== "form" && window.Report) Report._onBackEdit();
       else App.showView("form");
       return;

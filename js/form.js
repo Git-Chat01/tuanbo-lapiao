@@ -70,8 +70,10 @@ var Form = {
     document.getElementById("scene-window").hidden = Boolean(App.state.freeMode || novice);
     document.getElementById("coach-cue").hidden = Boolean(App.state.freeMode || novice);
     document.getElementById("btn-free-mode").hidden = true;
-    document.getElementById("script-label").textContent = novice ? "你现在会怎么开口？" : (App.state.freeMode ? "你当时是怎么说的？" : "你会怎么接这颗球？");
-    if (novice) document.getElementById("training-goal-title").textContent = Form._scenario.title;
+    document.getElementById("script-label").textContent = novice ? "你的拉票话术" : (App.state.freeMode ? "你当时是怎么说的？" : "你会怎么接这颗球？");
+    if (novice) document.getElementById("training-goal-title").textContent = "写下你准备说的话";
+    var help = document.getElementById("writing-help");
+    if (help) help.textContent = novice ? "教练会集中指出问题，并给你一份完整改稿。" : "写下你准备说的话，教练会解释问题和修改方向。";
   },
 
   _findScenario: function (id) {
@@ -229,8 +231,9 @@ var Form = {
 
   _renderSceneGuidance: function (completed) {
     var scenario = Form._scenario || {};
-    document.getElementById("training-goal-title").textContent = completed
-      ? (scenario.title || "现在轮到你接下一拍")
+    document.getElementById("training-goal-title").textContent = Form._isNovice()
+      ? "写下你准备说的话"
+      : completed ? (scenario.title || "现在轮到你接下一拍")
       : (scenario.preReplayTitle || "先看完现场，再决定怎么接");
     document.getElementById("scene-phase").textContent = completed
       ? (scenario.phaseLabel || "现场切片")
@@ -481,7 +484,7 @@ var Form = {
     document.getElementById("script-count").textContent = data.script.length + " / " + LIMITS.scriptMax;
     button.disabled = Boolean(Form.validate(data) || sameAsLast || waitingForReplay);
     var label = button.querySelector("span:first-child");
-    if (label) label.textContent = waitingForReplay ? (Form._replayInProgress ? "先看完现场" : "先播放现场") : (sameAsLast ? "先改动一处" : "帮我看这版");
+    if (label) label.textContent = waitingForReplay ? (Form._replayInProgress ? "先看完现场" : "先播放现场") : (sameAsLast ? "修改后再提交" : "帮我看这版");
   },
 
   _onSubmit: function () {
@@ -496,7 +499,7 @@ var Form = {
       return;
     }
     if (Form._isSameAsLast(data)) {
-      App.toast("先改动教练指出的这一处，再看看是否说清了");
+      App.toast("这版还没有改动。根据教练的说明修改后，再检查完整话术。");
       return;
     }
     if (!App.getAccessCode()) {

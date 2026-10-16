@@ -74,7 +74,7 @@ var CoachJobs = {
       if (Api._active === run) { Api._active = null; Api._inFlight = false; }
       if (callbacks.onFinish) callbacks.onFinish();
     }
-    function message(text) { if (active() && callbacks.onRetry) callbacks.onRetry(text); }
+    function message(text) { if (active() && callbacks.onRetry) callbacks.onRetry(text, {startedAt:run.startedAt}); }
     function pause(ms) {
       return new Promise(function (resolve) {
         var timer = setTimeout(done, ms);
@@ -109,6 +109,7 @@ var CoachJobs = {
         saved = {id:CoachJobs.uuid(), owner:owner, payload:body, acknowledged:false, startedAt:Date.now(), expiresAt:Date.now()+86400000};
       }
       run.jobId = saved.id;
+      run.startedAt = Number.isFinite(saved.startedAt) ? saved.startedAt : startedAt;
       var persistent = CoachJobs.save(saved);
       var errors = 0;
       while (active()) {
@@ -144,7 +145,11 @@ var CoachJobs = {
             }
             if (!retained) CoachJobs.clear(saved.id); return;
           }
-          var phaseMessages = {
+          var phaseMessages = body.completeRevision ? {
+            reviewing:"正在读取原稿批改，准备完整改稿。",
+            recovering:"正在再次核对完整稿。",
+            checking_advice:"正在生成并复核完整稿。",
+          } : {
             reviewing:"教练正在批改这版话术。",
             recovering:"正在核对这版的判断。",
             checking_advice:"正在核对修改建议。",
