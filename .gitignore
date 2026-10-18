@@ -15,3 +15,6 @@ tests/tmp_results/
 
 # 教练经验随记本——带教经验是产品壁垒，只留在本地给 AI 消化（仓库公开的只有提炼后的 prompt.js）
 docs/
+
+# Local generated artifacts (including private spreadsheet exports).
+outputs/

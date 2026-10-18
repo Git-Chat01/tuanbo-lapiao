@@ -330,6 +330,15 @@ body.presenter-page {
   font-weight: 700;
 }
 
+.presenter-page .training-brand__icon {
+  display: block;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  object-fit: contain;
+}
+
 .presenter-page .live-dot {
   display: inline-block;
   width: 8px;
