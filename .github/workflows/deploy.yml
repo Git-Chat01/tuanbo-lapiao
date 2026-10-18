@@ -40,6 +40,7 @@ jobs:
         run: |
           node tests/worker-safety.mjs
           node tests/frontend-safety.mjs
+          node tests/domain-entry.mjs
           node tests/independent-matrix.mjs
           node tests/context-response-safety.mjs
           node tests/ui-flow-safety.mjs

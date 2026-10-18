@@ -5,6 +5,13 @@
   "name": "tuanbo-lapiao-coach",
   "main": "worker/index.js",
   "compatibility_date": "2026-08-16",
+  // Public pages only; API and health routes must always run through the Worker.
+  "assets": {
+    "directory": "./site",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "not_found_handling": "none"
+  },
   // Retain application events for real task outcomes; omit routine invocation logs.
   "observability": {
     "redact_query_string": true,

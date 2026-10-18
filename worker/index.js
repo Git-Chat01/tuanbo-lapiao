@@ -30,6 +30,7 @@ import { enqueueTeachingReview, listTeachingReviews, resolveTeachingReview, dele
 // （CORS 只约束浏览器跨域读响应，真正的安全门槛是入口码/管理密码，不是这里）
 const ALLOWED_ORIGINS = [
   "https://git-chat01.github.io", // GitHub Pages
+  "https://lapiao.aivar.cc", // 主播页面与 API 同域
   "http://127.0.0.1:8080", // 本地前端联调
   "http://localhost:8080",
 ];
@@ -204,7 +205,7 @@ const DEEPSEEK_CONFIG = {
 // 只复用已完成的检查，不用缓存把一个未经验证的模型输出变成标准答案。
 const REVIEW_VERSION = "2026-10-09-judgment-evidence-1";
 // Transport-only releases must not invalidate completed grading results.
-const SERVICE_VERSION = "2026-10-18-all-high-fidelity-1";
+const SERVICE_VERSION = "2026-10-18-domain-entry-1";
 const REVIEW_TTL_SECONDS = 7 * 24 * 60 * 60;
 const reviewStores = new WeakMap();
 // These dependencies improve reuse/history but are not allowed to erase or delay
@@ -415,8 +416,15 @@ export default {
       );
     }
 
-    // 根路径：API 域名不是给人看的，直接打开时跳到前端页面
-    // （主播/教练会从微信里打开链接，输错域名时落到这里也比看到 JSON 好）
+    // Serve only the deployed site/ asset collection. Reserved API/health paths
+    // keep their JSON errors and authentication even if an asset shares a name.
+    const apiPath = url.pathname === "/api" || url.pathname.startsWith("/api/");
+    if ((request.method === "GET" || request.method === "HEAD") && !apiPath &&
+        url.pathname !== "/health" && typeof env.ASSETS?.fetch === "function") {
+      return env.ASSETS.fetch(request);
+    }
+
+    // Asset-free local/API-only previews can still reach the legacy frontend.
     if (request.method === "GET" && url.pathname === "/") {
       return Response.redirect("https://git-chat01.github.io/tuanbo-lapiao/", 302);
     }

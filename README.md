@@ -272,11 +272,16 @@ BASE=http://127.0.0.1:8787 CODE=... ADMIN=... bash tests/smoke.sh
 
 ## 部署
 
-- 前端：push 到 `master` 后由 GitHub Actions 发布 `site/` 到 GitHub Pages
-- Worker：配置三个 secrets 和 `CASES` KV binding 后运行 `wrangler deploy worker/index.js`
-- 线上入口：`https://git-chat01.github.io/tuanbo-lapiao/`
-- 教练后台：`https://git-chat01.github.io/tuanbo-lapiao/coach.html`
+- 主播主入口：`https://lapiao.aivar.cc/`，由现有 Worker 的静态资源绑定直接托管 `site/`，不会再跳转 GitHub。
+- 教练后台：`https://lapiao.aivar.cc/coach.html`
+- Worker 与主站：保留现有 secrets、KV 和 Durable Object 配置，运行 `.\node_modules\.bin\wrangler.cmd deploy --config wrangler.jsonc` 同步发布代码和 `site/`；只上传 `site/` 中的公开文件。
+- 旧入口保留：`https://git-chat01.github.io/tuanbo-lapiao/`，旧后台为同路径下 `coach.html`。GitHub Actions 仍负责该旧站，只有 `site/` 有变化才重发。
+- **更新前端时也必须部署 Worker**：只 push GitHub 不会更新自有域名主站，发布前确认两个入口资源来自同一版本。
 - API：`https://lapiao.aivar.cc`
+
+浏览器按域名隔离入口码、草稿、录音和任务恢复记录。学员首次使用新入口需重新输入原入口码；旧记录不会自动搬迁，旧链接保留供继续原任务或取回草稿。新域名录音时需重新允许麦克风。
+
+2026-10-18 入口迁移已部署：Worker `d5ebb2d0-e2ea-4a16-bb2c-87d58ef8d8c5`，服务版本 `2026-10-18-domain-entry-1`。33 组本地回归通过；线上完成 29 项检查，首页直接返回 HTML 200、15 份 JS/CSS 与本地公开资源一致、API 鉴权与两个入口 Origin 正常。模型配置仍为全部 high，未改评分逻辑。路由回归见 `tests/domain-entry.mjs`。
 
 ## 2026-09-28 现场接话修正
 
