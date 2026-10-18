@@ -7,7 +7,10 @@
   <!-- 本地联调只放行 wrangler dev 默认端口 8787；线上页面即使被诱导填 ?api= 也连不出去 -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self' https://lapiao.aivar.cc http://127.0.0.1:8787 http://localhost:8787; object-src 'none'; form-action 'self'; base-uri 'self'">
   <title>场练 · 团播新人排练台</title>
-  <link rel="stylesheet" href="css/common.css?v=20261015-ux1">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/brand/favicon-32.png?v=20261018-mic1">
+  <link rel="icon" type="image/png" sizes="192x192" href="assets/brand/icon-192.png?v=20261018-mic1">
+  <link rel="apple-touch-icon" sizes="180x180" href="assets/brand/apple-touch-icon.png?v=20261018-mic1">
+  <link rel="stylesheet" href="css/common.css?v=20261018-logo1">
   <link rel="stylesheet" href="css/form.css?v=20261015-ux1">
   <link rel="stylesheet" href="css/report.css?v=20261015-ux1">
   <link rel="stylesheet" href="css/voice.css?v=20261015-ux1">
@@ -15,7 +18,7 @@
 <body class="presenter-page">
   <div class="training-shell">
     <header class="training-topbar">
-      <div class="training-brand"><span class="live-dot" aria-hidden="true"></span><span>场练</span></div>
+      <div class="training-brand"><img class="training-brand__icon" src="assets/brand/logo-84.png?v=20261018-mic1" width="28" height="28" alt="" decoding="async"><span>场练</span></div>
       <span class="training-round">新人复活陪练</span>
       <button type="button" id="btn-access-code" class="training-top-action">入口码</button>
     </header>
