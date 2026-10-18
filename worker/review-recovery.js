@@ -5,9 +5,13 @@ import { detectRedline, REDLINE_TERMS } from "./redlines.js";
 // lesson/output contract. Recovery does not receive previous grading or history.
 const RULE_END = SYSTEM_PROMPT.indexOf("【一次解决一类问题，而且改法必须有效】");
 if (RULE_END < 0) throw new Error("Recovery grading boundary missing");
-export const RECOVERY_REVIEW_VERSION = "2026-10-09-risk-level-1";
+export const RECOVERY_REVIEW_VERSION = "2026-10-18-high-1";
 export const RECOVERY_TOTAL_MS = 25000;
-export const RECOVERY_ATTEMPT_MS = 12000;
+// A high-effort assessment shares its token allowance between reasoning and JSON.
+// The default shares one attempt's budget; a caller with spare task time may
+// reserve up to two attempts without extending either request or its deadline.
+export const RECOVERY_ATTEMPT_MS = RECOVERY_TOTAL_MS;
+export const RECOVERY_MAX_WINDOW_MS = 2 * RECOVERY_ATTEMPT_MS;
 const CORE_KEYS = ["user_reason", "vote_instruction"];
 const STATUSES = ["met", "partial", "missing"];
 const RISK_FOCUS = {redline:"redline", pressure:"mentality", posture:"mentality", misread:"line_angle", persona:"persona"};
@@ -19,6 +23,7 @@ const CONTRACT = `【本次仅输出短评契约，替代上文的输出格式�
 {"core":[{"key":"user_reason","status":"met|partial|missing","quote":"当前稿连续逐字原文","reason":"具体解释该项成立或缺少什么"},{"key":"vote_instruction","status":"met|partial|missing","quote":"当前稿连续逐字原文","reason":"具体解释"}],"risks":[{"kind":"redline|pressure|posture|misread|persona","quote":"当前稿连续逐字原文","reason":"说明实际风险，不能猜观众心理"}],"awaiting_response":false,"focus":{"focus_key":"user_reason|vote_instruction|redline|mentality|line_angle|persona|final_polish","keep":"当前稿具体可以保留什么","original":"本次讲解对应的当前原文","action":"针对本稿明确说要改什么、怎么改；不空喊补内容或更自然","why":"说明原来和修改方向有什么区别"},"interaction":{"reading":"原稿在对谁说什么、接了什么","why":"结合已有事实说明成立处或断点","next_check":"下一步观察哪种真实回应"}}
 core必须恰好两项，risks必须显式给数组，无风险为[]；awaiting_response必须显式布尔。missing可用空quote，met/partial必须给非空原文证据。不是缺少真实反馈就missing。risks只填能核对的实际错误，保护性提醒不是风险；没命中词表也要检查明确强迫、误读、整篇模板表达。pressure只用于明确逼迫消费、严重自贬或叠加乞求；posture用于一处轻度乞求/乞怜。风险优先级redline、pressure、persona、misread、posture。存在风险时focus对应最高优先风险（pressure/posture对应mentality、misread对应line_angle）；无风险时从确实未met的核心选一个。双met且无风险才用final_polish，action确认保留这版并开口练，不另加门槛。
 awaiting_response仅用于原稿已自然询问并给回应空间，唯一未完成的是尚未得到回复，没有继续催付费或其他问题；必须没有risks，两个核心均为partial。此时focus=user_reason，action应保留询问、接着听回应，不让学员反复改同一句。
+【解释中的引文】core.reason、risks.reason、focus.why、interaction.reading/why里的引号只用于当前原稿或已给场景的连续逐字原话；概括内容、机制标签和未发生的假想说法一律不加引号。不要给概括加引号冒充证据，也不要为了引用增加不在原稿的字。解释每项用一两句具体短话即可，不重复整稿背景，不展开无关假想。
 quote/original不超过200字，reason不超过180字，focus.why不超过160字，keep/action不超过120字，interaction每项不超过160字。risks最多4项。persona必须另给related_quotes数组，至少一条不同位置、与主quote互不包含、互不重叠且能唯一定位的真实原文，共同说明整篇重复的泛夸或口号机制；不能只因一个词判persona。不要生成example或related_edits，不编逐句点评，不输出其他三个非核心项，不为了契约凑虚假证据。教学必须具体指向本稿内容，不能只说“继续优化”。`;
 
 const isObject = value => !!value && typeof value === "object" && !Array.isArray(value);
@@ -183,7 +188,10 @@ async function boundedJson(response, signal) {
 }
 
 export async function callReviewRecovery(env, config, input, deadline) {
-  const messages = recoveryMessages(input), expires = Math.min(deadline, Date.now() + RECOVERY_TOTAL_MS);
+  const requestedWindow = config?.recoveryWindowMs;
+  const windowMs = Number.isFinite(requestedWindow) && requestedWindow > 0
+    ? Math.min(requestedWindow, RECOVERY_MAX_WINDOW_MS) : RECOVERY_TOTAL_MS;
+  const messages = recoveryMessages(input), expires = Math.min(deadline, Date.now() + windowMs);
   if (!env?.DEEPSEEK_API_KEY || !config?.url || !config?.model || !Number.isFinite(expires) || expires <= Date.now()) throw new Error("Recovery unavailable");
   const usage = {prompt_tokens:0, completion_tokens:0};
   let lastError, correction = "";
@@ -196,7 +204,7 @@ export async function callReviewRecovery(env, config, input, deadline) {
     try {
       data = await Promise.race([(async () => {
         const response = await fetch(config.url, {method:"POST", headers:{"Content-Type":"application/json",Authorization:`Bearer ${env.DEEPSEEK_API_KEY}`},
-          body:JSON.stringify({model:config.model,temperature:0,max_tokens:2200,thinking:{type:"disabled"},response_format:{type:"json_object"},messages:attemptMessages}),signal:controller.signal});
+          body:JSON.stringify({model:config.model,temperature:0,max_tokens:8192,thinking:{type:"enabled"},reasoning_effort:config.reasoningEffort || "high",response_format:{type:"json_object"},messages:attemptMessages}),signal:controller.signal});
         if (!response.ok) {
           response.body?.cancel().catch(() => {});
           throw new Error("Recovery upstream unavailable");
@@ -205,6 +213,7 @@ export async function callReviewRecovery(env, config, input, deadline) {
       })(), new Promise((_, reject) => { timer = setTimeout(() => {controller.abort();reject(new Error("Recovery deadline"));}, budget); })]);
       for (const field of ["prompt_tokens", "completion_tokens"]) if (Number.isFinite(data?.usage?.[field]) && data.usage[field] >= 0) usage[field] += data.usage[field];
       const choice = data?.choices?.[0];
+      if (choice?.finish_reason === "length") throw new Error("Recovery output truncated");
       if (choice?.finish_reason !== "stop" || typeof choice.message?.content !== "string" || choice.message.content.length > 16000) throw new Error("Recovery output incomplete");
       const report = parseRecoveryAssessment(JSON.parse(choice.message.content), input, {allowGuidanceFallback:attempt === 1});
       if (typeof config.validateReport === "function") {

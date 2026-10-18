@@ -74,7 +74,8 @@ try {
   assert.equal(result.body.report.coaching.example,'');assert.deepEqual(result.body.report.line_reviews,[]);
   assert.deepEqual(result.body.report.structure_checks.map(item=>item.key),['user_reason','vote_instruction']);
   assert.deepEqual(calls.map(call=>call.task),['grade','recover_current_review']);
-  assert.equal(calls[1].payload.thinking.type,'disabled');
+  assert.equal(calls[1].payload.thinking.type,'enabled');
+  assert.equal(calls[1].payload.reasoning_effort,'high');
   assert.equal(JSON.stringify(calls[1].input).includes('coaching'),false,'recovery has no old judgment to copy');
   if(stream)assert.match(result.contentType,/ndjson/);
   const count=calls.length;currentResult(await submit(env,{},stream),'almost');assert.equal(calls.length,count,'recovery result cached once');

@@ -175,6 +175,9 @@ const DEEPSEEK_CONFIG = {
   // 2026-09-15 实测：live-coaching 8/8 判定正确、revival-model-check 5/5 通过，
   // 该顾虑对 V4.1 Flash 不成立。model-quality 全量跑批尚未复跑。
   model: "deepseek-flash",
+  // 2026-10-17 同稿对照与复测：high 减少已观察到的重复修改任务；详见 tests/reasoning-effort-results.md。
+  // 放入配置，使推理档位参与评分缓存指纹；不改变判稿规则、token 或时限。
+  reasoningEffort: "high",
   // ⚠️ 思考模式不支持 temperature：官方明确"设置参数不会报错，但也不会生效"，
   // 故该参数在 thinking.enabled 下为空转，保留只为关掉思考时能重新生效。
   // 温度演进：0.7 → 0.3 → 0。
@@ -201,7 +204,7 @@ const DEEPSEEK_CONFIG = {
 // 只复用已完成的检查，不用缓存把一个未经验证的模型输出变成标准答案。
 const REVIEW_VERSION = "2026-10-09-judgment-evidence-1";
 // Transport-only releases must not invalidate completed grading results.
-const SERVICE_VERSION = "2026-10-14-complete-revision-2";
+const SERVICE_VERSION = "2026-10-18-all-high-fidelity-1";
 const REVIEW_TTL_SECONDS = 7 * 24 * 60 * 60;
 const reviewStores = new WeakMap();
 // These dependencies improve reuse/history but are not allowed to erase or delay
@@ -403,6 +406,9 @@ export default {
           service: "tuanbo-lapiao-coach",
           reviewVersion: REVIEW_VERSION,
           serviceVersion: SERVICE_VERSION,
+          model: DEEPSEEK_CONFIG.model,
+          reasoningEffort: DEEPSEEK_CONFIG.reasoningEffort,
+          reasoningScope: "all-model-calls",
         },
         200,
         corsHeaders
@@ -535,7 +541,11 @@ async function generateCoachReview(body, env, ctx, startedAt = Date.now(), jobDe
   }
   const recover = async () => {
     await phase("recovering");
-    return callReviewRecovery(env, {...DEEPSEEK_CONFIG,validateReport:validateRecoveredReview}, {voteGap:body.voteGap,script:body.script,cases,redlineHits,scenario}, deadline);
+    // Early primary failures may leave substantially more than the reserved
+    // recovery budget. Spend that remaining task budget on at most two bounded
+    // independent attempts, keeping time for delivery and the same 90s limit.
+    return callReviewRecovery(env, {...DEEPSEEK_CONFIG,validateReport:validateRecoveredReview,
+      recoveryWindowMs:Math.max(0,deadline-Date.now()-1500)}, {voteGap:body.voteGap,script:body.script,cases,redlineHits,scenario}, deadline);
   };
   const preparedAt = Date.now();
   let generated = false;
@@ -730,6 +740,10 @@ export async function generateCompleteRevisionReview(body,env,ctx,jobDeadline=nu
   let cases=[];
   try{cases=await boundedDependency("case_retrieval",()=>retrieveCases(env,{voteGap:body.voteGap,script:body.script,scenario}),SUPPORT_WAIT_MS.cases,deadline);}catch{}
   const config={...DEEPSEEK_CONFIG,onUsage:account};
+  // Private to this exact task and reference snapshot. A transient fidelity check
+  // must not pay to rejudge the same candidate; a changed script gets a fresh check.
+  const candidateReviews=new Map();
+  const preservedCandidates=new Set();
   let previousDraft="",remainingIssues=[],previousChanges=[];
   if(body.completeRevision.attemptReportId) {
     if(!REPORT_ID_PATTERN.test(body.completeRevision.attemptReportId))throw new HttpError(400,"上次整稿记录无效，请重新检查原稿。","invalid rewrite attempt");
@@ -748,21 +762,23 @@ export async function generateCompleteRevisionReview(body,env,ctx,jobDeadline=nu
       let preservationIssue=null;
       const complete=await prepareCompleteRevision(report,candidate,{source:body.script,deadline,maxCheckMs:40000,
         grade:async(script,until)=>{
+          if(candidateReviews.has(script))return structuredClone(candidateReviews.get(script));
           const hits=detectRedline(script);
-          try {
-            // Use the same independently validated recovery as the ordinary review route.
-            const result=await callDeepSeek(env,{voteGap:body.voteGap,script,cases,redlineHits:hits,scenario,onUsage:account},null,until-20000);
-            const checked=result.guidanceOnly ? result.report : normalizeReport(result.report,script);
-            if(!result.guidanceOnly)applyReportSafetyGates(checked,hits,{sourceScript:script,scenario,voteGap:body.voteGap});
-            return checked;
-          } catch (error) {
-            if(!env.DEEPSEEK_API_KEY || (error.status && error.status<500))throw error;
-            const recovered=await callReviewRecovery(env,{...DEEPSEEK_CONFIG,validateReport:validateRecoveredReview},
-              {voteGap:body.voteGap,script,cases,redlineHits:hits,scenario},until);
-            account(recovered.usage);return recovered.report;
-          }
+          // The independent evidence contract retains the same grading rules.
+          // Return the judgment, not another long teaching report about a draft
+          // the coach just wrote; the separate fidelity check still must pass.
+          const checked=await callReviewRecovery(env,{...DEEPSEEK_CONFIG,validateReport:validateRecoveredReview},
+            {voteGap:body.voteGap,script,cases,redlineHits:hits,scenario},until);
+          account(checked.usage);
+          candidateReviews.set(script,structuredClone(checked.report));
+          return checked.report;
         },
-        preserve:(script,until)=>checkRevisionPreservation(env,{...config,onRejected:value=>{preservationIssue={key:"revision_preservation",original:value.evidence,why:value.reason,action:"修正这处偏离原稿的内容，保留原稿事实和能力边界。"};}},{originalScript:body.script,revisedScript:script,scenario,issues},until),
+        preserve:async(script,until)=>{
+          if(preservedCandidates.has(script))return true;
+          const preserved=await checkRevisionPreservation(env,{...config,onRejected:value=>{preservationIssue={key:"revision_preservation",original:value.evidence,why:value.reason,action:"修正这处偏离原稿的内容，保留原稿事实和能力边界。"};}},{originalScript:body.script,revisedScript:script,scenario,issues},until);
+          if(preserved)preservedCandidates.add(script);
+          return preserved;
+        },
       });
       if(complete?.plan.script){
         previousDraft=complete.plan.script;previousChanges=candidate.changes;remainingIssues=complete.plan.remaining_issues || [];
@@ -774,7 +790,9 @@ export async function generateCompleteRevisionReview(body,env,ctx,jobDeadline=nu
           } catch {report.revision_plan.review_note="完整改稿已保留，复核记录暂未保存，请再试一次。";}
           break;
         }
-        if(!remainingIssues.length)break;
+        // A fidelity-verified candidate with a transient judgment failure still
+        // gets the next bounded attempt. Do not regenerate or recheck success.
+        if(!remainingIssues.length)continue;
       } else {
         // Retain rejected candidates only in the private retry receipt, never in learner output.
         previousDraft=candidate.script;previousChanges=candidate.changes;
@@ -3373,9 +3391,9 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
           model: DEEPSEEK_CONFIG.model,
           temperature: DEEPSEEK_CONFIG.temperature,
           max_tokens: DEEPSEEK_CONFIG.maxTokens,
-          // 显式 low，避免默认 high 的长思考挤占 JSON 正文与响应时间。
+          // 原稿与整稿独立复核使用同一个经过对照测试的档位。
           thinking: { type: "enabled" },
-          reasoning_effort: "low",
+          reasoning_effort: DEEPSEEK_CONFIG.reasoningEffort,
           response_format: { type: "json_object" }, // 结构化输出，前端逐字段 textContent 渲染
           messages,
         }),
@@ -3543,6 +3561,8 @@ async function callDeepSeek(env, { voteGap, script, cases, redlineHits, scenario
 // source safety rules without inventing line reviews or optional mechanism fields.
 export function validateRecoveredReview(report, input) {
   const reject = issue => { throw Object.assign(new Error("Recovery safety validation"),{recoveryIssue:issue}); };
+  const evidenceIssue = getJudgmentEvidenceIssue(report,input.script,input.scenario);
+  if (evidenceIssue) reject(evidenceIssue);
   const requirementIssue = getNoviceRequirementIssue(report,input.scenario);
   if (requirementIssue) reject(requirementIssue);
   const source = withoutAttributedQuotedText(input.script);

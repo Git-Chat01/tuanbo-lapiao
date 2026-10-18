@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {callReviewRecovery,parseRecoveryAssessment,recoveryMessages,RECOVERY_ATTEMPT_MS,RECOVERY_TOTAL_MS} from '../worker/review-recovery.js';
+import {callReviewRecovery,parseRecoveryAssessment,recoveryMessages,RECOVERY_ATTEMPT_MS,RECOVERY_TOTAL_MS,RECOVERY_MAX_WINDOW_MS} from '../worker/review-recovery.js';
 import {NOVICE_SCENARIO,SYSTEM_PROMPT} from '../worker/current-review.js';
 
 const script='我是新人小禾，刚被刀下去，差很多。大家帮我上复活票吧。';
@@ -15,7 +15,7 @@ function assessment() {return {
  interaction:{reading:'刚被刀下去，向不熟悉的观众请求复活。',why:'请求清楚，但可参与的内容尚未说明。',next_check:'看有没有人接词；没回应就继续已有互动。'}
 };}
 const makeResponse=(value,finish='stop')=>Response.json({choices:[{finish_reason:finish,message:{content:typeof value==='string'?value:JSON.stringify(value)}}],usage:{prompt_tokens:12,completion_tokens:8}});
-const originalFetch=globalThis.fetch, originalTimeout=globalThis.setTimeout, originalLog=console.log;
+const originalFetch=globalThis.fetch, originalTimeout=globalThis.setTimeout, originalLog=console.log, originalNow=Date.now;
 const logs=[];
 console.log=value=>logs.push(value);
 try {
@@ -121,14 +121,17 @@ try {
  globalThis.fetch=async(url,options)=>{calls.push({url,options,payload:JSON.parse(options.body)});return makeResponse(assessment());};
  let recovered=await callReviewRecovery(env,config,input,Date.now()+30000);
  assert.equal(recovered.report.verdict,'almost');assert.deepEqual(recovered.usage,{prompt_tokens:12,completion_tokens:8});
- assert.equal(calls.length,1);assert.equal(calls[0].payload.max_tokens,2200);assert.equal(calls[0].payload.thinking.type,'disabled');
+ assert.equal(calls.length,1);assert.equal(calls[0].payload.max_tokens,8192);assert.equal(calls[0].payload.thinking.type,'enabled');assert.equal(calls[0].payload.reasoning_effort,'high');
  assert.ok(calls[0].options.signal.aborted,'closed attempt aborts unfinished network work');
+
+ calls=[];await callReviewRecovery(env,{...config,reasoningEffort:'high'},input,Date.now()+30000);
+ assert.equal(calls[0].payload.reasoning_effort,'high','the production effort configuration is propagated');
 
  calls=[];globalThis.fetch=async()=>{calls.push(1);return makeResponse(calls.length===1?'{"broken"':assessment());};
  recovered=await callReviewRecovery(env,config,input,Date.now()+30000);
  assert.equal(calls.length,2);assert.deepEqual(recovered.usage,{prompt_tokens:24,completion_tokens:16});
  calls=[];globalThis.fetch=async()=>{calls.push(1);return makeResponse(assessment(),'length');};
- await assert.rejects(()=>callReviewRecovery(env,config,input,Date.now()+30000),/incomplete/);assert.equal(calls.length,2);
+ await assert.rejects(()=>callReviewRecovery(env,config,input,Date.now()+30000),/truncated/);assert.equal(calls.length,2);
  calls=[];globalThis.fetch=async()=>{calls.push(1);const bad=assessment();delete bad.risks;return makeResponse(bad);};
  await assert.rejects(()=>callReviewRecovery(env,config,input,Date.now()+30000),/required core/);assert.equal(calls.length,2,'bad contracts do not become safe defaults');
  calls=[];globalThis.fetch=async()=>{calls.push(1);return new Response('a'.repeat(140000));};
@@ -160,18 +163,46 @@ try {
  await assert.rejects(()=>callReviewRecovery(env,{...config,validateReport(){throw Object.assign(new Error('hard safety conflict'),{recoveryIssue:'source safety conflict'});}},input,Date.now()+30000),/hard safety conflict/);
  assert.equal(calls.length,2,'display fallback cannot bypass final safety callback');
  const budgets=[];calls=[];
- globalThis.setTimeout=(callback,ms,...args)=>{budgets.push(ms);return originalTimeout(callback,Math.min(ms,10),...args);};
+ let virtualNow=originalNow();Date.now=()=>virtualNow;
+ globalThis.setTimeout=(callback,ms,...args)=>{budgets.push(ms);return originalTimeout(()=>{virtualNow+=ms;callback(...args);},1);};
  globalThis.fetch=async(_url,options)=>{calls.push(options.signal);return new Promise((_resolve,reject)=>options.signal.addEventListener('abort',()=>reject(new Error('aborted')),{once:true}));};
  await assert.rejects(()=>callReviewRecovery(env,config,input,Date.now()+30000));
- assert.equal(calls.length,2);assert.ok(calls.every(signal=>signal.aborted));assert.ok(budgets.every(ms=>ms<=RECOVERY_ATTEMPT_MS));assert.ok(budgets.reduce((a,b)=>a+b,0)<=RECOVERY_TOTAL_MS);
+ assert.equal(calls.length,1,'one full timeout consumes the shared recovery budget instead of starting another doomed high-effort call');assert.ok(calls.every(signal=>signal.aborted));assert.equal(budgets[0],RECOVERY_TOTAL_MS);assert.ok(budgets.every(ms=>ms<=RECOVERY_ATTEMPT_MS));
+ // A normal-route caller may spend its unused task time on a second independent
+ // attempt, while preserving the 25-second request cap and two-attempt maximum.
+ budgets.length=0;calls=[];
+ globalThis.fetch=async(_url,options)=>{
+   calls.push(options.signal);
+   if(calls.length===1)return new Promise((_resolve,reject)=>options.signal.addEventListener('abort',()=>reject(new Error('aborted')),{once:true}));
+   return makeResponse(assessment());
+ };
+ recovered=await callReviewRecovery(env,{...config,recoveryWindowMs:40000},input,Date.now()+60000);
+ assert.equal(recovered.report.verdict,'almost');assert.equal(calls.length,2);
+ assert.deepEqual(budgets,[RECOVERY_ATTEMPT_MS,15000],'the second request uses only the caller-reserved time left after the first timeout');
+ assert.ok(calls.every(signal=>signal.aborted));
+ budgets.length=0;calls=[];
+ globalThis.fetch=async(_url,options)=>{calls.push(options.signal);return new Promise((_resolve,reject)=>options.signal.addEventListener('abort',()=>reject(new Error('aborted')),{once:true}));};
+ await assert.rejects(()=>callReviewRecovery(env,{...config,recoveryWindowMs:10*RECOVERY_MAX_WINDOW_MS},input,Date.now()+120000));
+ assert.equal(calls.length,2,'a large caller window never enables a third request');
+ assert.deepEqual(budgets,[RECOVERY_ATTEMPT_MS,RECOVERY_ATTEMPT_MS]);
+ assert.equal(budgets.reduce((sum,ms)=>sum+ms,0),RECOVERY_MAX_WINDOW_MS,'the extended window has a hard 50-second cap');
+ budgets.length=0;calls=[];
+ await assert.rejects(()=>callReviewRecovery(env,{...config,recoveryWindowMs:RECOVERY_MAX_WINDOW_MS},input,Date.now()+35000));
+ assert.equal(calls.length,2);assert.deepEqual(budgets,[RECOVERY_ATTEMPT_MS,10000],'the supplied deadline still truncates the extended recovery window');
+ budgets.length=0;calls=[];
+ await assert.rejects(()=>callReviewRecovery(env,{...config,recoveryWindowMs:RECOVERY_MAX_WINDOW_MS},input,Date.now()+5000));
+ assert.equal(calls.length,1);assert.deepEqual(budgets,[5000],'an extended window cannot start work beyond a short task deadline');
+ budgets.length=0;calls=[];
+ await assert.rejects(()=>callReviewRecovery(env,config,input,Date.now()+5000));
+ assert.equal(calls.length,1);assert.deepEqual(budgets,[5000],'the supplied job deadline overrides the per-attempt allowance');
  const bodySignals=[];let streamCancelled=0;
  globalThis.fetch=async(_url,options)=>{bodySignals.push(options.signal);return new Response(new ReadableStream({start(controller){controller.enqueue(new TextEncoder().encode('{'));options.signal.addEventListener('abort',()=>controller.error(new Error('abort body')),{once:true});},cancel(){streamCancelled++;}}));};
  await assert.rejects(()=>callReviewRecovery(env,config,input,Date.now()+30000));
- assert.equal(bodySignals.length,2);assert.ok(bodySignals.every(signal=>signal.aborted),'deadline also covers incomplete body');
- globalThis.setTimeout=originalTimeout;
+ assert.equal(bodySignals.length,1);assert.ok(bodySignals.every(signal=>signal.aborted),'deadline also covers incomplete body');
+ globalThis.setTimeout=originalTimeout;Date.now=originalNow;
  let invoked=false;globalThis.fetch=async()=>{invoked=true;return makeResponse(assessment());};
  await assert.rejects(()=>callReviewRecovery(env,config,input,Date.now()-1),/unavailable/);assert.equal(invoked,false);
  await assert.rejects(()=>callReviewRecovery({},config,input,Date.now()+100),/unavailable/);assert.equal(invoked,false);
  assert.ok(logs.length);assert.ok(logs.every(line=>{const value=JSON.parse(line);return value.event==='review_recovery_timing'&&!line.includes(script)&&!line.includes(env.DEEPSEEK_API_KEY);}));
-} finally {globalThis.fetch=originalFetch;globalThis.setTimeout=originalTimeout;console.log=originalLog;}
+} finally {globalThis.fetch=originalFetch;globalThis.setTimeout=originalTimeout;console.log=originalLog;Date.now=originalNow;}
 console.log('PASS focused recovery grading evidence, explicit risks, protected statements, actionable teaching, bounded retries/body deadlines and private logs');

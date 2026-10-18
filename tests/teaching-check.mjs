@@ -242,6 +242,15 @@ try {
   assert.equal(needsExampleCheck({...report(),coaching:{...report().coaching,focus_key}},NOVICE_SCENARIO),true);
  assert.equal(needsExampleCheck({...report(),coaching:{...report().coaching,mode:'guidance',example:''}},NOVICE_SCENARIO),false);
 
+ // High-effort checks need room for reasoning as well as the final evidence JSON.
+ const checkPayloads=[];
+ globalThis.fetch=async(_url,options)=>{checkPayloads.push(JSON.parse(options.body));return response(check);};
+ await callTeachingCheck({DEEPSEEK_API_KEY:'fake'},{url:'https://local.test',model:'mock'},'example',{revisedScript:good},Date.now()+30000);
+ await callTeachingCheck({DEEPSEEK_API_KEY:'fake'},{url:'https://local.test',model:'mock',reasoningEffort:'high'},'example',{revisedScript:good},Date.now()+30000);
+ for(const payload of checkPayloads){assert.equal(payload.thinking.type,'enabled');assert.equal(payload.reasoning_effort,'high');assert.equal(payload.max_tokens,8192);}
+ globalThis.fetch=async()=>Response.json({choices:[{finish_reason:'length',message:{content:JSON.stringify(check)}}]});
+ await assert.rejects(()=>callTeachingCheck({DEEPSEEK_API_KEY:'fake'},{url:'https://local.test',model:'mock'},'example',{revisedScript:good},Date.now()+30000),/truncated/,'a clipped reasoning response cannot pass on superficially valid JSON');
+
  globalThis.fetch=async()=>({ok:true,json:()=>new Promise(()=>{})});
  const started=Date.now();await assert.rejects(()=>callTeachingCheck({DEEPSEEK_API_KEY:'fake'},{url:'https://local.test',model:'mock'},'example',{revisedScript:good},Date.now()+100,15),/deadline/);
  assert.ok(Date.now()-started<500,'超时涵盖完整响应体');

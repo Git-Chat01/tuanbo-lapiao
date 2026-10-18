@@ -216,9 +216,9 @@ async function requestRaw(fixture) {
         // 三者任一不同，这个测试绿了都不代表线上行为正确。
         model: "deepseek-flash",
         temperature: 0, // 思考模式下空转，保留只为与生产参数逐项对齐
-        max_tokens: 6000,
+        max_tokens: 16000,
         thinking: { type: "enabled" },
-        reasoning_effort: "low",
+        reasoning_effort: "high",
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: prompt.SYSTEM_PROMPT },

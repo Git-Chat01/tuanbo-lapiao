@@ -52,6 +52,16 @@ export function getJudgmentEvidenceIssue(report, source, scenario = null, detail
   const fields = [['verdict_reason',report.verdict_reason], ['card_why',report.card_why],
     ['ai_flavor',report.ai_flavor], ['redline_note',report.redline_note],
     ...array(report.line_reviews).map((x,i) => ['line_reviews['+i+'].comment',x?.comment])];
+  // Short assessments have no line reviews. Their core and interaction reasons
+  // are the actual displayed evidence, so validate quotations there as well.
+  // Keep proposed wording/actions outside this source-citation contract.
+  if(report.review_mode === 'focused') fields.push(
+    ...array(report.structure_checks).map((x,i) => ['structure_checks['+i+'].evidence',x?.evidence]),
+    ['coaching.why',report.coaching?.why],
+    ['interaction_review.reading',report.interaction_review?.reading],
+    ['interaction_review.why',report.interaction_review?.why],
+    ...array(report.revision_findings).map((x,i) => ['revision_findings['+i+'].why',x?.why])
+  );
   let invalid = false;
   for (const [field, text] of fields) for (const match of String(text || '').matchAll(/[“「]([^”」]{4,})[”」]/gu)) {
     const quote = match[1];
@@ -59,6 +69,8 @@ export function getJudgmentEvidenceIssue(report, source, scenario = null, detail
     // Explicit comparisons/examples must not be mistaken for learner quotations.
     const prefix = String(text).slice(0,match.index);
     if (/(?:例如|比如|不同于|可以改成|可改为|示范(?:为|：|:))\s*$/u.test(prefix)) continue;
+    if (report.review_mode === 'focused' && field === 'coaching.why' &&
+        /(?:补上|加上|改后|修改后|改成|改为)\s*$/u.test(prefix)) continue;
     invalid = true;
     details.push({field,quote,correction:'请引用当前稿或已给现场的真实原话；概括改用不带引号的准确说明，不能删改否定、条件、数字、对象或跨句拼接。'});
   }

@@ -99,6 +99,26 @@ for(const text of ['观众一定会上票。','观众只会觉得无聊。','观
  assert.equal(hasCertainAudienceClaim(text),true,'明确必然心理仍必须拦住：'+text);
 assert.equal(getJudgmentEvidenceIssue({...diagnosis,structure_checks:[{key:'target_user',evidence:'照顾“没预算的”这一类观众。'}],coaching:{keep:'保留“听糗事”的内容点。'}},source),'','内容概括与人群标签不冒充严格原句证据');
 
+// A short contract must validate quoted claims in every displayed diagnosis,
+// including the second core reason, not only the summary of the first one.
+const shortInput={script:source,voteGap:'far',scenario:NOVICE_SCENARIO};
+const shortValue=()=>({core:['user_reason','vote_instruction'].map(key=>({key,status:'met',quote:source,reason:'原文给出明确的参与内容与复活动作。'})),
+ risks:[],awaiting_response:false,focus:{focus_key:'final_polish',keep:'保留具体互动。',original:source,action:'保留这版并开口练。',why:'原稿参与过程和邀请均清楚。'},
+ interaction:{reading:'邀请观众给词并支持复活。',why:'互动与复活邀请前后衔接。',next_check:'看观众真实回应。'}});
+for(const mutate of [
+ value=>{value.core[1].reason='“我已经收到三百票”让动作明确。';},
+ value=>{value.focus.why='原稿“我已经收到三百票”已经落实支持。';},
+ value=>{value.interaction.reading='原稿“我已经收到三百票”是在接到账支持。';},
+ value=>{value.interaction.why='“我已经收到三百票”说明支持已经到账。';},
+]) {
+ const value=shortValue();mutate(value);
+ assert.throws(()=>validateRecoveredReview(parseRecoveryAssessment(value,shortInput),shortInput),
+   error=>/不存在的原句/.test(error.recoveryIssue),'正确的quote字段不能掩盖诊断中虚构的引文');
+}
+const groundedShort=shortValue();groundedShort.core[1].reason='“想听的朋友帮我上点复活票”明确了动作。';
+assert.equal(validateRecoveredReview(parseRecoveryAssessment(groundedShort,shortInput),shortInput).verdict,'passed');
+assert.equal(getJudgmentEvidenceIssue({review_mode:'focused',coaching:{why:'例如“想看的朋友再加入”是可选改法。'}},source),'','显式建议仍不冒充原稿引文');
+assert.equal(getJudgmentEvidenceIssue({review_mode:'focused',coaching:{why:'补上“观众出什么、你接什么”之后，互动过程才清楚。'}},source),'','明确谈修改方向的概括不是当前稿引文');
 
 
 const needlessNumbers={structure_checks:[{key:'vote_instruction',status:'partial',evidence:'把票补上能听出上票，但复活目标、票种和当前缺口都未交代。'}]};
